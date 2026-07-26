@@ -34,6 +34,9 @@ class ControlSnapshot:
     conversation_max_per_minute: int
     global_max_per_minute: int
     debounce_seconds: float
+    memory_auto_review_enabled: bool
+    memory_auto_review_confidence: float
+    memory_auto_review_evidence: int
 
 
 class LiveOperatorControl:
@@ -47,6 +50,9 @@ class LiveOperatorControl:
         service: IngestService,
         reply_policy: ReplyPolicy,
         debounce_seconds: float,
+        memory_auto_review_enabled: bool = False,
+        memory_auto_review_confidence: float = 0.9,
+        memory_auto_review_evidence: int = 2,
     ) -> None:
         resolved = env_path.expanduser().resolve()
         if not resolved.is_file():
@@ -56,6 +62,9 @@ class LiveOperatorControl:
         self.service = service
         self.reply_policy = reply_policy
         self._debounce_seconds = debounce_seconds
+        self._memory_auto_review_enabled = memory_auto_review_enabled
+        self._memory_auto_review_confidence = memory_auto_review_confidence
+        self._memory_auto_review_evidence = memory_auto_review_evidence
         self._debouncer: GroupMessageDebouncer | None = None
         self._on_change: Callable[[str], object] | None = None
         self._lock = threading.RLock()
@@ -122,8 +131,48 @@ class LiveOperatorControl:
                 conversation_max_per_minute=self.reply_policy.max_per_minute,
                 global_max_per_minute=self.reply_policy.global_max_per_minute,
                 debounce_seconds=self._debounce_seconds,
+                memory_auto_review_enabled=self._memory_auto_review_enabled,
+                memory_auto_review_confidence=self._memory_auto_review_confidence,
+                memory_auto_review_evidence=self._memory_auto_review_evidence,
             )
 
+    def memory_auto_review_policy(self) -> tuple[bool, float, int]:
+        with self._lock:
+            return (
+                self._memory_auto_review_enabled,
+                self._memory_auto_review_confidence,
+                self._memory_auto_review_evidence,
+            )
+
+    def set_memory_auto_review_enabled(self, enabled: bool) -> ControlSnapshot:
+        with self._lock:
+            self._memory_auto_review_enabled = enabled
+            self._persist({"R_AGENT_MEMORY_AUTO_REVIEW_ENABLED": str(enabled).lower()})
+            return self.snapshot()
+
+    def set_memory_auto_review_confidence(self, value: str) -> ControlSnapshot:
+        try:
+            confidence = float(value)
+        except ValueError as exc:
+            raise OperatorControlError("自动审核置信度必须是数字。") from exc
+        if not 0.8 <= confidence <= 0.99:
+            raise OperatorControlError("自动审核置信度范围为0.80至0.99。")
+        with self._lock:
+            self._memory_auto_review_confidence = confidence
+            self._persist({"R_AGENT_MEMORY_AUTO_REVIEW_CONFIDENCE": f"{confidence:.2f}"})
+            return self.snapshot()
+
+    def set_memory_auto_review_evidence(self, value: str) -> ControlSnapshot:
+        try:
+            evidence = int(value)
+        except ValueError as exc:
+            raise OperatorControlError("重复佐证次数必须是整数。") from exc
+        if not 2 <= evidence <= 5:
+            raise OperatorControlError("重复佐证次数范围为2至5。")
+        with self._lock:
+            self._memory_auto_review_evidence = evidence
+            self._persist({"R_AGENT_MEMORY_AUTO_REVIEW_EVIDENCE": str(evidence)})
+            return self.snapshot()
     def set_enabled(self, enabled: bool) -> ControlSnapshot:
         with self._lock:
             self.reply_policy.runtime_enabled = enabled

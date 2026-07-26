@@ -240,3 +240,57 @@ def test_vector_search_is_scope_and_status_filtered(tmp_path: Path) -> None:
         "embedded": 4,
         "active_embedded": 3,
     }
+
+
+def test_short_id_and_pagination_are_safe(tmp_path: Path) -> None:
+    memory = store(tmp_path)
+    first = propose(memory, message_id="page-1")
+    second = propose(memory, message_id="page-2", text="Alice prefers trail runs")
+
+    assert memory.get(first.item_id[:8]).item_id == first.item_id
+    page = memory.list_items(actor=OWNER, limit=1, offset=1)
+    assert len(page) == 1
+    assert page[0].item_id in {first.item_id, second.item_id}
+    with pytest.raises(MemoryValidationError, match="at least 6"):
+        memory.get(first.item_id[:5])
+
+
+def test_auto_review_requires_repeated_low_risk_v2_self_preference(tmp_path: Path) -> None:
+    memory = store(tmp_path)
+
+    def v2(message_id: str, *, kind: MemoryKind = MemoryKind.PREFERENCE):
+        return memory.propose(
+            scope=MemoryScope.PRINCIPAL,
+            scope_id="alice",
+            kind=kind,
+            text="我喜欢在清晨跑步",
+            source_channel="qq",
+            source_account_id="900001",
+            source_message_id=message_id,
+            source_principal_id="alice",
+            created_by="passive-observer-v2",
+            risk=MemoryRisk.LOW,
+            confidence=0.9,
+            now_ms=1_767_225_600_000,
+        )
+
+    first = v2("auto-1")
+    waiting = memory.auto_review_candidate(first.item_id, min_confidence=0.9, min_evidence=2)
+    assert waiting.decision == "awaiting_corroboration"
+    assert waiting.record.status is MemoryStatus.CANDIDATE
+
+    second = v2("auto-2")
+    activated = memory.auto_review_candidate(second.item_id, min_confidence=0.9, min_evidence=2)
+    assert activated.decision == "activated"
+    assert activated.evidence_count == 2
+    assert activated.record.status is MemoryStatus.ACTIVE
+    assert activated.record.reviewed_by == "system:auto-reviewer"
+
+    unsafe_kind = v2("auto-3", kind=MemoryKind.USER_FACT)
+    blocked = memory.auto_review_candidate(
+        unsafe_kind.item_id,
+        min_confidence=0.9,
+        min_evidence=2,
+    )
+    assert blocked.decision == "manual_review_required"
+    assert blocked.record.status is MemoryStatus.CANDIDATE

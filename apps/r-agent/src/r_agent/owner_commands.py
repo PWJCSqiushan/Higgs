@@ -97,9 +97,11 @@ class OwnerCommandRouter:
             "/higgs keyword add|remove 关键词\n"
             "/higgs rate 单会话每分钟 全局每分钟\n"
             "/higgs debounce 秒数\n"
-            "/higgs memory list [candidate|quarantined|active|invalidated]\n"
-            "/higgs memory show 记忆ID\n"
-            "/higgs memory activate|quarantine|invalidate|restore 记忆ID [原因]\n"
+            "/higgs memory list [candidate|quarantined|active|invalidated] [页码]\n"
+            "/higgs memory show 记忆ID或短ID\n"
+            "/higgs memory audit 记忆ID或短ID\n"
+            "/higgs memory auto [on|off|threshold 数值|evidence 次数]\n"
+            "/higgs memory activate|quarantine|invalidate|restore 记忆ID或短ID [原因]\n"
             "/higgs backup [now]\n"
             "永久删除记忆仍需在本机CLI双重确认。"
         )
@@ -115,6 +117,7 @@ class OwnerCommandRouter:
             group_count = self.context.group_count
             natural_count = self.context.natural_group_count
             rate_line = ""
+            auto_review_line = "\n记忆自动审核：不可热配置"
         else:
             enabled = snapshot.enabled
             private_count = len(snapshot.private_users)
@@ -125,6 +128,11 @@ class OwnerCommandRouter:
                 f"{snapshot.global_max_per_minute}/全局/分钟"
                 f"\n连续消息等待：{snapshot.debounce_seconds:g}秒"
             )
+            auto_review_line = (
+                f"\n记忆自动审核：{'启用' if snapshot.memory_auto_review_enabled else '关闭'}"
+                f"(置信度≥{snapshot.memory_auto_review_confidence:.2f}，"
+                f"重复佐证≥{snapshot.memory_auto_review_evidence}次)"
+            )
         return (
             f"普通回复：{'启用' if enabled else '暂停'}\n"
             f"运行模式：{self.context.mode}\n"
@@ -134,7 +142,7 @@ class OwnerCommandRouter:
             f"发送安全：{self.context.safety_enabled}\n"
             f"被动学习：{self.context.passive_learning_enabled}\n"
             f"向量模块：{self.context.embedding_enabled}"
-            f"{rate_line}"
+            f"{rate_line}{auto_review_line}"
         )
 
     def _require_control(self) -> LiveOperatorControl:
@@ -216,36 +224,112 @@ class OwnerCommandRouter:
     def _memory(self, arguments: list[str], *, actor: Principal) -> str:
         if not arguments:
             status = self.vectors.status()
+            snapshot = self._snapshot()
+            auto = (
+                "不可热配置"
+                if snapshot is None
+                else (
+                    f"{'启用' if snapshot.memory_auto_review_enabled else '关闭'}，"
+                    f"置信度≥{snapshot.memory_auto_review_confidence:.2f}，"
+                    f"重复佐证≥{snapshot.memory_auto_review_evidence}次"
+                )
+            )
             return (
                 f"记忆总数：{status['total']}\n"
                 f"已有向量：{status['embedded']}\n"
                 f"已激活向量：{status['active_embedded']}\n"
-                "候选记忆需主人审核后才参与召回。"
+                f"自动审核：{auto}\n"
+                "发送 /higgs memory list candidate 1 查看待审核记忆。"
             )
         action = arguments[0].casefold()
         if action == "list":
-            try:
-                status = MemoryStatus(arguments[1].casefold()) if len(arguments) > 1 else None
-            except ValueError as exc:
-                raise OperatorControlError("未知记忆状态。") from exc
-            records = self.memory.list_items(actor=actor, status=status, limit=5)
+            status_filter = None
+            page = 1
+            remaining = arguments[1:]
+            if remaining:
+                try:
+                    page = int(remaining[0])
+                    remaining = remaining[1:]
+                except ValueError:
+                    try:
+                        status_filter = MemoryStatus(remaining[0].casefold())
+                    except ValueError as exc:
+                        raise OperatorControlError("未知记忆状态。") from exc
+                    remaining = remaining[1:]
+                    if remaining:
+                        try:
+                            page = int(remaining[0])
+                        except ValueError as exc:
+                            raise OperatorControlError("页码必须是正整数。") from exc
+                        remaining = remaining[1:]
+            if remaining or not 1 <= page <= 999:
+                raise OperatorControlError(
+                    "用法：/higgs memory list [candidate|quarantined|active|invalidated] [页码]"
+                )
+            page_size = 8
+            records = self.memory.list_items(
+                actor=actor,
+                status=status_filter,
+                limit=page_size,
+                offset=(page - 1) * page_size,
+            )
             if not records:
-                return "没有符合条件的记忆。"
+                return f"第{page}页没有符合条件的记忆。"
             lines = [
-                f"{item.item_id} | {item.status.value} | {self._short(item.text)}"
+                f"{item.item_id[:8]} | {item.status.value} | {self._short(item.text)}"
                 for item in records
             ]
-            return "最近记忆(最多5条)：\n" + "\n".join(lines)
+            return (
+                f"记忆列表 第{page}页(每页{page_size}条，短ID可直接用于命令)：\n"
+                + "\n".join(lines)
+            )
         if action == "show":
             if len(arguments) != 2:
-                raise OperatorControlError("用法：/higgs memory show 记忆ID")
+                raise OperatorControlError("用法：/higgs memory show 记忆ID或短ID")
             item = self.memory.get_for_review(arguments[1], actor=actor)
             return (
                 f"ID：{item.item_id}\n"
                 f"状态：{item.status.value}\n"
+                f"类型：{item.kind.value}\n"
+                f"作用域：{item.scope.value}\n"
                 f"风险：{item.risk.value}\n"
                 f"置信度：{item.confidence:.2f}\n"
+                f"审核者：{item.reviewed_by or '未审核'}\n"
                 f"内容：{item.text}"
+            )
+        if action == "audit":
+            if len(arguments) != 2:
+                raise OperatorControlError("用法：/higgs memory audit 记忆ID或短ID")
+            item = self.memory.get_for_review(arguments[1], actor=actor)
+            audits = self.memory.audit_log(item.item_id, actor=actor, limit=20)
+            if not audits:
+                return f"记忆 {item.item_id[:8]} 没有审计记录。"
+            lines = [
+                f"{entry.audit_id} | {entry.action} | {entry.actor_role} | {entry.created_at_ms}"
+                for entry in audits
+            ]
+            return f"记忆 {item.item_id[:8]} 的审计历史：\n" + "\n".join(lines)
+        if action == "auto":
+            control = self._require_control()
+            if len(arguments) == 1:
+                snapshot = control.snapshot()
+            elif len(arguments) == 2 and arguments[1].casefold() in {"on", "off"}:
+                snapshot = control.set_memory_auto_review_enabled(
+                    arguments[1].casefold() == "on"
+                )
+            elif len(arguments) == 3 and arguments[1].casefold() == "threshold":
+                snapshot = control.set_memory_auto_review_confidence(arguments[2])
+            elif len(arguments) == 3 and arguments[1].casefold() == "evidence":
+                snapshot = control.set_memory_auto_review_evidence(arguments[2])
+            else:
+                raise OperatorControlError(
+                    "用法：/higgs memory auto [on|off|threshold 0.80-0.99|evidence 2-5]"
+                )
+            return (
+                f"记忆自动审核：{'启用' if snapshot.memory_auto_review_enabled else '关闭'}\n"
+                f"最低置信度：{snapshot.memory_auto_review_confidence:.2f}\n"
+                f"重复佐证：{snapshot.memory_auto_review_evidence}次\n"
+                "仅低风险、本人自述、同一人重复表达的偏好可自动激活，其余仍需人工审核。"
             )
         transitions = {
             "activate": self.memory.activate,
@@ -268,7 +352,6 @@ class OwnerCommandRouter:
                     )
             return f"记忆 {item.item_id} 已变更为 {item.status.value}。"
         raise OperatorControlError("未知记忆操作。发送 /higgs help 查看用法。")
-
     def _backup(self, arguments: list[str]) -> str:
         if self.backup is None:
             raise OperatorControlError("当前实例未启用自动备份。")

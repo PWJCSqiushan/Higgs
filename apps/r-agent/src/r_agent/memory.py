@@ -101,6 +101,15 @@ class MemoryAuditRecord:
     created_at_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class MemoryAutoReviewOutcome:
+    """Result of the narrow, deterministic automatic-review gate."""
+
+    record: MemoryRecord
+    decision: str
+    evidence_count: int
+
+
 class MemoryStore:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -339,11 +348,33 @@ class MemoryStore:
             raise MemoryError("memory proposal could not be persisted")
         return self._row_to_record(row)
 
+    def _resolve_item_id(self, item_id: str) -> str:
+        clean = self._clean_required(item_id, field="item_id", limit=128)
+        with self._connect() as conn:
+            exact = conn.execute(
+                "SELECT item_id FROM memory_items WHERE item_id = ?",
+                (clean,),
+            ).fetchone()
+            if exact is not None:
+                return str(exact["item_id"])
+            if len(clean) < 6:
+                raise MemoryValidationError("memory id prefix must contain at least 6 characters")
+            rows = conn.execute(
+                "SELECT item_id FROM memory_items WHERE item_id LIKE ? ORDER BY item_id LIMIT 2",
+                (f"{clean}%",),
+            ).fetchall()
+        if not rows:
+            raise MemoryNotFoundError("memory item not found")
+        if len(rows) > 1:
+            raise MemoryValidationError("memory id prefix is ambiguous; use more characters")
+        return str(rows[0]["item_id"])
+
     def get(self, item_id: str) -> MemoryRecord:
+        resolved_id = self._resolve_item_id(item_id)
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM memory_items WHERE item_id = ?",
-                (item_id,),
+                (resolved_id,),
             ).fetchone()
         if row is None:
             raise MemoryNotFoundError("memory item not found")
@@ -362,6 +393,7 @@ class MemoryStore:
         scope: MemoryScope | None = None,
         scope_id: str | None = None,
         limit: int = 50,
+        offset: int = 0,
     ) -> list[MemoryRecord]:
         """List review records without allowing chat-controlled authorization."""
         self._require_owner(actor)
@@ -373,6 +405,8 @@ class MemoryStore:
             raise MemoryValidationError("scope_id requires scope")
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
             raise MemoryValidationError("limit must be between 1 and 200")
+        if not isinstance(offset, int) or isinstance(offset, bool) or not 0 <= offset <= 100_000:
+            raise MemoryValidationError("offset must be between 0 and 100000")
 
         clauses: list[str] = []
         params: list[str | int] = []
@@ -386,19 +420,153 @@ class MemoryStore:
             clauses.append("scope_id = ?")
             params.append(self._clean_required(scope_id, field="scope_id", limit=256))
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.append(limit)
+        params.extend((limit, offset))
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
                 SELECT * FROM memory_items
                 {where}
                 ORDER BY created_at_ms DESC, item_id ASC
-                LIMIT ?
+                LIMIT ? OFFSET ?
                 """,
                 params,
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
+    def auto_review_candidate(
+        self,
+        item_id: str,
+        *,
+        min_confidence: float,
+        min_evidence: int,
+        now_ms: int | None = None,
+    ) -> MemoryAutoReviewOutcome:
+        """Activate only repeated, low-risk self-preferences from the passive extractor.
+
+        This path cannot govern owner identity, persona, global/group memory,
+        medium/high-risk content, or candidates created by another source.
+        """
+        if not 0.8 <= min_confidence <= 0.99:
+            raise MemoryValidationError("auto-review confidence must be between 0.8 and 0.99")
+        if not 2 <= min_evidence <= 5:
+            raise MemoryValidationError("auto-review evidence must be between 2 and 5")
+        resolved_id = self._resolve_item_id(item_id)
+        timestamp = int(time.time() * 1000) if now_ms is None else now_ms
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM memory_items WHERE item_id = ?",
+                (resolved_id,),
+            ).fetchone()
+            if row is None:
+                raise MemoryNotFoundError("memory item not found")
+            record = self._row_to_record(row)
+            eligible = (
+                record.status is MemoryStatus.CANDIDATE
+                and record.scope is MemoryScope.PRINCIPAL
+                and record.scope_id == record.source_principal_id
+                and record.kind is MemoryKind.PREFERENCE
+                and record.risk is MemoryRisk.LOW
+                and record.created_by == "passive-observer-v2"
+                and record.confidence >= min_confidence
+            )
+            if not eligible:
+                return MemoryAutoReviewOutcome(record, "manual_review_required", 0)
+
+            evidence_count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT source_message_id)
+                    FROM memory_items
+                    WHERE scope_type = 'principal' AND scope_id = ?
+                      AND source_principal_id = ? AND kind = 'preference'
+                      AND text = ? AND created_by = 'passive-observer-v2'
+                      AND risk = 'low' AND confidence >= ?
+                      AND status IN ('candidate','active')
+                    """,
+                    (
+                        record.scope_id,
+                        record.source_principal_id,
+                        record.text,
+                        min_confidence,
+                    ),
+                ).fetchone()[0]
+            )
+            if evidence_count < min_evidence:
+                return MemoryAutoReviewOutcome(record, "awaiting_corroboration", evidence_count)
+
+            active = conn.execute(
+                """
+                SELECT item_id FROM memory_items
+                WHERE item_id <> ? AND scope_type = 'principal' AND scope_id = ?
+                  AND kind = 'preference' AND text = ? AND status = 'active'
+                ORDER BY reviewed_at_ms DESC LIMIT 1
+                """,
+                (record.item_id, record.scope_id, record.text),
+            ).fetchone()
+            if active is not None:
+                reason = f"auto-review duplicate of {active['item_id']}"
+                conn.execute(
+                    """
+                    UPDATE memory_items
+                    SET status = 'invalidated', reviewed_at_ms = ?,
+                        reviewed_by = 'system:auto-reviewer', invalidated_reason = ?
+                    WHERE item_id = ? AND status = 'candidate'
+                    """,
+                    (timestamp, reason, record.item_id),
+                )
+                self._audit(
+                    conn,
+                    item_id=record.item_id,
+                    action="auto_duplicate_invalidated",
+                    actor_principal_id="system:auto-reviewer",
+                    actor_role="system-reviewer",
+                    details=reason,
+                    now_ms=timestamp,
+                )
+                updated = conn.execute(
+                    "SELECT * FROM memory_items WHERE item_id = ?",
+                    (record.item_id,),
+                ).fetchone()
+                if updated is None:
+                    raise MemoryError("auto-review result could not be read back")
+                return MemoryAutoReviewOutcome(
+                    self._row_to_record(updated),
+                    "duplicate_invalidated",
+                    evidence_count,
+                )
+
+            reason = f"deterministic auto-review with {evidence_count} matching self-reports"
+            cursor = conn.execute(
+                """
+                UPDATE memory_items
+                SET status = 'active', reviewed_at_ms = ?,
+                    reviewed_by = 'system:auto-reviewer', invalidated_reason = NULL
+                WHERE item_id = ? AND status = 'candidate'
+                """,
+                (timestamp, record.item_id),
+            )
+            if cursor.rowcount != 1:
+                raise MemoryTransitionError("memory changed during automatic review")
+            self._audit(
+                conn,
+                item_id=record.item_id,
+                action="auto_activated",
+                actor_principal_id="system:auto-reviewer",
+                actor_role="system-reviewer",
+                details=reason,
+                now_ms=timestamp,
+            )
+            updated = conn.execute(
+                "SELECT * FROM memory_items WHERE item_id = ?",
+                (record.item_id,),
+            ).fetchone()
+        if updated is None:
+            raise MemoryError("auto-review result could not be read back")
+        return MemoryAutoReviewOutcome(
+            self._row_to_record(updated),
+            "activated",
+            evidence_count,
+        )
     def audit_log(
         self,
         item_id: str,
@@ -447,6 +615,7 @@ class MemoryStore:
         now_ms: int | None = None,
     ) -> MemoryRecord:
         self._require_owner(actor)
+        item_id = self._resolve_item_id(item_id)
         timestamp = int(time.time() * 1000) if now_ms is None else now_ms
         clean_reason = self._clean_required(reason, field="reason", limit=500)
         with self._connect() as conn:

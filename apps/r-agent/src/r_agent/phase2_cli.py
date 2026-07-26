@@ -74,6 +74,9 @@ class Phase2Settings:
     safety_enabled: bool
     safety_terms_file: Path | None
     passive_learning_enabled: bool
+    memory_auto_review_enabled: bool
+    memory_auto_review_confidence: float
+    memory_auto_review_evidence: int
     embedding_enabled: bool
     embedding_model: str
     embedding_dimensions: int
@@ -177,6 +180,13 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         safety_enabled=_boolean("R_AGENT_SAFETY_ENABLED", True),
         safety_terms_file=safety_terms_file,
         passive_learning_enabled=_boolean("R_AGENT_PASSIVE_LEARNING_ENABLED", True),
+        memory_auto_review_enabled=_boolean("R_AGENT_MEMORY_AUTO_REVIEW_ENABLED", False),
+        memory_auto_review_confidence=bounded_float(
+            "R_AGENT_MEMORY_AUTO_REVIEW_CONFIDENCE", "0.90", 0.8, 0.99
+        ),
+        memory_auto_review_evidence=bounded_int(
+            "R_AGENT_MEMORY_AUTO_REVIEW_EVIDENCE", "2", 2, 5
+        ),
         embedding_enabled=_boolean("R_AGENT_EMBEDDING_ENABLED", True),
         embedding_model=embedding_model,
         embedding_dimensions=embedding_dimensions,
@@ -346,6 +356,9 @@ async def listen() -> None:
         service=service,
         reply_policy=policy,
         debounce_seconds=phase.group_debounce_seconds,
+        memory_auto_review_enabled=phase.memory_auto_review_enabled,
+        memory_auto_review_confidence=phase.memory_auto_review_confidence,
+        memory_auto_review_evidence=phase.memory_auto_review_evidence,
     )
     backup = BackupManager(
         data_dir=settings.data_dir,
@@ -388,6 +401,8 @@ async def listen() -> None:
             memory=memory,
             vectors=vectors,
             embedding_client=embeddings,
+            auto_review_policy=operator_control.memory_auto_review_policy,
+            on_auto_review=backup.create,
         )
         if phase.passive_learning_enabled
         else None
@@ -470,7 +485,12 @@ async def listen() -> None:
                     principal_id=principal.principal_id,
                 )
                 if learned.candidate is not None:
-                    _log.info("phase2_memory_candidate embedded=%s", learned.embedded)
+                    _log.info(
+                        "phase2_memory_candidate embedded=%s auto_review=%s evidence=%s",
+                        learned.embedded,
+                        learned.auto_review_decision,
+                        learned.evidence_count,
+                    )
             _log.info("phase2_event decision=%s", plan.decision)
         except (MemoryError, Exception) as exc:
             _log.error("phase2_handler_failed type=%s", type(exc).__name__)
