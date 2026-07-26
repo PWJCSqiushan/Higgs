@@ -1,0 +1,50 @@
+# Research checkout is pinned separately and must not become a nested repository.
+research/corlinman-upstream/
+
+# Temporary takeover/WIP payloads are documented in session memory, not versioned.
+handoff/
+
+# Python and test artifacts
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
+**/dist/
+**/build/
+**/*.egg-info/
+
+# Secrets, credentials, QQ login state, and live data
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
+**/secrets/
+**/data/
+**/napcat/
+**/recordings/private/
+**/*.sqlite
+**/*.sqlite-shm
+**/*.sqlite-wal
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+## Additional credential and local-authoring guards
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/id_rsa*
+**/id_ed25519*
+**/credentials*.json
+**/*.log
+**/*.bak
+**/~$*.docx
+/*.docx

@@ -1,0 +1,560 @@
+"""Opt-in Phase 2 runner. Existing `r-agent listen` remains read-only."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import logging
+import os
+from collections.abc import Awaitable, Callable
+from dataclasses import asdict, dataclass, replace
+from pathlib import Path
+
+from r_agent.access import IngressPolicy
+from r_agent.backup import BackupError, BackupManager
+from r_agent.config import ConfigError, Settings, parse_qq_set
+from r_agent.context import ContextBuilder
+from r_agent.conversation import ConversationStore
+from r_agent.embedding import (
+    EmbeddingConfig,
+    EmbeddingError,
+    OpenAICompatibleEmbeddingClient,
+)
+from r_agent.events import InboundEvent
+from r_agent.group_debounce import GroupMessageDebouncer
+from r_agent.identity import IdentityStore
+from r_agent.ingest import IngestResult, IngestService
+from r_agent.journal import Journal
+from r_agent.memory import MemoryError, MemoryStore
+from r_agent.model_client import ModelConfig, ModelError, OpenAICompatibleClient
+from r_agent.onebot import OneBotParseError, parse_message_event
+from r_agent.operator_control import LiveOperatorControl
+from r_agent.owner_commands import OwnerCommandContext, OwnerCommandRouter
+from r_agent.passive_memory import PassiveMemoryLearner
+from r_agent.phase2_outbound import (
+    OutboundError,
+    get_onebot_message_sender,
+    send_onebot_reply,
+)
+from r_agent.phase2_reply import PersonaBrain, ReplyAudit, ReplyDecision, ReplyPlan, ReplyPolicy
+from r_agent.qq_text import QqTextError, to_qq_plain_text
+from r_agent.recall import RecallLedger
+from r_agent.safety import OutboundSafetyPolicy, SafetyError
+from r_agent.vector_memory import MemoryVectorStore
+
+_log = logging.getLogger(__name__)
+
+
+def _value(name: str, default: str = "") -> str:
+    return os.environ.get(name, default).strip()
+
+
+def _boolean(name: str, default: bool) -> bool:
+    raw = _value(name, "true" if default else "false").lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"{name} must be a boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class Phase2Settings:
+    mode: str
+    private_users: frozenset[str]
+    groups: frozenset[str]
+    natural_trigger_groups: frozenset[str]
+    natural_trigger_terms: frozenset[str]
+    runtime_enabled: bool
+    require_mention: bool
+    max_per_minute: int
+    global_max_per_minute: int
+    group_debounce_seconds: float
+    safety_enabled: bool
+    safety_terms_file: Path | None
+    passive_learning_enabled: bool
+    embedding_enabled: bool
+    embedding_model: str
+    embedding_dimensions: int
+    history_turns: int
+    memory_items: int
+    backup_dir: Path
+    backup_interval_minutes: int
+    backup_retention: int
+
+
+def _phase2_settings(settings: Settings) -> Phase2Settings:
+    mode = _value("R_AGENT_REPLY_MODE", "off").lower()
+    if mode not in {"off", "draft", "live"}:
+        raise ConfigError("R_AGENT_REPLY_MODE must be off, draft, or live")
+    live_enabled = _boolean("R_AGENT_PHASE2_ENABLE_LIVE", False)
+    if mode == "live" and not live_enabled:
+        raise ConfigError("live mode requires R_AGENT_PHASE2_ENABLE_LIVE=true")
+    if mode == "live" and settings.shadow_mode:
+        raise ConfigError("live mode requires R_AGENT_SHADOW_MODE=false")
+    if mode == "live" and settings.owner_qq is None:
+        raise ConfigError("live mode requires R_AGENT_OWNER_QQ")
+    if mode != "live" and not settings.shadow_mode:
+        raise ConfigError("off and draft modes require R_AGENT_SHADOW_MODE=true")
+    private_users = parse_qq_set(
+        _value("R_AGENT_REPLY_ALLOWED_PRIVATE_QQS"),
+        name="R_AGENT_REPLY_ALLOWED_PRIVATE_QQS",
+    )
+    if not private_users.issubset(settings.allowed_private_qqs):
+        raise ConfigError("reply private QQs must be a subset of ingress private QQs")
+    groups = parse_qq_set(
+        _value("R_AGENT_REPLY_ALLOWED_GROUPS"),
+        name="R_AGENT_REPLY_ALLOWED_GROUPS",
+    )
+    if not groups.issubset(settings.allowed_groups):
+        raise ConfigError("reply groups must be a subset of ingress groups")
+    natural_trigger_groups = parse_qq_set(
+        _value("R_AGENT_REPLY_NATURAL_TRIGGER_GROUPS"),
+        name="R_AGENT_REPLY_NATURAL_TRIGGER_GROUPS",
+    )
+    if not natural_trigger_groups.issubset(groups):
+        raise ConfigError("natural trigger groups must be a subset of reply groups")
+
+    raw_terms = _value("R_AGENT_REPLY_NATURAL_TRIGGER_TERMS", "higgs")
+    natural_trigger_terms = frozenset(
+        term.strip().casefold() for term in raw_terms.split(",") if term.strip()
+    )
+    if not natural_trigger_terms:
+        raise ConfigError("R_AGENT_REPLY_NATURAL_TRIGGER_TERMS must not be empty")
+    if len(natural_trigger_terms) > 16 or any(
+        len(term) > 32 or "\n" in term or "\r" in term for term in natural_trigger_terms
+    ):
+        raise ConfigError("R_AGENT_REPLY_NATURAL_TRIGGER_TERMS is invalid")
+
+    def bounded_int(name: str, default: str, minimum: int, maximum: int) -> int:
+        try:
+            value = int(_value(name, default))
+        except ValueError as exc:
+            raise ConfigError(f"{name} must be an integer") from exc
+        if not minimum <= value <= maximum:
+            raise ConfigError(f"{name} must be between {minimum} and {maximum}")
+        return value
+
+    def bounded_float(name: str, default: str, minimum: float, maximum: float) -> float:
+        try:
+            value = float(_value(name, default))
+        except ValueError as exc:
+            raise ConfigError(f"{name} must be a number") from exc
+        if not minimum <= value <= maximum:
+            raise ConfigError(f"{name} must be between {minimum} and {maximum}")
+        return value
+
+    safety_file_value = _value("R_AGENT_SAFETY_TERMS_FILE")
+    safety_terms_file = (
+        Path(safety_file_value).expanduser().resolve() if safety_file_value else None
+    )
+    embedding_model = _value("R_AGENT_EMBEDDING_MODEL", "embedding-3")
+    if not embedding_model or len(embedding_model) > 128:
+        raise ConfigError("R_AGENT_EMBEDDING_MODEL is invalid")
+    embedding_dimensions = bounded_int("R_AGENT_EMBEDDING_DIMENSIONS", "256", 256, 2048)
+    if embedding_dimensions not in {256, 512, 1024, 2048}:
+        raise ConfigError("R_AGENT_EMBEDDING_DIMENSIONS is unsupported")
+    backup_dir_value = _value("R_AGENT_BACKUP_DIR")
+    backup_dir = (
+        Path(backup_dir_value).expanduser().resolve()
+        if backup_dir_value
+        else settings.data_dir / "backups"
+    )
+    return Phase2Settings(
+        mode=mode,
+        private_users=private_users,
+        groups=groups,
+        natural_trigger_groups=natural_trigger_groups,
+        natural_trigger_terms=natural_trigger_terms,
+        runtime_enabled=_boolean("R_AGENT_RUNTIME_ENABLED", True),
+        require_mention=_boolean("R_AGENT_REPLY_GROUP_REQUIRE_MENTION", True),
+        max_per_minute=bounded_int("R_AGENT_REPLY_MAX_PER_MINUTE", "6", 1, 10),
+        history_turns=bounded_int("R_AGENT_HISTORY_TURNS", "8", 1, 20),
+        memory_items=bounded_int("R_AGENT_MEMORY_CONTEXT_ITEMS", "8", 0, 20),
+        global_max_per_minute=bounded_int("R_AGENT_REPLY_GLOBAL_MAX_PER_MINUTE", "20", 1, 60),
+        group_debounce_seconds=bounded_float("R_AGENT_GROUP_DEBOUNCE_SECONDS", "2.5", 0.5, 10.0),
+        safety_enabled=_boolean("R_AGENT_SAFETY_ENABLED", True),
+        safety_terms_file=safety_terms_file,
+        passive_learning_enabled=_boolean("R_AGENT_PASSIVE_LEARNING_ENABLED", True),
+        embedding_enabled=_boolean("R_AGENT_EMBEDDING_ENABLED", True),
+        embedding_model=embedding_model,
+        embedding_dimensions=embedding_dimensions,
+        backup_dir=backup_dir,
+        backup_interval_minutes=bounded_int("R_AGENT_BACKUP_INTERVAL_MINUTES", "360", 15, 1440),
+        backup_retention=bounded_int("R_AGENT_BACKUP_RETENTION", "20", 3, 100),
+    )
+
+
+def _persona_text() -> str:
+    file_value = _value("R_AGENT_PERSONA_FILE")
+    if not file_value:
+        return _value("R_AGENT_PERSONA", "你是一个稳重、诚实、简洁的中文助手。")
+    path = Path(file_value).expanduser().resolve()
+    try:
+        if not path.is_file() or path.stat().st_size > 64 * 1024:
+            raise ConfigError("R_AGENT_PERSONA_FILE must be a file no larger than 64 KiB")
+        content = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        raise ConfigError("R_AGENT_PERSONA_FILE could not be read as UTF-8") from exc
+    if not content:
+        raise ConfigError("R_AGENT_PERSONA_FILE must not be empty")
+    return content
+
+
+def _model_client(*, required: bool) -> OpenAICompatibleClient | None:
+    key = _value("R_AGENT_MODEL_API_KEY")
+    if not key:
+        if required:
+            raise ConfigError("draft/live mode requires R_AGENT_MODEL_API_KEY")
+        return None
+    thinking = _value("R_AGENT_MODEL_THINKING").lower() or None
+    try:
+        return OpenAICompatibleClient(
+            ModelConfig(
+                provider=_value("R_AGENT_MODEL_PROVIDER", "openai-compatible"),
+                base_url=_value("R_AGENT_MODEL_BASE_URL", "https://api.openai.com/v1"),
+                model=_value("R_AGENT_MODEL_NAME", "gpt-5-mini"),
+                api_key=key,
+                thinking=thinking,
+            )
+        )
+    except ModelError as exc:
+        raise ConfigError(f"invalid model configuration: {exc}") from exc
+
+
+def _embedding_client(
+    *, enabled: bool, phase: Phase2Settings
+) -> OpenAICompatibleEmbeddingClient | None:
+    if not enabled:
+        return None
+    key = _value("R_AGENT_EMBEDDING_API_KEY") or _value("R_AGENT_MODEL_API_KEY")
+    base_url = _value("R_AGENT_EMBEDDING_BASE_URL") or _value("R_AGENT_MODEL_BASE_URL")
+    try:
+        return OpenAICompatibleEmbeddingClient(
+            EmbeddingConfig(
+                base_url=base_url,
+                model=phase.embedding_model,
+                api_key=key,
+                dimensions=phase.embedding_dimensions,
+            )
+        )
+    except EmbeddingError as exc:
+        raise ConfigError(f"invalid embedding configuration: {exc}") from exc
+
+
+def _safety_policy(phase: Phase2Settings) -> OutboundSafetyPolicy | None:
+    if not phase.safety_enabled:
+        return None
+    try:
+        return OutboundSafetyPolicy.with_optional_file(phase.safety_terms_file)
+    except SafetyError as exc:
+        raise ConfigError(f"invalid outbound safety configuration: {exc}") from exc
+
+
+async def process_reply(
+    *,
+    event: InboundEvent,
+    result: IngestResult,
+    policy: ReplyPolicy,
+    brain: PersonaBrain,
+    sender: Callable[[InboundEvent, str], Awaitable[None]],
+    safety: OutboundSafetyPolicy | None = None,
+) -> ReplyPlan:
+    """Create one auditable outcome without letting provider errors stop the listener."""
+    decision = policy.gate(event, result)
+    if decision not in {ReplyDecision.DRAFTED, ReplyDecision.SENT}:
+        return ReplyPlan(decision)
+    try:
+        text = to_qq_plain_text(await brain.draft(event))
+    except (ModelError, QqTextError):
+        return ReplyPlan(ReplyDecision.MODEL_FAILED)
+
+    if safety is not None and not safety.evaluate(text).allowed:
+        return ReplyPlan(ReplyDecision.SENSITIVE_BLOCKED)
+    policy.mark_generated(event)
+    if decision is ReplyDecision.DRAFTED:
+        return ReplyPlan(ReplyDecision.DRAFTED, text)
+    try:
+        await sender(event, text)
+    except OutboundError:
+        return ReplyPlan(ReplyDecision.SEND_FAILED, text)
+    return ReplyPlan(ReplyDecision.SENT, text)
+
+
+async def listen() -> None:
+    import websockets
+
+    settings = Settings.from_env(env_file=Path(".env"), require_shadow=False)
+    phase = _phase2_settings(settings)
+    embeddings = _embedding_client(enabled=phase.embedding_enabled, phase=phase)
+    safety = _safety_policy(phase)
+    client = _model_client(required=phase.mode in {"draft", "live"})
+
+    service = IngestService(
+        policy=IngressPolicy(
+            enabled=settings.ingest_enabled,
+            owner_qq=settings.owner_qq,
+            allowed_private_qqs=settings.allowed_private_qqs,
+            allowed_groups=settings.allowed_groups,
+        ),
+        identities=IdentityStore(
+            settings.data_dir / "identity.sqlite",
+            owner_qq=settings.owner_qq,
+        ),
+        journal=Journal(settings.data_dir / "journal.sqlite"),
+    )
+    service.initialize()
+    history = ConversationStore(settings.data_dir / "conversation.sqlite")
+    history.initialize()
+    await asyncio.to_thread(history.purge_expired, settings.journal_retention_days)
+    memory = MemoryStore(settings.data_dir / "memory.sqlite")
+    memory.initialize()
+    vectors = MemoryVectorStore(memory.path, memory=memory)
+    recall = RecallLedger(settings.data_dir / "memory.sqlite")
+    recall.initialize()
+    audit = ReplyAudit(settings.data_dir / "reply_audit.sqlite")
+    audit.initialize()
+    policy = ReplyPolicy(
+        mode=phase.mode,
+        private_users=phase.private_users.union({settings.owner_qq} if settings.owner_qq else ()),
+        groups=phase.groups,
+        natural_trigger_groups=phase.natural_trigger_groups,
+        natural_trigger_terms=phase.natural_trigger_terms,
+        global_max_per_minute=phase.global_max_per_minute,
+        owner_qq=settings.owner_qq,
+        runtime_enabled=phase.runtime_enabled,
+        require_mention=phase.require_mention,
+        max_per_minute=phase.max_per_minute,
+    )
+    persona = _persona_text()
+    context_builder = ContextBuilder(
+        history=history,
+        memory=memory,
+        recall=recall,
+        persona=persona,
+        history_limit=phase.history_turns,
+        memory_limit=phase.memory_items,
+        vectors=vectors,
+        history_outcome="sent" if phase.mode == "live" else "drafted",
+    )
+    if settings.owner_qq is None:
+        raise ConfigError("chat operator control requires R_AGENT_OWNER_QQ")
+    operator_control = LiveOperatorControl(
+        env_path=Path(".env"),
+        owner_qq=settings.owner_qq,
+        service=service,
+        reply_policy=policy,
+        debounce_seconds=phase.group_debounce_seconds,
+    )
+    backup = BackupManager(
+        data_dir=settings.data_dir,
+        backup_dir=phase.backup_dir,
+        interval_minutes=phase.backup_interval_minutes,
+        retention=phase.backup_retention,
+        config_snapshot=lambda: asdict(operator_control.snapshot()),
+    )
+    operator_control.attach_backup(backup.create)
+    try:
+        await asyncio.to_thread(backup.create, "startup")
+    except BackupError as exc:
+        _log.warning("startup_backup_failed type=%s", type(exc).__name__)
+
+    owner_commands = OwnerCommandRouter(
+        context=OwnerCommandContext(
+            mode=phase.mode,
+            private_user_count=len(policy.private_users),
+            group_count=len(phase.groups),
+            natural_group_count=len(phase.natural_trigger_groups),
+            safety_enabled=phase.safety_enabled,
+            passive_learning_enabled=phase.passive_learning_enabled,
+            embedding_enabled=phase.embedding_enabled,
+        ),
+        vectors=vectors,
+        control=operator_control,
+        memory=memory,
+        backup=backup,
+    )
+    brain = PersonaBrain(
+        client,
+        persona,
+        identities=service.identities,
+        context_builder=context_builder,
+        embedding_client=embeddings,
+        owner_commands=owner_commands,
+    )
+    passive_learner = (
+        PassiveMemoryLearner(
+            memory=memory,
+            vectors=vectors,
+            embedding_client=embeddings,
+        )
+        if phase.passive_learning_enabled
+        else None
+    )
+    headers = (
+        {"Authorization": f"Bearer {settings.onebot_access_token}"}
+        if settings.onebot_access_token
+        else None
+    )
+
+    async def sender(event: InboundEvent, text: str) -> None:
+        await send_onebot_reply(
+            settings.onebot_ws_url,
+            settings.onebot_access_token,
+            event,
+            text,
+        )
+
+    async def handle_event(event: InboundEvent, result: IngestResult) -> None:
+        """Finish one logical message after the group quiet-window has closed."""
+        try:
+            plan = await process_reply(
+                event=event,
+                result=result,
+                policy=policy,
+                brain=brain,
+                sender=sender,
+                safety=safety,
+            )
+            await asyncio.to_thread(audit.record, event, plan)
+            principal = None
+            if plan.decision in {
+                ReplyDecision.DRAFTED,
+                ReplyDecision.SENT,
+                ReplyDecision.MODEL_FAILED,
+                ReplyDecision.SEND_FAILED,
+            } or (
+                passive_learner is not None
+                and plan.decision
+                in {
+                    ReplyDecision.MENTION_REQUIRED,
+                    ReplyDecision.GROUP_TRIGGER_REQUIRED,
+                    ReplyDecision.RATE_LIMITED,
+                    ReplyDecision.GLOBAL_RATE_LIMITED,
+                    ReplyDecision.SENSITIVE_BLOCKED,
+                }
+            ):
+                principal = await asyncio.to_thread(
+                    service.identities.resolve,
+                    event.channel,
+                    event.sender_id,
+                )
+            if principal is not None and plan.decision in {
+                ReplyDecision.DRAFTED,
+                ReplyDecision.SENT,
+                ReplyDecision.MODEL_FAILED,
+                ReplyDecision.SEND_FAILED,
+            }:
+                await asyncio.to_thread(
+                    history.record,
+                    event,
+                    principal_id=principal.principal_id,
+                    outcome=plan.decision.value,
+                    assistant_text=plan.text,
+                )
+            if (
+                passive_learner is not None
+                and principal is not None
+                and plan.decision
+                in {
+                    ReplyDecision.MENTION_REQUIRED,
+                    ReplyDecision.GROUP_TRIGGER_REQUIRED,
+                    ReplyDecision.RATE_LIMITED,
+                    ReplyDecision.GLOBAL_RATE_LIMITED,
+                    ReplyDecision.SENSITIVE_BLOCKED,
+                }
+            ):
+                learned = await passive_learner.observe(
+                    event,
+                    principal_id=principal.principal_id,
+                )
+                if learned.candidate is not None:
+                    _log.info("phase2_memory_candidate embedded=%s", learned.embedded)
+            _log.info("phase2_event decision=%s", plan.decision)
+        except (MemoryError, Exception) as exc:
+            _log.error("phase2_handler_failed type=%s", type(exc).__name__)
+
+    debouncer = GroupMessageDebouncer(
+        quiet_seconds=phase.group_debounce_seconds,
+        handler=handle_event,
+    )
+    operator_control.attach_debouncer(debouncer)
+    backup_task = asyncio.create_task(backup.run_periodically())
+    backup_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+
+    delay = 1.0
+    while True:
+        try:
+            async with websockets.connect(
+                settings.onebot_ws_url,
+                additional_headers=headers,
+                max_size=2 * 1024 * 1024,
+                max_queue=64,
+                ping_interval=20,
+                ping_timeout=20,
+                close_timeout=5,
+            ) as socket:
+                _log.info(
+                    "phase2_connected mode=%s model_configured=%s",
+                    phase.mode,
+                    client is not None,
+                )
+                delay = 1.0
+                async for frame in socket:
+                    if not isinstance(frame, str):
+                        continue
+                    try:
+                        raw = json.loads(frame)
+                        if not isinstance(raw, dict) or raw.get("post_type") != "message":
+                            continue
+                        event = parse_message_event(raw)
+                        if (
+                            event.group_id in phase.natural_trigger_groups
+                            and event.reply_message_id is not None
+                        ):
+                            try:
+                                replied_sender = await get_onebot_message_sender(
+                                    settings.onebot_ws_url,
+                                    settings.onebot_access_token,
+                                    event.reply_message_id,
+                                )
+                            except OutboundError:
+                                _log.warning("phase2_reply_reference_lookup_failed")
+                            else:
+                                if replied_sender == event.account_id:
+                                    event = replace(event, replied_to_account=True)
+                        result = await asyncio.to_thread(service.ingest, event)
+                        await debouncer.submit(event, result)
+                    except (json.JSONDecodeError, OneBotParseError) as exc:
+                        _log.warning("phase2_event_rejected type=%s", type(exc).__name__)
+                    except Exception as exc:
+                        _log.error("phase2_event_failed type=%s", type(exc).__name__)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _log.warning(
+                "phase2_disconnected type=%s retry_seconds=%.1f",
+                type(exc).__name__,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 30.0)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("listen", nargs="?", default="listen")
+    parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    try:
+        asyncio.run(listen())
+    except (ConfigError, KeyboardInterrupt) as exc:
+        if isinstance(exc, ConfigError):
+            print(f"configuration_error: {exc}")
+            return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

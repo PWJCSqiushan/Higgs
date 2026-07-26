@@ -1,0 +1,18 @@
+{
+  "time": 1767225600,
+  "self_id": 900000001,
+  "post_type": "message",
+  "message_type": "private",
+  "sub_type": "friend",
+  "message_id": 10001,
+  "user_id": 800000001,
+  "message": [
+    {
+      "type": "text",
+      "data": {
+        "text": "这是一条完全脱敏的回放消息"
+      }
+    }
+  ],
+  "raw_message": "这是一条完全脱敏的回放消息"
+}
