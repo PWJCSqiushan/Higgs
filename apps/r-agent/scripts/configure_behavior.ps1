@@ -10,6 +10,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'config_file.ps1')
 $appRoot = Split-Path -Parent $PSScriptRoot
 $envPath = Join-Path $appRoot '.env'
 if (-not (Test-Path -LiteralPath $envPath)) {
@@ -60,11 +61,14 @@ foreach ($entry in $updates.GetEnumerator()) {
 $tempPath = "$envPath.tmp"
 try {
     [IO.File]::WriteAllLines($tempPath, $lines, [Text.UTF8Encoding]::new($false))
-    Move-Item -LiteralPath $tempPath -Destination $envPath -Force
+    Install-LocalConfigFile -TempPath $tempPath -DestinationPath $envPath
 }
 finally {
     if (Test-Path -LiteralPath $tempPath) {
-        Remove-Item -LiteralPath $tempPath -Force
+        $trashDir = Join-Path (Split-Path -Parent $tempPath) '.trash'
+        New-Item -ItemType Directory -Path $trashDir -Force | Out-Null
+        $trashName = '{0}-{1}-{2}' -f (Get-Date -Format 'yyyyMMddTHHmmss'), ([guid]::NewGuid().ToString('N').Substring(0, 8)), (Split-Path -Leaf $tempPath)
+        Move-Item -LiteralPath $tempPath -Destination (Join-Path $trashDir $trashName)
     }
 }
 

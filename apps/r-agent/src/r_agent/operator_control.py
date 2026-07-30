@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from r_agent.config import ConfigError
+from r_agent.trash import move_to_trash
 
 if TYPE_CHECKING:
     from r_agent.group_debounce import GroupMessageDebouncer
@@ -107,11 +107,17 @@ class LiveOperatorControl:
                 rewritten.append(line)
         rewritten.extend(f"{key}={value}" for key, value in remaining.items())
         temporary = self.env_path.with_name(f"{self.env_path.name}.operator.tmp")
+        previous: Path | None = None
         try:
             temporary.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
-            os.replace(temporary, self.env_path)
+            previous = move_to_trash(self.env_path, trash_root=self.env_path.parent / ".trash")
+            temporary.rename(self.env_path)
+        except Exception:
+            if not self.env_path.exists() and previous is not None and previous.exists():
+                previous.rename(self.env_path)
+            raise
         finally:
-            temporary.unlink(missing_ok=True)
+            move_to_trash(temporary, trash_root=self.env_path.parent / ".trash")
         if self._on_change is not None:
             try:
                 self._on_change("operator-config-change")
@@ -173,6 +179,7 @@ class LiveOperatorControl:
             self._memory_auto_review_evidence = evidence
             self._persist({"R_AGENT_MEMORY_AUTO_REVIEW_EVIDENCE": str(evidence)})
             return self.snapshot()
+
     def set_enabled(self, enabled: bool) -> ControlSnapshot:
         with self._lock:
             self.reply_policy.runtime_enabled = enabled

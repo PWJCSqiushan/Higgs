@@ -1,0 +1,7 @@
+{
+    email {$ACME_EMAIL}
+    admin 127.0.0.1:2019
+}
+
+# Add one reviewed subdomain block per public application after ICP approval.
+# Internal services such as NapCat and Higgs intentionally have no public route.

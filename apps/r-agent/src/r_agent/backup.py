@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import shutil
 import sqlite3
 import threading
 import uuid
@@ -12,6 +11,8 @@ from collections.abc import Callable
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
+
+from r_agent.trash import move_to_trash
 
 
 class BackupError(RuntimeError):
@@ -84,7 +85,7 @@ class BackupManager:
                 )
                 temporary.rename(destination)
             except Exception as exc:
-                shutil.rmtree(temporary, ignore_errors=True)
+                move_to_trash(temporary, trash_root=self.backup_dir / ".trash")
                 if isinstance(exc, BackupError):
                     raise
                 raise BackupError("backup creation failed") from exc
@@ -116,7 +117,7 @@ class BackupManager:
             reverse=True,
         )
         for obsolete in snapshots[self.retention :]:
-            shutil.rmtree(obsolete)
+            move_to_trash(obsolete, trash_root=self.backup_dir / ".trash")
 
     def status(self) -> dict[str, object]:
         if not self.backup_dir.is_dir():

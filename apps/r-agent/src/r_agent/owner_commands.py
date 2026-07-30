@@ -279,9 +279,8 @@ class OwnerCommandRouter:
                 f"{item.item_id[:8]} | {item.status.value} | {self._short(item.text)}"
                 for item in records
             ]
-            return (
-                f"记忆列表 第{page}页(每页{page_size}条，短ID可直接用于命令)：\n"
-                + "\n".join(lines)
+            return f"记忆列表 第{page}页(每页{page_size}条，短ID可直接用于命令)：\n" + "\n".join(
+                lines
             )
         if action == "show":
             if len(arguments) != 2:
@@ -314,9 +313,7 @@ class OwnerCommandRouter:
             if len(arguments) == 1:
                 snapshot = control.snapshot()
             elif len(arguments) == 2 and arguments[1].casefold() in {"on", "off"}:
-                snapshot = control.set_memory_auto_review_enabled(
-                    arguments[1].casefold() == "on"
-                )
+                snapshot = control.set_memory_auto_review_enabled(arguments[1].casefold() == "on")
             elif len(arguments) == 3 and arguments[1].casefold() == "threshold":
                 snapshot = control.set_memory_auto_review_confidence(arguments[2])
             elif len(arguments) == 3 and arguments[1].casefold() == "evidence":
@@ -352,6 +349,7 @@ class OwnerCommandRouter:
                     )
             return f"记忆 {item.item_id} 已变更为 {item.status.value}。"
         raise OperatorControlError("未知记忆操作。发送 /higgs help 查看用法。")
+
     def _backup(self, arguments: list[str]) -> str:
         if self.backup is None:
             raise OperatorControlError("当前实例未启用自动备份。")

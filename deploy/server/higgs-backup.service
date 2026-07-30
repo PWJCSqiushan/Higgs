@@ -1,0 +1,13 @@
+[Unit]
+Description=Create encrypted Higgs backup archive
+After=higgs-stack.service
+
+[Service]
+Type=oneshot
+User=deploy
+Group=deploy
+EnvironmentFile=/srv/secrets/higgs/backup.env
+ExecStart=/srv/apps/higgs/current/deploy/backups/backup-and-upload.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

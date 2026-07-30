@@ -23,6 +23,7 @@ from r_agent.embedding import (
 )
 from r_agent.events import InboundEvent
 from r_agent.group_debounce import GroupMessageDebouncer
+from r_agent.health import HealthReporter
 from r_agent.identity import IdentityStore
 from r_agent.ingest import IngestResult, IngestService
 from r_agent.journal import Journal
@@ -57,6 +58,11 @@ def _boolean(name: str, default: bool) -> bool:
     if raw in {"0", "false", "no", "off"}:
         return False
     raise ConfigError(f"{name} must be a boolean")
+
+
+def _env_path() -> Path:
+    """Return the writable operator configuration path for this runtime."""
+    return Path(os.environ.get("R_AGENT_ENV_FILE", ".env")).expanduser().resolve()
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,9 +190,7 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         memory_auto_review_confidence=bounded_float(
             "R_AGENT_MEMORY_AUTO_REVIEW_CONFIDENCE", "0.90", 0.8, 0.99
         ),
-        memory_auto_review_evidence=bounded_int(
-            "R_AGENT_MEMORY_AUTO_REVIEW_EVIDENCE", "2", 2, 5
-        ),
+        memory_auto_review_evidence=bounded_int("R_AGENT_MEMORY_AUTO_REVIEW_EVIDENCE", "2", 2, 5),
         embedding_enabled=_boolean("R_AGENT_EMBEDDING_ENABLED", True),
         embedding_model=embedding_model,
         embedding_dimensions=embedding_dimensions,
@@ -295,7 +299,8 @@ async def process_reply(
 async def listen() -> None:
     import websockets
 
-    settings = Settings.from_env(env_file=Path(".env"), require_shadow=False)
+    env_path = _env_path()
+    settings = Settings.from_env(env_file=env_path, require_shadow=False)
     phase = _phase2_settings(settings)
     embeddings = _embedding_client(enabled=phase.embedding_enabled, phase=phase)
     safety = _safety_policy(phase)
@@ -351,7 +356,7 @@ async def listen() -> None:
     if settings.owner_qq is None:
         raise ConfigError("chat operator control requires R_AGENT_OWNER_QQ")
     operator_control = LiveOperatorControl(
-        env_path=Path(".env"),
+        env_path=env_path,
         owner_qq=settings.owner_qq,
         service=service,
         reply_policy=policy,
@@ -502,6 +507,13 @@ async def listen() -> None:
     operator_control.attach_debouncer(debouncer)
     backup_task = asyncio.create_task(backup.run_periodically())
     backup_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+    health_path = Path(
+        os.environ.get("R_AGENT_HEALTH_FILE", str(settings.data_dir / "health.json"))
+    )
+    health = HealthReporter(health_path)
+    health.set_connected(False)
+    health_task = asyncio.create_task(health.run_periodically())
+    health_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
 
     delay = 1.0
     while True:
@@ -521,6 +533,7 @@ async def listen() -> None:
                     client is not None,
                 )
                 delay = 1.0
+                health.set_connected(True)
                 async for frame in socket:
                     if not isinstance(frame, str):
                         continue
@@ -550,9 +563,12 @@ async def listen() -> None:
                         _log.warning("phase2_event_rejected type=%s", type(exc).__name__)
                     except Exception as exc:
                         _log.error("phase2_event_failed type=%s", type(exc).__name__)
+                health.set_connected(False)
         except asyncio.CancelledError:
+            health.set_connected(False)
             raise
         except Exception as exc:
+            health.set_connected(False)
             _log.warning(
                 "phase2_disconnected type=%s retry_seconds=%.1f",
                 type(exc).__name__,

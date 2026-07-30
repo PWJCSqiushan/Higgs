@@ -67,3 +67,28 @@ def test_private_allowlist_rejects_wildcards(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("R_AGENT_ALLOWED_PRIVATE_QQS", "*")
     with pytest.raises(ConfigError, match="ASCII digits"):
         Settings.from_env()
+
+
+def test_exact_trusted_container_onebot_host_requires_strong_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_ONEBOT_TRUSTED_HOST", "napcat")
+    monkeypatch.setenv("R_AGENT_ONEBOT_WS_URL", "ws://napcat:3001")
+    monkeypatch.setenv("R_AGENT_ONEBOT_ACCESS_TOKEN", "x" * 32)
+    settings = Settings.from_env()
+    assert settings.onebot_ws_url == "ws://napcat:3001"
+
+
+def test_trusted_container_host_rejects_weak_token_and_lookalikes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_ONEBOT_TRUSTED_HOST", "napcat")
+    monkeypatch.setenv("R_AGENT_ONEBOT_WS_URL", "ws://napcat:3001")
+    monkeypatch.setenv("R_AGENT_ONEBOT_ACCESS_TOKEN", "weak")
+    with pytest.raises(ConfigError, match="32"):
+        Settings.from_env()
+
+    monkeypatch.setenv("R_AGENT_ONEBOT_ACCESS_TOKEN", "x" * 32)
+    monkeypatch.setenv("R_AGENT_ONEBOT_WS_URL", "ws://napcat.evil.example:3001")
+    with pytest.raises(ConfigError, match="explicitly trusted"):
+        Settings.from_env()

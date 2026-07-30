@@ -18,6 +18,52 @@ from pathlib import Path
 
 from r_agent.identity import Principal
 
+_AUTO_REVIEW_BLOCKERS = (
+    "住在",
+    "地址",
+    "电话",
+    "手机",
+    "qq",
+    "微信",
+    "邮箱",
+    "学号",
+    "身份证",
+    "护照",
+    "银行卡",
+    "账户",
+    "账号",
+    "密码",
+    "验证码",
+    "密钥",
+    "token",
+    "疾病",
+    "病史",
+    "诊断",
+    "用药",
+    "过敏",
+    "收入",
+    "工资",
+    "存款",
+    "负债",
+    "政治",
+    "选举",
+    "党派",
+    "宗教",
+    "民族",
+    "性取向",
+    "主人",
+    "管理员",
+    "权限",
+    "系统提示",
+    "提示词",
+)
+
+
+def is_auto_review_safe_text(text: str) -> bool:
+    """Return whether text is eligible for the harmless-preference lane."""
+    lowered = text.casefold()
+    return not any(marker in lowered for marker in _AUTO_REVIEW_BLOCKERS)
+
 
 class MemoryError(RuntimeError):
     """Base error for memory operations."""
@@ -468,6 +514,7 @@ class MemoryStore:
                 and record.risk is MemoryRisk.LOW
                 and record.created_by == "passive-observer-v2"
                 and record.confidence >= min_confidence
+                and is_auto_review_safe_text(record.text)
             )
             if not eligible:
                 return MemoryAutoReviewOutcome(record, "manual_review_required", 0)
@@ -567,6 +614,7 @@ class MemoryStore:
             "activated",
             evidence_count,
         )
+
     def audit_log(
         self,
         item_id: str,

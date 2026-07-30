@@ -1,0 +1,15 @@
+# COSCLI encrypts keys generated through `coscli config init`.
+# Prefer generating the real /srv/secrets/cos/cos.yaml interactively instead of
+# filling this example. The CAM key must be upload-only for one backup prefix.
+cos:
+  base:
+    secretid: REPLACE_VIA_COSCLI_CONFIG_INIT
+    secretkey: REPLACE_VIA_COSCLI_CONFIG_INIT
+    sessiontoken: ""
+    protocol: https
+  buckets:
+    - name: REPLACE_BUCKET_NAME_WITH_APPID
+      alias: higgs-backup
+      region: ap-beijing
+      endpoint: cos.ap-beijing.myqcloud.com
+      ofs: false

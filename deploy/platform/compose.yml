@@ -1,0 +1,30 @@
+name: personal-platform
+
+services:
+  caddy:
+    image: ${CADDY_IMAGE:?Set CADDY_IMAGE to a pinned digest}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /srv/data/platform/caddy-data:/data
+      - /srv/data/platform/caddy-config:/config
+    networks:
+      - edge
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+networks:
+  edge:
+    name: personal-edge

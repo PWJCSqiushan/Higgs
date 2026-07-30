@@ -9,7 +9,7 @@ Higgs 是一个面向个人长期使用的自托管 QQ 智能体：提供可审�
 - 记忆系统：结构化 SQLite、候选/隔离/激活状态机、向量召回、被动学习与主人审核闭环已经运行。
 - 主人治理：支持在 QQ 中管理白名单、触发词、回复频率、运行开关、记忆状态和即时备份。
 - 数据保护：启动、配置变更、记忆审核及定时间隔均生成一致性备份；凭据、聊天数据和 QQ 登录态不进入 Git。
-- 当前质量门：107 项测试通过，Ruff 检查与格式检查通过。
+- 当前质量门：120 项测试通过，Ruff 检查与格式检查通过。
 - 基准项目：[`sweetcornna/corlinman`](https://github.com/sweetcornna/corlinman)，研究快照 `v1.36.1` / `2d51c5a`。
 
 ## 四条不可破坏的原则
@@ -34,6 +34,8 @@ Higgs 是一个面向个人长期使用的自托管 QQ 智能体：提供可审�
 11. [Phase 4 QQ 直接对话最短闭环](docs/11-phase4-qq-direct-dialogue.md)
 12. [ADR：构建策略](docs/adr/0001-build-strategy.md)
 13. [ADR：记忆治理](docs/adr/0002-memory-governance.md)
+
+云端迁移、容器隔离、systemd 自恢复与加密备份见 [云端部署手册](deploy/CLOUD_DEPLOYMENT.md)。
 
 ## 当前代码
 
@@ -67,6 +69,7 @@ Higgs 是一个面向个人长期使用的自托管 QQ 智能体：提供可审�
 R_Higgs/
 ├── apps/r-agent/               # 当前 Python 应用与测试
 ├── docs/                       # 调研、架构、阶段文档和 ADR
+├── deploy/                     # 新服务器 Docker、Caddy、systemd 与备份脚手架
 ├── research/
 │   ├── UPSTREAM_PIN.md
 │   └── corlinman-upstream/     # 被 Git 忽略的研究副本

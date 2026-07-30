@@ -81,3 +81,9 @@ async def test_hot_controls_persist_without_overwriting_secrets(tmp_path: Path) 
     assert "R_AGENT_MODEL_API_KEY=must-stay-secret" in saved
     assert "R_AGENT_REPLY_NATURAL_TRIGGER_TERMS=higgs,希格斯" in saved
     assert "R_AGENT_RUNTIME_ENABLED=false" in saved
+    trashed_versions = list((tmp_path / ".trash").iterdir())
+    assert trashed_versions
+    assert any(
+        "R_AGENT_MODEL_API_KEY=must-stay-secret" in item.read_text(encoding="utf-8")
+        for item in trashed_versions
+    )
