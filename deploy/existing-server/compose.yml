@@ -1,0 +1,103 @@
+name: higgs-existing
+
+x-bounded-logs: &bounded-logs
+  driver: json-file
+  options:
+    max-size: "8m"
+    max-file: "3"
+
+services:
+  napcat:
+    image: ${NAPCAT_IMAGE:?Set NAPCAT_IMAGE to the full v4.18.13 digest}
+    restart: unless-stopped
+    environment:
+      NAPCAT_UID: ${NAPCAT_UID:-1000}
+      NAPCAT_GID: ${NAPCAT_GID:-1000}
+    ports:
+      # The WebUI is reachable only through an SSH tunnel. OneBot is not
+      # published on the host at all.
+      - "127.0.0.1:${NAPCAT_WEBUI_PORT:-16099}:6099"
+    volumes:
+      - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/napcat/qq:/app/.config/QQ
+      - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/napcat/config:/app/napcat/config
+      - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/napcat/plugins:/app/napcat/plugins
+    networks:
+      - onebot
+      - egress
+    mem_limit: 960m
+    mem_reservation: 640m
+    cpus: 0.80
+    pids_limit: 384
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q ':0BB9 ' /proc/net/tcp /proc/net/tcp6"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 180s
+    logging: *bounded-logs
+
+  agent:
+    image: ${HIGGS_IMAGE:?Set HIGGS_IMAGE to an immutable local release tag}
+    build:
+      context: ../../apps/r-agent
+      dockerfile: Dockerfile.opencloudos
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12.11-slim-bookworm}
+        UV_VERSION: ${UV_VERSION:-0.11.19}
+    restart: unless-stopped
+    depends_on:
+      napcat:
+        condition: service_healthy
+    env_file:
+      - ${HIGGS_CONFIG_DIR:-/srv/secrets/higgs}/higgs.env
+    environment:
+      R_AGENT_ENV_FILE: /run/higgs-config/higgs.env
+      R_AGENT_ONEBOT_TRUSTED_HOST: napcat
+      R_AGENT_ONEBOT_WS_URL: ws://napcat:3001
+      R_AGENT_DATA_DIR: /var/lib/higgs
+      R_AGENT_BACKUP_DIR: /var/lib/higgs/backups
+      R_AGENT_HEALTH_FILE: /var/lib/higgs/health.json
+      R_AGENT_PERSONA_FILE: /run/higgs/persona.md
+    volumes:
+      # The config directory stays writable because authenticated owner
+      # commands intentionally persist whitelist/rate/memory-review changes.
+      - ${HIGGS_CONFIG_DIR:-/srv/secrets/higgs}:/run/higgs-config
+      - ${HIGGS_PERSONA_FILE:-/srv/secrets/higgs/persona.md}:/run/higgs/persona.md:ro
+      - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/agent:/var/lib/higgs
+    networks:
+      - onebot
+      - egress
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=48m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 384m
+    mem_reservation: 256m
+    cpus: 0.50
+    pids_limit: 96
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-m",
+          "r_agent.health_probe",
+          "--path",
+          "/var/lib/higgs/health.json",
+          "--max-age",
+          "90",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    logging: *bounded-logs
+
+networks:
+  onebot:
+    internal: true
+  egress:
