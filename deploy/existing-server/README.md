@@ -13,9 +13,19 @@ configuration.
 - Real API keys, QQ identifiers, tokens, persona files, login state, and
   databases live under `/srv/secrets/higgs` or `/srv/data/higgs`; they are not
   included in the release archive or Git.
-- The first NapCat start generates its OneBot server configuration from the
-  private `stack.env`: WebSocket enabled on `0.0.0.0:3001` inside Docker,
-  self-message reporting disabled, and a 32+ character random access token.
+- The OneBot server uses a 64-character random token, reports no self messages,
+  and has no HTTP server, HTTP client, or reverse WebSocket client.
+
+NapCat v4.18.13 may create an empty current-schema `onebot11_<QQ>.json` even
+when legacy Docker environment variables are present. Configure the current
+schema before the first login:
+
+```bash
+python3 ./configure_napcat_onebot.py
+```
+
+The script reads the account and token from the private `stack.env`, never
+prints either secret, and moves any previous configuration into `/srv/trash`.
 
 To open the WebUI from Windows:
 
@@ -23,7 +33,9 @@ To open the WebUI from Windows:
 ssh -i 'C:\path\to\deployment-key.pem' -L 16099:127.0.0.1:16099 root@SERVER_IP
 ```
 
-Then visit `http://127.0.0.1:16099/` while the SSH session remains open.
+Then visit `http://127.0.0.1:16099/webui` while the SSH session remains open.
+The WebUI token must be pasted into the login page; this NapCat version does
+not automatically accept it from a `?token=` query parameter.
 
 ## Resource envelope
 
