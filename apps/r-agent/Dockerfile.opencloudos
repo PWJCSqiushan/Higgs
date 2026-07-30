@@ -3,15 +3,19 @@ ARG PYTHON_IMAGE=python:3.12.11-slim-bookworm
 FROM ${PYTHON_IMAGE}
 
 ARG UV_VERSION=0.11.19
+ARG PYPI_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
+    UV_DEFAULT_INDEX=${PYPI_INDEX_URL} \
     PATH=/app/.venv/bin:$PATH
 
-# The existing Tencent Cloud host cannot reliably reach GHCR, so install the
-# pinned uv release from PyPI instead of copying it from ghcr.io.
-RUN python -m pip install --no-cache-dir "uv==${UV_VERSION}"
+# This host cannot reliably reach GHCR and has unstable transfers from the
+# default PyPI file host. Use Tencent Cloud's HTTPS PyPI mirror instead.
+RUN python -m pip install --no-cache-dir \
+    --index-url "${PYPI_INDEX_URL}" \
+    "uv==${UV_VERSION}"
 
 WORKDIR /app
 
