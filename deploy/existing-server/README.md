@@ -13,6 +13,9 @@ configuration.
 - Real API keys, QQ identifiers, tokens, persona files, login state, and
   databases live under `/srv/secrets/higgs` or `/srv/data/higgs`; they are not
   included in the release archive or Git.
+- The first NapCat start generates its OneBot server configuration from the
+  private `stack.env`: WebSocket enabled on `0.0.0.0:3001` inside Docker,
+  self-message reporting disabled, and a 32+ character random access token.
 
 To open the WebUI from Windows:
 

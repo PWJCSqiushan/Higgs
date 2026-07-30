@@ -11,6 +11,16 @@ services:
     image: ${NAPCAT_IMAGE:?Set NAPCAT_IMAGE to the full v4.18.13 digest}
     restart: unless-stopped
     environment:
+      ACCOUNT: ${NAPCAT_ACCOUNT:?Set the dedicated bot QQ in the private stack.env}
+      WEBUI_TOKEN: ${NAPCAT_WEBUI_TOKEN:?Set a strong random WebUI token}
+      WS_ENABLE: "true"
+      WS_HOST: "0.0.0.0"
+      WS_PORT: "3001"
+      TOKEN: ${NAPCAT_ONEBOT_TOKEN:?Set a strong random OneBot token}
+      RSM_ENABLE: "false"
+      MESSAGE_POST_FORMAT: array
+      DEBUG_ENABLE: "false"
+      LOG_ENABLE: "false"
       NAPCAT_UID: ${NAPCAT_UID:-1000}
       NAPCAT_GID: ${NAPCAT_GID:-1000}
     ports:
