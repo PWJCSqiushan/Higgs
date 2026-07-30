@@ -294,7 +294,13 @@ class LiveOperatorControl:
             self._debounce_seconds = seconds
             if self._debouncer is not None:
                 self._debouncer.quiet_seconds = seconds
-            self._persist({"R_AGENT_GROUP_DEBOUNCE_SECONDS": str(seconds)})
+                self._debouncer.private_quiet_seconds = seconds
+            self._persist(
+                {
+                    "R_AGENT_GROUP_DEBOUNCE_SECONDS": str(seconds),
+                    "R_AGENT_PRIVATE_DEBOUNCE_SECONDS": str(seconds),
+                }
+            )
             return self.snapshot()
 
     @staticmethod

@@ -77,6 +77,7 @@ class Phase2Settings:
     max_per_minute: int
     global_max_per_minute: int
     group_debounce_seconds: float
+    private_debounce_seconds: float
     safety_enabled: bool
     safety_terms_file: Path | None
     passive_learning_enabled: bool
@@ -183,6 +184,9 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         memory_items=bounded_int("R_AGENT_MEMORY_CONTEXT_ITEMS", "8", 0, 20),
         global_max_per_minute=bounded_int("R_AGENT_REPLY_GLOBAL_MAX_PER_MINUTE", "20", 1, 60),
         group_debounce_seconds=bounded_float("R_AGENT_GROUP_DEBOUNCE_SECONDS", "2.5", 0.5, 10.0),
+        private_debounce_seconds=bounded_float(
+            "R_AGENT_PRIVATE_DEBOUNCE_SECONDS", "4.0", 0.5, 10.0
+        ),
         safety_enabled=_boolean("R_AGENT_SAFETY_ENABLED", True),
         safety_terms_file=safety_terms_file,
         passive_learning_enabled=_boolean("R_AGENT_PASSIVE_LEARNING_ENABLED", True),
@@ -502,6 +506,7 @@ async def listen() -> None:
 
     debouncer = GroupMessageDebouncer(
         quiet_seconds=phase.group_debounce_seconds,
+        private_quiet_seconds=phase.private_debounce_seconds,
         handler=handle_event,
     )
     operator_control.attach_debouncer(debouncer)

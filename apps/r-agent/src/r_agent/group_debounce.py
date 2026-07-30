@@ -1,4 +1,4 @@
-"""Quiet-window batching for consecutive QQ group messages from one sender."""
+"""Quiet-window batching for consecutive QQ messages from one sender."""
 
 from __future__ import annotations
 
@@ -14,12 +14,22 @@ BatchHandler = Callable[[InboundEvent, IngestResult], Awaitable[None]]
 
 
 class GroupMessageDebouncer:
-    """Merge rapid fragments without blocking the OneBot receive loop."""
+    """Merge rapid private/group fragments without blocking the receive loop."""
 
-    def __init__(self, *, quiet_seconds: float, handler: BatchHandler) -> None:
+    def __init__(
+        self,
+        *,
+        quiet_seconds: float,
+        handler: BatchHandler,
+        private_quiet_seconds: float | None = None,
+    ) -> None:
         if not 0.5 <= quiet_seconds <= 10:
             raise ValueError("quiet_seconds must be between 0.5 and 10")
+        private_seconds = quiet_seconds if private_quiet_seconds is None else private_quiet_seconds
+        if not 0.5 <= private_seconds <= 10:
+            raise ValueError("private_quiet_seconds must be between 0.5 and 10")
         self.quiet_seconds = quiet_seconds
+        self.private_quiet_seconds = private_seconds
         self.handler = handler
         self._pending: dict[str, list[tuple[InboundEvent, IngestResult]]] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
@@ -51,7 +61,10 @@ class GroupMessageDebouncer:
         return merged, result
 
     async def submit(self, event: InboundEvent, result: IngestResult) -> None:
-        if event.conversation_kind is not ConversationKind.GROUP or not result.stored:
+        if (
+            event.conversation_kind not in {ConversationKind.GROUP, ConversationKind.PRIVATE}
+            or not result.stored
+        ):
             await self.handler(event, result)
             return
         key = self._key(event)
@@ -59,13 +72,18 @@ class GroupMessageDebouncer:
         previous = self._tasks.get(key)
         if previous is not None:
             previous.cancel()
-        task = asyncio.create_task(self._flush_after_quiet(key))
+        quiet_seconds = (
+            self.private_quiet_seconds
+            if event.conversation_kind is ConversationKind.PRIVATE
+            else self.quiet_seconds
+        )
+        task = asyncio.create_task(self._flush_after_quiet(key, quiet_seconds))
         self._tasks[key] = task
 
-    async def _flush_after_quiet(self, key: str) -> None:
+    async def _flush_after_quiet(self, key: str, quiet_seconds: float) -> None:
         current = asyncio.current_task()
         try:
-            await asyncio.sleep(self.quiet_seconds)
+            await asyncio.sleep(quiet_seconds)
         except asyncio.CancelledError:
             return
         if self._tasks.get(key) is not current:
