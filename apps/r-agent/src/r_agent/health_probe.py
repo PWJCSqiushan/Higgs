@@ -17,8 +17,17 @@ def main() -> int:
         default=Path(os.environ.get("R_AGENT_HEALTH_FILE", "./data/health.json")),
     )
     parser.add_argument("--max-age", type=float, default=90.0)
+    parser.add_argument(
+        "--require-qq-online",
+        action="store_true",
+        help="fail when OneBot transport is connected but QQ is offline",
+    )
     args = parser.parse_args()
-    healthy, reason = check_health(args.path, max_age_seconds=args.max_age)
+    healthy, reason = check_health(
+        args.path,
+        max_age_seconds=args.max_age,
+        require_qq_online=args.require_qq_online,
+    )
     print(reason)
     return 0 if healthy else 1
 

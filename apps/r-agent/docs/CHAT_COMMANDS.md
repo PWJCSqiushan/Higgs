@@ -122,6 +122,48 @@ Higgs æ¯é¡µè¿”å› 8 æ¡è®°å¿†ï¼Œæ¯è¡Œå¼€å¤´çš„ 8 ä¸ªå­—ç¬¦å°±æ˜¯çŸ­ IDï¼Œä¾‹å¦
 /higgs memory auto threshold 0.90
 /higgs memory auto evidence 2
 ```
+## ¼ÇÒä V2 ×´Ì¬ÓëÀúÊ·»ØÌî
+
+```text
+/higgs memory stats
+/higgs memory observations
+/higgs memory source status
+/higgs memory backfill preview
+/higgs memory backfill apply
+```
+
+ÏÈÖ´ĞĞ `backfill preview`£ºËüÖ»·µ»Ø×ÜÁ¿¡¢¿É»ØÌîÊıÁ¿ºÍ±»¸ßÆµÀ´Ô´ÅÅ³ıµÄÊıÁ¿£¬²»ÏÔÊ¾ÁÄÌìÕıÎÄ£¬Ò²²»Ğ´¼ÇÒä¡£È·ÈÏÍ³¼ÆºÏÀíºóÔÙÖ´ĞĞ `backfill apply`¡£ÀúÊ·ÄÚÈİÖ»½øÈëºòÑ¡¶ÓÁĞ£¬Ö÷ÈË¹ıÈ¥µÄÏûÏ¢Ò²²»»áÔÚ»ØÌîÊ±×Ô¶¯¼¤»î£»ºóÌ¨ÕûÀíÆ÷Ã¿ 15 ·ÖÖÓ×î¶à´¦Àí 50 Ìõ¡£
+
+## ÖÇÄÜÌáĞÑ£¨½öÖ÷ÈËË½ÁÄ£©
+
+×ÔÈ»ÓïÑÔÊ¾Àı£º
+
+```text
+20·ÖÖÓºóÌáĞÑÎÒ±³µ¥´Ê
+```
+
+Higgs »á·µ»Ø±±¾©Ê±¼ä¡¢×··¢¹æÔòºÍ 8 Î»ÈÎÎñ ID¡£»Ø¸´¡°È·ÈÏ¡±ºó²ÅÉúĞ§£»µ½µãºó»Ø¸´¡°ÊÕµ½¡±¡°ÖªµÀÁË¡±»ò¡°Íê³ÉÁË¡±¼´¿ÉÍ£Ö¹×··¢¡£
+
+```text
+/higgs remind list
+/higgs remind show ÈÎÎñ¶ÌID
+/higgs remind confirm ÈÎÎñ¶ÌID
+/higgs remind ack ÈÎÎñ¶ÌID
+/higgs remind cancel ÈÎÎñ¶ÌID
+/higgs remind snooze ÈÎÎñ¶ÌID 10m
+```
+
+×··¢Ê±¿ÌÎªµ½µã¡¢+5¡¢+15¡¢+30 ·ÖÖÓ£¬×î¶àËÄ´Î¡£QQ ÀëÏßÆÚ¼ä²»·¢ËÍ£»»Ö¸´ºóÖ»²¹µ±Ç°ÈÔÓĞĞ§µÄ×î½üÒ»´Î£¬²»»á°ÑÂ©µôµÄ¶à´ÎÌáĞÑ¼¯ÖĞ·¢³ö¡£
+
+## ÔÚÏß×´Ì¬Õï¶Ï
+
+ÈİÆ÷´æ»îÖ»ÒªÇó Higgs Óë NapCat µÄ OneBot ´«ÊäÁ¬½ÓÕı³££»¼ì²é QQ ÕËºÅÊÇ·ñÕæÊµÔÚÏßÊ±Ê¹ÓÃ£º
+
+```bash
+python -m r_agent.health_probe --path /var/lib/higgs/health.json --require-qq-online
+```
+
+`transport_connected=true` Ö»´ú±íÁ´Â·´æÔÚ£»`qq_online=true` »¹ÒªÇóÖ÷¶¯ `get_login_info` Ì½²â³É¹¦£¬²¢ÇÒÕËºÅÓëË½ÓĞÅäÖÃÖĞµÄ²âÊÔºÅÒ»ÖÂ¡£
 
 æ¨èé…ç½®æ˜¯å¼€å¯ã€ç½®ä¿¡åº¦è‡³å°‘ `0.90`ã€åŒä¸€äººé€šè¿‡ä¸åŒæ¶ˆæ¯å®Œå…¨ä¸€è‡´åœ°è¡¨è¾¾è‡³å°‘ `2` æ¬¡ã€‚
 

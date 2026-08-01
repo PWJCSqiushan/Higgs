@@ -119,3 +119,85 @@ async def get_onebot_message_sender(
     if not normalized.isascii() or not normalized.isdigit() or len(normalized) > 20:
         raise OutboundError("OneBot get_msg sender was malformed")
     return normalized
+
+
+async def call_onebot_action(
+    ws_url: str,
+    token: str | None,
+    *,
+    action: str,
+    params: Mapping[str, object],
+    echo: str,
+) -> Mapping[str, object]:
+    """Run one bounded action on a separate socket and validate acknowledgement."""
+    import websockets
+
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    payload = {"action": action, "params": dict(params), "echo": echo}
+    try:
+        async with websockets.connect(
+            ws_url,
+            additional_headers=headers,
+            max_size=64 * 1024,
+            max_queue=64,
+            close_timeout=5,
+        ) as socket:
+            await socket.send(json.dumps(payload, ensure_ascii=False))
+            response = await _wait_for_action_response(socket, echo=echo)
+    except OutboundError:
+        raise
+    except Exception as exc:
+        raise OutboundError(f"OneBot {action} action failed") from exc
+    if response.get("status") != "ok" or response.get("retcode") not in {0, None}:
+        raise OutboundError(f"OneBot {action} action rejected")
+    return response
+
+
+async def get_onebot_login_info(ws_url: str, token: str | None) -> tuple[str, str]:
+    """Actively confirm the QQ account that NapCat reports as online."""
+    response = await call_onebot_action(
+        ws_url,
+        token,
+        action="get_login_info",
+        params={},
+        echo="r-agent:online-probe",
+    )
+    data = response.get("data")
+    if not isinstance(data, Mapping):
+        raise OutboundError("OneBot get_login_info data was malformed")
+    user_id = data.get("user_id")
+    nickname = data.get("nickname", "")
+    normalized = str(user_id)
+    if not normalized.isascii() or not normalized.isdigit() or len(normalized) > 20:
+        raise OutboundError("OneBot get_login_info user was malformed")
+    return normalized, str(nickname)[:100]
+
+
+async def send_onebot_private_message(
+    ws_url: str,
+    token: str | None,
+    *,
+    user_id: str,
+    text: str,
+    idempotency_key: str,
+) -> str | None:
+    """Send an owner reminder and return the provider message id when available."""
+    if not user_id.isascii() or not user_id.isdigit() or len(user_id) > 20:
+        raise OutboundError("private target is invalid")
+    if not 1 <= len(text) <= 2000:
+        raise OutboundError("reply length outside safe bound")
+    safe_key = "".join(ch for ch in idempotency_key if ch.isalnum() or ch in {"-", ":"})[:80]
+    if not safe_key:
+        raise OutboundError("idempotency key is invalid")
+    response = await call_onebot_action(
+        ws_url,
+        token,
+        action="send_private_msg",
+        params={"user_id": int(user_id), "message": text},
+        echo=f"r-agent:private:{safe_key}",
+    )
+    data = response.get("data")
+    if not isinstance(data, Mapping) or data.get("message_id") is None:
+        return None
+    message_id = str(data["message_id"])
+    return message_id[:64]

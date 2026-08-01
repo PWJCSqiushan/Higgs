@@ -512,7 +512,7 @@ class MemoryStore:
                 and record.scope_id == record.source_principal_id
                 and record.kind is MemoryKind.PREFERENCE
                 and record.risk is MemoryRisk.LOW
-                and record.created_by == "passive-observer-v2"
+                and record.created_by in {"passive-observer-v2", "memory-reconciler-v2"}
                 and record.confidence >= min_confidence
                 and is_auto_review_safe_text(record.text)
             )
@@ -526,7 +526,7 @@ class MemoryStore:
                     FROM memory_items
                     WHERE scope_type = 'principal' AND scope_id = ?
                       AND source_principal_id = ? AND kind = 'preference'
-                      AND text = ? AND created_by = 'passive-observer-v2'
+                      AND text = ? AND created_by IN ('passive-observer-v2','memory-reconciler-v2')
                       AND risk = 'low' AND confidence >= ?
                       AND status IN ('candidate','active')
                     """,

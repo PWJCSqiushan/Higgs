@@ -16,20 +16,43 @@ class HealthReporter:
             raise ValueError("health interval must be between 5 and 300 seconds")
         self.path = path.expanduser().resolve()
         self.interval_seconds = interval_seconds
-        self._connected = False
+        self._transport_connected = False
+        self._qq_online = False
+        self._qq_reason = "startup"
         self._lock = threading.Lock()
 
     def set_connected(self, connected: bool) -> None:
+        """Backward-compatible alias for transport state."""
+        self.set_transport_connected(connected)
+
+    def set_transport_connected(self, connected: bool) -> None:
         with self._lock:
-            self._connected = connected
+            self._transport_connected = connected
+            if not connected:
+                self._qq_online = False
+                self._qq_reason = "transport_disconnected"
         self.write()
+
+    def set_qq_online(self, online: bool, *, reason: str = "probe") -> None:
+        with self._lock:
+            self._qq_online = online
+            self._qq_reason = reason[:120]
+        self.write()
+
+    @property
+    def qq_online(self) -> bool:
+        with self._lock:
+            return self._qq_online
 
     def write(self) -> None:
         with self._lock:
             payload = {
-                "schema": 1,
+                "schema": 2,
                 "pid": os.getpid(),
-                "connected": self._connected,
+                "connected": self._transport_connected,
+                "transport_connected": self._transport_connected,
+                "qq_online": self._qq_online,
+                "qq_reason": self._qq_reason,
                 "updated_at_unix": time.time(),
             }
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -41,7 +64,12 @@ class HealthReporter:
             await asyncio.sleep(self.interval_seconds)
 
 
-def check_health(path: Path, *, max_age_seconds: float = 90.0) -> tuple[bool, str]:
+def check_health(
+    path: Path,
+    *,
+    max_age_seconds: float = 90.0,
+    require_qq_online: bool = False,
+) -> tuple[bool, str]:
     try:
         payload = json.loads(path.expanduser().resolve().read_text(encoding="utf-8"))
         connected = payload.get("connected") is True
@@ -52,4 +80,6 @@ def check_health(path: Path, *, max_age_seconds: float = 90.0) -> tuple[bool, st
         return False, "onebot_disconnected"
     if time.time() - updated > max_age_seconds:
         return False, "heartbeat_stale"
+    if require_qq_online and payload.get("qq_online") is not True:
+        return False, "qq_offline"
     return True, "ok"
