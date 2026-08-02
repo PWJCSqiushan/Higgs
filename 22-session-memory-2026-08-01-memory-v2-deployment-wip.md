@@ -69,5 +69,6 @@
 - `get_status` OneBot action 返回正常，说明 WebSocket/action 基础通道工作正常。
 - `send_private_msg` 和 `get_stranger_info` 在当前 NapCat/QQ 状态下等待回包超时；NapCat 日志明确记录 QQ 内核 `NodeIKernelMsgService/sendMsg` 超时。不要将其误判为 Higgs 掉线，也不要自动重发未知结果消息。
 - 上一次一次性主人验收消息的发送结果仍未知，尚未再次发送。
+- 本次配置回滚目录已确认：`/srv/trash/higgs-memory-v2-20260801T134258Z`。
 - 旧的配置权限报错只存在于部署初期日志；当前 agent 已使用 `root:10001 0640` 配置权限正常运行。
 - 下一次优先让主人大号主动向测试号发送 `/higgs status`，验证入站路径；若仍无法出站，再处理 NapCat QQ 内核发送超时或账号风控，不修改记忆数据库。
