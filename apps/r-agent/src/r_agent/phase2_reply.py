@@ -117,18 +117,18 @@ class ReplyPolicy:
         else:
             if event.group_id not in self.groups:
                 return ReplyDecision.GROUP_NOT_ENABLED
+            owner_reminder = _owner_reminder_message(event, self.owner_qq)
             if event.group_id in self.natural_trigger_groups:
                 natural_triggered = (
                     event.mentioned
                     or event.replied_to_account
                     or any(term in event.text.casefold() for term in self.natural_trigger_terms)
-                    or _owner_reminder_message(event, self.owner_qq)
+                    or owner_reminder
                 )
                 if not natural_triggered:
                     return ReplyDecision.GROUP_TRIGGER_REQUIRED
-            elif self.require_mention and not event.mentioned:
-                return ReplyDecision.MENTION_REQUIRED
-        if owner_command:
+            elif self.require_mention and not event.mentioned and not owner_reminder:
+                return ReplyDecision.MENTION_REQUIRED        if owner_command:
             return ReplyDecision.DRAFTED if self.mode == "draft" else ReplyDecision.SENT
         current = time.monotonic() if now is None else now
         history = self._sent.setdefault(event.conversation_id, deque())
