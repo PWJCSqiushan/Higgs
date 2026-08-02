@@ -128,7 +128,8 @@ class ReplyPolicy:
                 if not natural_triggered:
                     return ReplyDecision.GROUP_TRIGGER_REQUIRED
             elif self.require_mention and not event.mentioned and not owner_reminder:
-                return ReplyDecision.MENTION_REQUIRED        if owner_command:
+                return ReplyDecision.MENTION_REQUIRED
+        if owner_command:
             return ReplyDecision.DRAFTED if self.mode == "draft" else ReplyDecision.SENT
         current = time.monotonic() if now is None else now
         history = self._sent.setdefault(event.conversation_id, deque())
