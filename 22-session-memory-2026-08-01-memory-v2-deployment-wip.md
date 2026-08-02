@@ -62,3 +62,12 @@
 - 不在 Git、日志或会话记忆中保存凭据、登录态、聊天正文或记忆正文。
 - 任何被替换或废弃文件先进入 `/srv/trash` 或本机专用回收目录，不直接删除。
 - 未确认发送结果时不得盲目重复发送同一条 QQ 消息。
+
+## 2026-08-02 续接诊断结果
+
+- 云端 agent 已连续运行约 17 小时，NapCat 已连续运行约 2 天；健康检查持续返回 `ok`，`transport_connected=true`、`qq_online=true`，账号探测为配置中的测试号。
+- `get_status` OneBot action 返回正常，说明 WebSocket/action 基础通道工作正常。
+- `send_private_msg` 和 `get_stranger_info` 在当前 NapCat/QQ 状态下等待回包超时；NapCat 日志明确记录 QQ 内核 `NodeIKernelMsgService/sendMsg` 超时。不要将其误判为 Higgs 掉线，也不要自动重发未知结果消息。
+- 上一次一次性主人验收消息的发送结果仍未知，尚未再次发送。
+- 旧的配置权限报错只存在于部署初期日志；当前 agent 已使用 `root:10001 0640` 配置权限正常运行。
+- 下一次优先让主人大号主动向测试号发送 `/higgs status`，验证入站路径；若仍无法出站，再处理 NapCat QQ 内核发送超时或账号风控，不修改记忆数据库。
