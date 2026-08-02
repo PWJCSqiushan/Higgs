@@ -20,6 +20,7 @@ from r_agent.conversation_guard import ConversationCircuitBreaker
 from r_agent.embedding import (
     EmbeddingConfig,
     EmbeddingError,
+    LocalHashEmbeddingClient,
     OpenAICompatibleEmbeddingClient,
 )
 from r_agent.events import InboundEvent
@@ -249,9 +250,14 @@ def _model_client(*, required: bool) -> OpenAICompatibleClient | None:
 
 def _embedding_client(
     *, enabled: bool, phase: Phase2Settings
-) -> OpenAICompatibleEmbeddingClient | None:
+) -> OpenAICompatibleEmbeddingClient | LocalHashEmbeddingClient | None:
     if not enabled:
         return None
+    backend = _value("R_AGENT_EMBEDDING_BACKEND", "local").casefold()
+    if backend == "local":
+        return LocalHashEmbeddingClient(dimensions=phase.embedding_dimensions)
+    if backend != "remote":
+        raise ConfigError("R_AGENT_EMBEDDING_BACKEND must be local or remote")
     key = _value("R_AGENT_EMBEDDING_API_KEY") or _value("R_AGENT_MODEL_API_KEY")
     base_url = _value("R_AGENT_EMBEDDING_BASE_URL") or _value("R_AGENT_MODEL_BASE_URL")
     try:

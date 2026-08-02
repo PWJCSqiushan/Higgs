@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from r_agent.conversation import ConversationStore
 from r_agent.events import ConversationKind, InboundEvent
+from r_agent.hybrid_recall import HybridMemorySearch
 from r_agent.memory import MemoryScope, MemoryStore
 from r_agent.recall import RecallLedger
 from r_agent.vector_memory import MemoryVectorStore
@@ -49,6 +50,11 @@ class ContextBuilder:
         self.history = history
         self.memory = memory
         self.vectors = vectors
+        self.hybrid = HybridMemorySearch(
+            self.memory.path,
+            memory=self.memory,
+            vectors=vectors or MemoryVectorStore(self.memory.path, memory=self.memory),
+        )
         self.recall = recall
         self.persona = clean_persona
         self.history_limit = history_limit
@@ -76,27 +82,17 @@ class ContextBuilder:
             outcome=self.history_outcome,
             limit=self.history_limit,
         )
-        memories = []
-        if self.memory_limit and query_embedding is not None:
-            vectors = self.vectors or MemoryVectorStore(self.memory.path, memory=self.memory)
-            memories = vectors.search_active(
+        memories = (
+            self.hybrid.search(
                 scope=MemoryScope.PRINCIPAL,
                 scope_id=principal_id,
+                query=event.text,
                 query_embedding=query_embedding,
                 limit=self.memory_limit,
             )
-        if self.memory_limit and len(memories) < self.memory_limit:
-            seen = {item.item_id for item in memories}
-            for item in self.memory.list_active_for_scope(
-                scope=MemoryScope.PRINCIPAL,
-                scope_id=principal_id,
-                limit=self.memory_limit,
-            ):
-                if item.item_id not in seen:
-                    memories.append(item)
-                    seen.add(item.item_id)
-                if len(memories) >= self.memory_limit:
-                    break
+            if self.memory_limit
+            else []
+        )
         turn_id = f"{event.channel}:{event.account_id}:{event.message_id}"
         self.recall.record(
             turn_id=turn_id,
