@@ -29,6 +29,18 @@ from r_agent.reminders import (
 )
 
 
+def _owner_reminder_message(event: InboundEvent, owner_qq: str | None) -> bool:
+    """Allow only the configured owner to pass a group trigger for reminders."""
+    if owner_qq is None or event.sender_id != owner_qq:
+        return False
+    clean = event.text.strip()
+    if clean in {"确认", "确认提醒", "收到", "知道了", "完成了"}:
+        return True
+    if clean.casefold().startswith("/higgs remind"):
+        return True
+    return parse_reminder_intent(clean) is not None
+
+
 class ReplyDecision(StrEnum):
     OFF = "off"
     NOT_STORED = "not_stored"
@@ -110,6 +122,7 @@ class ReplyPolicy:
                     event.mentioned
                     or event.replied_to_account
                     or any(term in event.text.casefold() for term in self.natural_trigger_terms)
+                    or _owner_reminder_message(event, self.owner_qq)
                 )
                 if not natural_triggered:
                     return ReplyDecision.GROUP_TRIGGER_REQUIRED
@@ -211,11 +224,7 @@ class PersonaBrain:
                 event.channel,
                 event.sender_id,
             )
-            if (
-                self.reminders is not None
-                and principal.role == "owner"
-                and event.conversation_kind is ConversationKind.PRIVATE
-            ):
+            if self.reminders is not None and principal.role == "owner":
                 clean = event.text.strip()
                 try:
                     if clean in {"\u786e\u8ba4", "\u786e\u8ba4\u63d0\u9192"}:
@@ -256,6 +265,11 @@ class PersonaBrain:
                         return (
                             "\u8bf7\u6838\u5bf9\u540e\u56de\u590d\u201c\u786e\u8ba4\u201d\uff1a\n"
                             + format_job(pending)
+                            + (
+                                "\n提醒到点后会私聊发送给你。"
+                                if event.conversation_kind is ConversationKind.GROUP
+                                else ""
+                            )
                         )
                 except ReminderError as exc:
                     return f"\u63d0\u9192\u6ca1\u6709\u521b\u5efa\uff1a{exc}"

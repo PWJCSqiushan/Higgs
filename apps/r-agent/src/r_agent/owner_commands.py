@@ -266,12 +266,7 @@ class OwnerCommandRouter:
         if action == "stats":
             status = self.vectors.status()
             observation = self.observations.stats() if self.observations else {}
-            counts = {
-                state.value: len(
-                    self.memory.list_items(actor=actor, status=state, limit=500, offset=0)
-                )
-                for state in MemoryStatus
-            }
+            counts = self.memory.status_counts(actor=actor)
             return (
                 f"total={status['total']} candidate={counts['candidate']} "
                 f"active={counts['active']} quarantined={counts['quarantined']} "

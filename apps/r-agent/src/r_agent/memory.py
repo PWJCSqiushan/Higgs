@@ -479,6 +479,17 @@ class MemoryStore:
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
+    def status_counts(self, *, actor: Principal) -> dict[str, int]:
+        """Return governance counts without abusing the bounded review page API."""
+        self._require_owner(actor)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS count FROM memory_items GROUP BY status"
+            ).fetchall()
+        counts = {status.value: 0 for status in MemoryStatus}
+        counts.update({str(row["status"]): int(row["count"]) for row in rows})
+        return counts
+
     def auto_review_candidate(
         self,
         item_id: str,

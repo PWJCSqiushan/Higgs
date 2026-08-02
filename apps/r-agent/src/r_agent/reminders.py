@@ -14,6 +14,20 @@ from zoneinfo import ZoneInfo
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _RETRY_OFFSETS_MS = (0, 5 * 60_000, 15 * 60_000, 30 * 60_000)
+_CN_DIGITS = {
+    "零": 0,
+    "〇": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
 
 
 class ReminderError(RuntimeError):
@@ -43,48 +57,109 @@ class DueOccurrence:
     scheduled_at_ms: int
 
 
+def _number(value: str) -> int | None:
+    """Parse the small Chinese/Arabic number vocabulary useful for reminders."""
+    if value.isdigit():
+        return int(value)
+    if not value or any(char not in _CN_DIGITS and char != "十" for char in value):
+        return None
+    if len(value) == 1:
+        return _CN_DIGITS.get(value)
+    if value == "十":
+        return 10
+    if "十" in value:
+        tens, _, ones = value.partition("十")
+        return (_CN_DIGITS.get(tens, 1) * 10) + (_CN_DIGITS.get(ones, 0) if ones else 0)
+    return None
+
+
+def _clean_reminder_content(value: str) -> str:
+    value = value.strip(" \t\r\n，,。！？!?：:；;")
+    value = re.sub(r"(?i)(?:^|[\s，,])(?:higgs|希格斯)(?:$|[\s，,])", " ", value)
+    return " ".join(value.split()).strip(" \t\r\n，,。！？!?：:；;")
+
+
 def parse_reminder_intent(text: str, *, now: datetime | None = None) -> tuple[int, str] | None:
-    """Parse a deliberately narrow set of Chinese owner reminder expressions."""
-    clean = " ".join(text.strip().split())
-    if "提醒我" not in clean:
+    """Parse natural owner reminder requests without requiring one rigid sentence."""
+    clean = " ".join(text.strip().split()).replace("：", ":")
+    clean = re.sub(r"(?i)(?:^|[\s，,])(?:higgs|希格斯)(?=$|[\s，,])", " ", clean)
+    clean = " ".join(clean.split()).strip(" ，,。！？!?")
+    clean = re.sub(r"^(?:再)?过(?=[0-9零〇一二两三四五六七八九十])", "", clean)
+    if not clean:
         return None
     current = now.astimezone(SHANGHAI) if now is not None else datetime.now(SHANGHAI)
-    relative = re.fullmatch(r"(?P<n>\d{1,4})\s*(?P<unit>分钟|小时)后提醒我(?P<content>.+)", clean)
-    if relative:
-        amount = int(relative.group("n"))
-        if amount <= 0:
-            return None
-        delta = timedelta(minutes=amount if relative.group("unit") == "分钟" else 60 * amount)
-        due = current + delta
-        return int(due.timestamp() * 1000), relative.group("content").strip(" 。！!")
-    tomorrow = re.fullmatch(
-        r"明天(?P<h>\d{1,2})(?:点|:)(?P<m>\d{1,2})?分?提醒我(?P<content>.+)", clean
-    )
-    if tomorrow:
-        hour = int(tomorrow.group("h"))
-        minute = int(tomorrow.group("m") or 0)
-        if hour > 23 or minute > 59:
-            return None
-        due = (current + timedelta(days=1)).replace(
-            hour=hour, minute=minute, second=0, microsecond=0
+    generic_suffix = "\u7ed9\u6211\u53d1\u4e00\u6761\u6d88\u606f"
+    if clean.endswith(generic_suffix):
+        generic_head = clean[: -len(generic_suffix)]
+        generic_match = re.fullmatch(
+            r"\d{1,4}(?:\u5206\u949f|\u5c0f\u65f6|\u5206|\u65f6)", generic_head
         )
-        return int(due.timestamp() * 1000), tomorrow.group("content").strip(" 。！!")
-    absolute = re.fullmatch(
-        r"(?P<date>\d{4}-\d{1,2}-\d{1,2})\s+(?P<h>\d{1,2}):(?P<m>\d{2})"
-        r"\s*提醒我(?P<content>.+)",
+        if generic_match:
+            amount = int(re.match(r"\d+", generic_head).group())
+            minutes = generic_head.endswith(("\u5206", "\u5206\u949f"))
+            delta = timedelta(minutes=amount if minutes else amount * 60)
+            due = current + delta
+            return int(due.timestamp() * 1000), "\u63d0\u9192\u4e8b\u9879"
+    relative_patterns = (
+        r"^(?:请)?(?:(?:再)?过)?(?P<n>[0-9零〇一二两三四五六七八九十]+)\s*"
+        r"(?P<unit>分钟?|分|小时?|时)(?:之后|以后|后)"
+        r"(?:给我(?:发(?:一条)?消息)?|提醒我|提示我|叫我|通知我)?(?P<content>.*)$",
+        r"^(?:请)?(?:在)?(?P<n>[0-9零〇一二两三四五六七八九十]+)\s*"
+        r"(?P<unit>分钟?|分|小时?|时)(?:之后|以后|后)"
+        r"(?:给我(?:发(?:一条)?消息)?|提醒我|提示我|叫我|通知我)?(?P<content>.*)$",
+    )
+    for pattern in relative_patterns:
+        relative = re.match(pattern, clean)
+        if relative:
+            amount = _number(relative.group("n"))
+            content = _clean_reminder_content(relative.group("content"))
+            if not content and ("给我发" in clean or "发一条消息" in clean):
+                content = "提醒事项"
+            if amount is None or amount <= 0 or not content:
+                return None
+            unit = relative.group("unit")
+            delta = timedelta(minutes=amount if unit in {"分", "分钟"} else 60 * amount)
+            due = current + delta
+            return int(due.timestamp() * 1000), content
+
+    absolute = re.search(
+        r"(?P<day>今天|明天|今晚)?\s*(?P<h>\d{1,2})(?::|点)(?P<m>\d{1,2})?分?"
+        r"\s*(?:的时候)?(?:提醒我|提示我|叫我|通知我|给我发(?:一条)?消息)"
+        r"(?P<content>.+)$",
         clean,
     )
     if absolute:
+        hour = int(absolute.group("h"))
+        minute = int(absolute.group("m") or 0)
+        if hour > 23 or minute > 59:
+            return None
+        day = absolute.group("day")
+        base = current + timedelta(days=1) if day == "明天" else current
+        due = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if day == "今晚" and due <= current:
+            due += timedelta(days=1)
+        if due <= current:
+            return None
+        content = _clean_reminder_content(absolute.group("content"))
+        return (int(due.timestamp() * 1000), content) if content else None
+
+    dated = re.search(
+        r"(?P<date>\d{4}-\d{1,2}-\d{1,2})\s+(?P<h>\d{1,2}):(?P<m>\d{2})"
+        r"\s*(?:提醒我|提示我|叫我|通知我|给我发(?:一条)?消息)(?P<content>.+)$",
+        clean,
+    )
+    if dated:
         try:
             due = datetime.strptime(
-                f"{absolute.group('date')} {absolute.group('h')}:{absolute.group('m')}",
+                f"{dated.group('date')} {dated.group('h')}:{dated.group('m')}",
                 "%Y-%m-%d %H:%M",
             ).replace(tzinfo=SHANGHAI)
         except ValueError:
             return None
-        if due <= current:
+        content = _clean_reminder_content(dated.group("content"))
+        if due <= current or not content:
             return None
-        return int(due.timestamp() * 1000), absolute.group("content").strip(" 。！!")
+        return int(due.timestamp() * 1000), content
     return None
 
 
