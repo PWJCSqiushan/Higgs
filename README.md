@@ -12,6 +12,7 @@ Higgs 是一个面向个人长期使用的自托管 QQ 智能体：提供可审�
 - 当前质量门：120 项测试通过，Ruff 检查与格式检查通过。
 - 基准项目：[`sweetcornna/corlinman`](https://github.com/sweetcornna/corlinman)，研究快照 `v1.36.1` / `2d51c5a`。
 
+
 ## 四条不可破坏的原则
 
 1. **权限不是记忆。** 主人 QQ 来自部署配置与权限数据库，聊天内容和模型都不能修改它。
@@ -21,7 +22,7 @@ Higgs 是一个面向个人长期使用的自托管 QQ 智能体：提供可审�
 
 ## 推荐阅读顺序
 
-1. [corlinman 深度调研](docs/01-corlinman-research.md)
+1. [深度调研](docs/01-corlinman-research.md)
 2. [目标架构与安全模型](docs/02-target-architecture.md)
 3. [分阶段路线图](docs/03-roadmap.md)
 4. [第二轮安全差距审计](docs/04-corlinman-round2-security-gap-audit.md)
@@ -54,7 +55,7 @@ Higgs 是一个面向个人长期使用的自托管 QQ 智能体：提供可审�
 
 机器人账号由 NapCat 扫码登录；`R_AGENT_OWNER_QQ` 必须是人类主人的 QQ，而不是机器人账号。真实 `.env`、数据库、日志和 NapCat 登录态均被 Git 忽略。
 
-## 现阶段明确不做
+## 现阶有待完善
 
 - 不使用真实主 QQ 号做高频自动化。
 - 不把所有聊天直接写进向量库或活跃记忆。
