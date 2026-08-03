@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily encrypted Higgs backup
+
+[Timer]
+OnCalendar=*-*-* 03:20:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=900
+Unit=higgs-backup.service
+
+[Install]
+WantedBy=timers.target

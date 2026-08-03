@@ -1,0 +1,19 @@
+[Unit]
+Description=Higgs agent and NapCat on the existing Lighthouse host
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/srv/apps/higgs/current/deploy/existing-server
+EnvironmentFile=/srv/secrets/higgs/stack.env
+ExecStart=/usr/bin/docker compose --env-file /srv/secrets/higgs/stack.env up -d --no-build
+ExecReload=/usr/bin/docker compose --env-file /srv/secrets/higgs/stack.env up -d --no-build
+ExecStop=/usr/bin/docker compose --env-file /srv/secrets/higgs/stack.env stop
+TimeoutStartSec=300
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

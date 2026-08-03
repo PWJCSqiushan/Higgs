@@ -16,30 +16,38 @@ from r_agent.backup import BackupError, BackupManager
 from r_agent.config import ConfigError, Settings, parse_qq_set
 from r_agent.context import ContextBuilder
 from r_agent.conversation import ConversationStore
+from r_agent.conversation_guard import ConversationCircuitBreaker
 from r_agent.embedding import (
     EmbeddingConfig,
     EmbeddingError,
+    LocalHashEmbeddingClient,
     OpenAICompatibleEmbeddingClient,
 )
 from r_agent.events import InboundEvent
 from r_agent.group_debounce import GroupMessageDebouncer
+from r_agent.health import HealthReporter
 from r_agent.identity import IdentityStore
 from r_agent.ingest import IngestResult, IngestService
 from r_agent.journal import Journal
 from r_agent.memory import MemoryError, MemoryStore
+from r_agent.memory_v2 import MemoryObservationStore, MemoryReconciler
 from r_agent.model_client import ModelConfig, ModelError, OpenAICompatibleClient
 from r_agent.onebot import OneBotParseError, parse_message_event
+from r_agent.online_reliability import OnlineState, PushPlusNotifier, onebot_online_hint
 from r_agent.operator_control import LiveOperatorControl
 from r_agent.owner_commands import OwnerCommandContext, OwnerCommandRouter
 from r_agent.passive_memory import PassiveMemoryLearner
 from r_agent.phase2_outbound import (
     OutboundError,
+    get_onebot_login_info,
     get_onebot_message_sender,
+    send_onebot_private_message,
     send_onebot_reply,
 )
 from r_agent.phase2_reply import PersonaBrain, ReplyAudit, ReplyDecision, ReplyPlan, ReplyPolicy
 from r_agent.qq_text import QqTextError, to_qq_plain_text
 from r_agent.recall import RecallLedger
+from r_agent.reminders import ReminderStore
 from r_agent.safety import OutboundSafetyPolicy, SafetyError
 from r_agent.vector_memory import MemoryVectorStore
 
@@ -59,6 +67,11 @@ def _boolean(name: str, default: bool) -> bool:
     raise ConfigError(f"{name} must be a boolean")
 
 
+def _env_path() -> Path:
+    """Return the writable operator configuration path for this runtime."""
+    return Path(os.environ.get("R_AGENT_ENV_FILE", ".env")).expanduser().resolve()
+
+
 @dataclass(frozen=True, slots=True)
 class Phase2Settings:
     mode: str
@@ -71,6 +84,7 @@ class Phase2Settings:
     max_per_minute: int
     global_max_per_minute: int
     group_debounce_seconds: float
+    private_debounce_seconds: float
     safety_enabled: bool
     safety_terms_file: Path | None
     passive_learning_enabled: bool
@@ -177,16 +191,17 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         memory_items=bounded_int("R_AGENT_MEMORY_CONTEXT_ITEMS", "8", 0, 20),
         global_max_per_minute=bounded_int("R_AGENT_REPLY_GLOBAL_MAX_PER_MINUTE", "20", 1, 60),
         group_debounce_seconds=bounded_float("R_AGENT_GROUP_DEBOUNCE_SECONDS", "2.5", 0.5, 10.0),
+        private_debounce_seconds=bounded_float(
+            "R_AGENT_PRIVATE_DEBOUNCE_SECONDS", "4.0", 0.5, 10.0
+        ),
         safety_enabled=_boolean("R_AGENT_SAFETY_ENABLED", True),
         safety_terms_file=safety_terms_file,
-        passive_learning_enabled=_boolean("R_AGENT_PASSIVE_LEARNING_ENABLED", True),
-        memory_auto_review_enabled=_boolean("R_AGENT_MEMORY_AUTO_REVIEW_ENABLED", False),
+        passive_learning_enabled=_boolean("R_AGENT_PASSIVE_LEARNING_ENABLED", False),
+        memory_auto_review_enabled=_boolean("R_AGENT_MEMORY_AUTO_REVIEW_ENABLED", True),
         memory_auto_review_confidence=bounded_float(
             "R_AGENT_MEMORY_AUTO_REVIEW_CONFIDENCE", "0.90", 0.8, 0.99
         ),
-        memory_auto_review_evidence=bounded_int(
-            "R_AGENT_MEMORY_AUTO_REVIEW_EVIDENCE", "2", 2, 5
-        ),
+        memory_auto_review_evidence=bounded_int("R_AGENT_MEMORY_AUTO_REVIEW_EVIDENCE", "2", 2, 5),
         embedding_enabled=_boolean("R_AGENT_EMBEDDING_ENABLED", True),
         embedding_model=embedding_model,
         embedding_dimensions=embedding_dimensions,
@@ -235,9 +250,14 @@ def _model_client(*, required: bool) -> OpenAICompatibleClient | None:
 
 def _embedding_client(
     *, enabled: bool, phase: Phase2Settings
-) -> OpenAICompatibleEmbeddingClient | None:
+) -> OpenAICompatibleEmbeddingClient | LocalHashEmbeddingClient | None:
     if not enabled:
         return None
+    backend = _value("R_AGENT_EMBEDDING_BACKEND", "local").casefold()
+    if backend == "local":
+        return LocalHashEmbeddingClient(dimensions=phase.embedding_dimensions)
+    if backend != "remote":
+        raise ConfigError("R_AGENT_EMBEDDING_BACKEND must be local or remote")
     key = _value("R_AGENT_EMBEDDING_API_KEY") or _value("R_AGENT_MODEL_API_KEY")
     base_url = _value("R_AGENT_EMBEDDING_BASE_URL") or _value("R_AGENT_MODEL_BASE_URL")
     try:
@@ -270,11 +290,24 @@ async def process_reply(
     brain: PersonaBrain,
     sender: Callable[[InboundEvent, str], Awaitable[None]],
     safety: OutboundSafetyPolicy | None = None,
+    breaker: ConversationCircuitBreaker | None = None,
+    owner_qq: str | None = None,
+    qq_online: bool = True,
 ) -> ReplyPlan:
     """Create one auditable outcome without letting provider errors stop the listener."""
     decision = policy.gate(event, result)
     if decision not in {ReplyDecision.DRAFTED, ReplyDecision.SENT}:
         return ReplyPlan(decision)
+    if not qq_online:
+        return ReplyPlan(ReplyDecision.QQ_OFFLINE)
+    if breaker is not None:
+        guard = await asyncio.to_thread(
+            breaker.check_and_reserve,
+            event.conversation_id,
+            is_owner=event.sender_id == owner_qq,
+        )
+        if not guard.allowed:
+            return ReplyPlan(ReplyDecision.CIRCUIT_BREAKER)
     try:
         text = to_qq_plain_text(await brain.draft(event))
     except (ModelError, QqTextError):
@@ -295,7 +328,8 @@ async def process_reply(
 async def listen() -> None:
     import websockets
 
-    settings = Settings.from_env(env_file=Path(".env"), require_shadow=False)
+    env_path = _env_path()
+    settings = Settings.from_env(env_file=env_path, require_shadow=False)
     phase = _phase2_settings(settings)
     embeddings = _embedding_client(enabled=phase.embedding_enabled, phase=phase)
     safety = _safety_policy(phase)
@@ -325,6 +359,12 @@ async def listen() -> None:
     recall.initialize()
     audit = ReplyAudit(settings.data_dir / "reply_audit.sqlite")
     audit.initialize()
+    observations = MemoryObservationStore(settings.data_dir / "memory.sqlite")
+    observations.initialize()
+    reminders = ReminderStore(settings.data_dir / "reminders.sqlite")
+    reminders.initialize()
+    breaker = ConversationCircuitBreaker(settings.data_dir / "conversation_guard.sqlite")
+    breaker.initialize()
     policy = ReplyPolicy(
         mode=phase.mode,
         private_users=phase.private_users.union({settings.owner_qq} if settings.owner_qq else ()),
@@ -351,7 +391,7 @@ async def listen() -> None:
     if settings.owner_qq is None:
         raise ConfigError("chat operator control requires R_AGENT_OWNER_QQ")
     operator_control = LiveOperatorControl(
-        env_path=Path(".env"),
+        env_path=env_path,
         owner_qq=settings.owner_qq,
         service=service,
         reply_policy=policy,
@@ -373,6 +413,23 @@ async def listen() -> None:
     except BackupError as exc:
         _log.warning("startup_backup_failed type=%s", type(exc).__name__)
 
+    health_path = Path(
+        os.environ.get("R_AGENT_HEALTH_FILE", str(settings.data_dir / "health.json"))
+    )
+    health = HealthReporter(health_path)
+    online = OnlineState(health, PushPlusNotifier(_value("R_AGENT_PUSHPLUS_TOKEN")))
+    health.set_transport_connected(False)
+    expected_bot_qq = _value("R_AGENT_EXPECTED_BOT_QQ")
+    reconciler = MemoryReconciler(
+        observations=observations,
+        memory=memory,
+        vectors=vectors,
+        embedding_client=embeddings,
+        auto_review_enabled=lambda: operator_control.snapshot().memory_auto_review_enabled,
+        auto_review_confidence=(lambda: operator_control.snapshot().memory_auto_review_confidence),
+        auto_review_evidence=(lambda: operator_control.snapshot().memory_auto_review_evidence),
+    )
+
     owner_commands = OwnerCommandRouter(
         context=OwnerCommandContext(
             mode=phase.mode,
@@ -387,6 +444,10 @@ async def listen() -> None:
         control=operator_control,
         memory=memory,
         backup=backup,
+        observations=observations,
+        reminders=reminders,
+        journal_path=settings.data_dir / "journal.sqlite",
+        conversation_guard=breaker,
     )
     brain = PersonaBrain(
         client,
@@ -395,6 +456,7 @@ async def listen() -> None:
         context_builder=context_builder,
         embedding_client=embeddings,
         owner_commands=owner_commands,
+        reminders=reminders,
     )
     passive_learner = (
         PassiveMemoryLearner(
@@ -431,6 +493,9 @@ async def listen() -> None:
                 brain=brain,
                 sender=sender,
                 safety=safety,
+                breaker=breaker,
+                owner_qq=settings.owner_qq,
+                qq_online=online.snapshot().qq_online,
             )
             await asyncio.to_thread(audit.record, event, plan)
             principal = None
@@ -497,11 +562,76 @@ async def listen() -> None:
 
     debouncer = GroupMessageDebouncer(
         quiet_seconds=phase.group_debounce_seconds,
+        private_quiet_seconds=phase.private_debounce_seconds,
         handler=handle_event,
     )
     operator_control.attach_debouncer(debouncer)
     backup_task = asyncio.create_task(backup.run_periodically())
     backup_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
+
+    reconcile_task = asyncio.create_task(reconciler.run_periodically(interval_seconds=900))
+    reconcile_task.add_done_callback(
+        lambda task: task.exception() if not task.cancelled() else None
+    )
+
+    async def online_probe_loop() -> None:
+        while True:
+            if online.snapshot().transport_connected:
+                try:
+                    account_id, _ = await get_onebot_login_info(
+                        settings.onebot_ws_url, settings.onebot_access_token
+                    )
+                except OutboundError:
+                    await online.set_qq_online(False, reason="get_login_info_failed")
+                else:
+                    if expected_bot_qq and account_id != expected_bot_qq:
+                        await online.set_qq_online(False, reason="wrong_qq_account")
+                    else:
+                        await online.set_qq_online(True, reason="get_login_info_ok")
+            await asyncio.sleep(30)
+
+    async def reminder_loop() -> None:
+        while True:
+            if online.snapshot().qq_online:
+                due = await asyncio.to_thread(reminders.prepare_due)
+                for occurrence in due:
+                    text = (
+                        f"\u63d0\u9192\uff1a{occurrence.content}\n"
+                        f"ID: {occurrence.job_id[:8]}\n"
+                        "\u8bf7\u56de\u590d\u201c\u6536\u5230\u201d\uff0c\u6216\u53d1\u9001 "
+                        f"/higgs remind ack {occurrence.job_id[:8]}"
+                    )
+                    try:
+                        message_id = await send_onebot_private_message(
+                            settings.onebot_ws_url,
+                            settings.onebot_access_token,
+                            user_id=occurrence.owner_qq,
+                            text=text,
+                            idempotency_key=occurrence.occurrence_key,
+                        )
+                    except OutboundError:
+                        await asyncio.to_thread(
+                            reminders.finish_occurrence,
+                            occurrence.occurrence_key,
+                            state="unknown",
+                        )
+                    else:
+                        await asyncio.to_thread(
+                            reminders.finish_occurrence,
+                            occurrence.occurrence_key,
+                            state="sent",
+                            message_id=message_id,
+                        )
+            await asyncio.sleep(5)
+
+    online_probe_task = asyncio.create_task(online_probe_loop())
+    reminder_task = asyncio.create_task(reminder_loop())
+    for background_task in (online_probe_task, reminder_task):
+        background_task.add_done_callback(
+            lambda task: task.exception() if not task.cancelled() else None
+        )
+    health_task = asyncio.create_task(health.run_periodically())
+    health_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
 
     delay = 1.0
     while True:
@@ -521,11 +651,28 @@ async def listen() -> None:
                     client is not None,
                 )
                 delay = 1.0
+                await online.set_transport(True)
+                try:
+                    account_id, _ = await get_onebot_login_info(
+                        settings.onebot_ws_url, settings.onebot_access_token
+                    )
+                except OutboundError:
+                    await online.set_qq_online(False, reason="initial_login_probe_failed")
+                else:
+                    account_ok = not expected_bot_qq or account_id == expected_bot_qq
+                    await online.set_qq_online(
+                        account_ok,
+                        reason="initial_login_probe_ok" if account_ok else "wrong_qq_account",
+                    )
                 async for frame in socket:
                     if not isinstance(frame, str):
                         continue
                     try:
                         raw = json.loads(frame)
+                        hint = onebot_online_hint(raw)
+                        if hint is not None and hint[0] is False:
+                            await online.set_qq_online(False, reason=hint[1])
+
                         if not isinstance(raw, dict) or raw.get("post_type") != "message":
                             continue
                         event = parse_message_event(raw)
@@ -545,14 +692,29 @@ async def listen() -> None:
                                 if replied_sender == event.account_id:
                                     event = replace(event, replied_to_account=True)
                         result = await asyncio.to_thread(service.ingest, event)
+                        if result.stored:
+                            principal = await asyncio.to_thread(
+                                service.identities.resolve,
+                                event.channel,
+                                event.sender_id,
+                            )
+                            await asyncio.to_thread(
+                                observations.enqueue,
+                                event,
+                                principal_id=principal.principal_id,
+                                principal_role=principal.role,
+                            )
                         await debouncer.submit(event, result)
                     except (json.JSONDecodeError, OneBotParseError) as exc:
                         _log.warning("phase2_event_rejected type=%s", type(exc).__name__)
                     except Exception as exc:
                         _log.error("phase2_event_failed type=%s", type(exc).__name__)
+                await online.set_transport(False)
         except asyncio.CancelledError:
+            await online.set_transport(False)
             raise
         except Exception as exc:
+            await online.set_transport(False)
             _log.warning(
                 "phase2_disconnected type=%s retry_seconds=%.1f",
                 type(exc).__name__,

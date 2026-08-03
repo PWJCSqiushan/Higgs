@@ -25,6 +25,9 @@ def test_consistent_backup_excludes_secrets_and_prunes(tmp_path: Path) -> None:
 
     status = manager.status()
     assert status["count"] == 3
+    trashed = list((manager.backup_dir / ".trash").iterdir())
+    assert len(trashed) == 1
+    assert trashed[0].name.endswith("backup-" + trashed[0].name.split("backup-", 1)[1])
     latest = manager.backup_dir / str(status["latest"])
     manifest = json.loads((latest / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["secrets_included"] is False

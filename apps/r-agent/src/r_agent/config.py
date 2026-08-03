@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -87,14 +88,32 @@ class Settings:
             raise ConfigError("Phase 1 only supports read-only shadow mode")
 
         ws_url = os.environ.get("R_AGENT_ONEBOT_WS_URL", "ws://127.0.0.1:3001").strip()
+        token = os.environ.get("R_AGENT_ONEBOT_ACCESS_TOKEN")
+        token = token.strip() if token and token.strip() else None
+        trusted_host = os.environ.get("R_AGENT_ONEBOT_TRUSTED_HOST", "").strip().casefold()
+        if trusted_host and (
+            re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", trusted_host) is None
+            or trusted_host in {"localhost", "127", "0"}
+        ):
+            raise ConfigError("R_AGENT_ONEBOT_TRUSTED_HOST must be one exact DNS label")
         parsed_ws_url = urlsplit(ws_url)
+        loopback_hosts = {"127.0.0.1", "localhost", "::1"}
+        endpoint_host = (parsed_ws_url.hostname or "").casefold()
+        trusted_container_endpoint = bool(trusted_host and endpoint_host == trusted_host)
         if (
             parsed_ws_url.scheme not in {"ws", "wss"}
-            or parsed_ws_url.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or (endpoint_host not in loopback_hosts and not trusted_container_endpoint)
             or parsed_ws_url.username is not None
             or parsed_ws_url.password is not None
+            or parsed_ws_url.query
+            or parsed_ws_url.fragment
+            or parsed_ws_url.path not in {"", "/"}
         ):
-            raise ConfigError("OneBot WebSocket must use a loopback address")
+            raise ConfigError(
+                "OneBot WebSocket must use loopback or the explicitly trusted internal host"
+            )
+        if trusted_container_endpoint and (token is None or len(token) < 32):
+            raise ConfigError("trusted internal OneBot requires an access token of 32+ characters")
 
         retention_raw = os.environ.get("R_AGENT_JOURNAL_RETENTION_DAYS", "7").strip()
         try:
@@ -104,8 +123,6 @@ class Settings:
         if not 1 <= retention <= 30:
             raise ConfigError("journal retention must be between 1 and 30 days")
 
-        token = os.environ.get("R_AGENT_ONEBOT_ACCESS_TOKEN")
-        token = token.strip() if token and token.strip() else None
         return cls(
             shadow_mode=shadow_mode,
             ingest_enabled=_bool_env("R_AGENT_INGEST_ENABLED", True),

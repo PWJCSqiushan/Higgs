@@ -21,6 +21,24 @@ from r_agent.memory import MemoryError
 from r_agent.model_client import ModelError, OpenAICompatibleClient
 from r_agent.owner_commands import OwnerCommandRouter
 from r_agent.recall import RecallError
+from r_agent.reminders import (
+    ReminderError,
+    ReminderStore,
+    format_job,
+    parse_reminder_intent,
+)
+
+
+def _owner_reminder_message(event: InboundEvent, owner_qq: str | None) -> bool:
+    """Allow only the configured owner to pass a group trigger for reminders."""
+    if owner_qq is None or event.sender_id != owner_qq:
+        return False
+    clean = event.text.strip()
+    if clean in {"确认", "确认提醒", "收到", "知道了", "完成了"}:
+        return True
+    if clean.casefold().startswith("/higgs remind"):
+        return True
+    return parse_reminder_intent(clean) is not None
 
 
 class ReplyDecision(StrEnum):
@@ -35,6 +53,8 @@ class ReplyDecision(StrEnum):
     RATE_LIMITED = "rate_limited"
     GLOBAL_RATE_LIMITED = "global_rate_limited"
     SENSITIVE_BLOCKED = "sensitive_blocked"
+    QQ_OFFLINE = "qq_offline"
+    CIRCUIT_BREAKER = "circuit_breaker"
     DRAFTED = "drafted"
     SENT = "sent"
     MODEL_FAILED = "model_failed"
@@ -102,6 +122,7 @@ class ReplyPolicy:
                     event.mentioned
                     or event.replied_to_account
                     or any(term in event.text.casefold() for term in self.natural_trigger_terms)
+                    or _owner_reminder_message(event, self.owner_qq)
                 )
                 if not natural_triggered:
                     return ReplyDecision.GROUP_TRIGGER_REQUIRED
@@ -183,6 +204,7 @@ class PersonaBrain:
         context_builder: ContextBuilder | None = None,
         embedding_client: EmbeddingClient | None = None,
         owner_commands: OwnerCommandRouter | None = None,
+        reminders: ReminderStore | None = None,
     ):
         self.client = client
         self.persona = persona
@@ -190,6 +212,8 @@ class PersonaBrain:
         self.context_builder = context_builder
         self.embedding_client = embedding_client
         self.owner_commands = owner_commands
+
+        self.reminders = reminders
 
     async def draft(self, event: InboundEvent) -> str:
         if self.context_builder is not None:
@@ -200,6 +224,55 @@ class PersonaBrain:
                 event.channel,
                 event.sender_id,
             )
+            if self.reminders is not None and principal.role == "owner":
+                clean = event.text.strip()
+                try:
+                    if clean in {"\u786e\u8ba4", "\u786e\u8ba4\u63d0\u9192"}:
+                        pending = await asyncio.to_thread(
+                            self.reminders.latest_pending, principal.principal_id
+                        )
+                        if pending is not None:
+                            confirmed = await asyncio.to_thread(
+                                self.reminders.confirm, pending.job_id
+                            )
+                            return (
+                                "\u63d0\u9192\u5df2\u786e\u8ba4\u5e76\u751f\u6548\u3002\n"
+                                + format_job(confirmed)
+                            )
+                    if clean in {"\u6536\u5230", "\u77e5\u9053\u4e86", "\u5b8c\u6210\u4e86"}:
+                        awaiting = await asyncio.to_thread(
+                            self.reminders.latest_awaiting_ack, principal.principal_id
+                        )
+                        if awaiting is not None:
+                            completed = await asyncio.to_thread(
+                                self.reminders.acknowledge, awaiting.job_id
+                            )
+                            return (
+                                "\u6536\u5230\uff0c\u63d0\u9192 "
+                                f"{completed.job_id[:8]} "
+                                "\u5df2\u5b8c\u6210\u3002"
+                            )
+                    parsed = parse_reminder_intent(clean)
+                    if parsed is not None:
+                        due_at_ms, content = parsed
+                        pending = await asyncio.to_thread(
+                            self.reminders.create_pending,
+                            owner_principal_id=principal.principal_id,
+                            owner_qq=event.sender_id,
+                            content=content,
+                            due_at_ms=due_at_ms,
+                        )
+                        return (
+                            "\u8bf7\u6838\u5bf9\u540e\u56de\u590d\u201c\u786e\u8ba4\u201d\uff1a\n"
+                            + format_job(pending)
+                            + (
+                                "\n提醒到点后会私聊发送给你。"
+                                if event.conversation_kind is ConversationKind.GROUP
+                                else ""
+                            )
+                        )
+                except ReminderError as exc:
+                    return f"\u63d0\u9192\u6ca1\u6709\u521b\u5efa\uff1a{exc}"
             if self.owner_commands is not None:
                 command_reply = await asyncio.to_thread(
                     self.owner_commands.handle,

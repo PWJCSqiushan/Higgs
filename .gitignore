@@ -12,6 +12,7 @@ handoff/
 **/.ruff_cache/
 **/.coverage
 **/htmlcov/
+**/.trash/
 **/dist/
 **/build/
 **/*.egg-info/

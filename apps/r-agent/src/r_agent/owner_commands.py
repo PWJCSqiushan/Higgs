@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from r_agent.backup import BackupError, BackupManager
+from r_agent.conversation_guard import ConversationCircuitBreaker
 from r_agent.identity import Principal
 from r_agent.memory import MemoryError, MemoryStatus, MemoryStore
+from r_agent.memory_v2 import (
+    MemoryObservationStore,
+    backfill_candidates,
+    backfill_preview,
+)
 from r_agent.operator_control import (
     ControlSnapshot,
     LiveOperatorControl,
     OperatorControlError,
 )
+from r_agent.reminders import ReminderError, ReminderStore, format_job
 from r_agent.vector_memory import MemoryVectorStore
 
 
@@ -39,12 +47,20 @@ class OwnerCommandRouter:
         control: LiveOperatorControl | None = None,
         memory: MemoryStore | None = None,
         backup: BackupManager | None = None,
+        observations: MemoryObservationStore | None = None,
+        reminders: ReminderStore | None = None,
+        journal_path: Path | None = None,
+        conversation_guard: ConversationCircuitBreaker | None = None,
     ) -> None:
         self.context = context
         self.vectors = vectors
         self.control = control
         self.memory = memory or vectors.memory
         self.backup = backup
+        self.observations = observations
+        self.reminders = reminders
+        self.journal_path = journal_path
+        self.conversation_guard = conversation_guard
 
     def handle(self, text: str, *, actor: Principal) -> str | None:
         clean = text.strip()
@@ -78,9 +94,11 @@ class OwnerCommandRouter:
                 return self._debounce(arguments)
             if command in {"memory", "记忆"}:
                 return self._memory(arguments, actor=actor)
+            if command == "remind":
+                return self._remind(arguments)
             if command in {"backup", "备份"}:
                 return self._backup(arguments)
-        except (OperatorControlError, MemoryError) as exc:
+        except (OperatorControlError, MemoryError, ReminderError) as exc:
             return f"操作未执行：{exc}"
         return "未知主人命令。发送 /higgs help 查看可用命令。"
 
@@ -101,6 +119,9 @@ class OwnerCommandRouter:
             "/higgs memory show 记忆ID或短ID\n"
             "/higgs memory audit 记忆ID或短ID\n"
             "/higgs memory auto [on|off|threshold 数值|evidence 次数]\n"
+            "/higgs memory stats | observations | source status\n"
+            "/higgs memory backfill preview|apply\n"
+            "/higgs remind list|show|confirm|ack|cancel|snooze\n"
             "/higgs memory activate|quarantine|invalidate|restore 记忆ID或短ID [原因]\n"
             "/higgs backup [now]\n"
             "永久删除记忆仍需在本机CLI双重确认。"
@@ -242,6 +263,53 @@ class OwnerCommandRouter:
                 "发送 /higgs memory list candidate 1 查看待审核记忆。"
             )
         action = arguments[0].casefold()
+        if action == "stats":
+            status = self.vectors.status()
+            observation = self.observations.stats() if self.observations else {}
+            counts = self.memory.status_counts(actor=actor)
+            return (
+                f"total={status['total']} candidate={counts['candidate']} "
+                f"active={counts['active']} quarantined={counts['quarantined']} "
+                f"invalidated={counts['invalidated']} vectors={status['embedded']}\n"
+                f"observations_pending={observation.get('pending', 0)} "
+                f"last_reconcile_ms={observation.get('last_reconcile_ms') or 'never'}"
+            )
+        if action == "observations":
+            if self.observations is None:
+                raise OperatorControlError("memory observation queue is disabled")
+            stats = self.observations.stats()
+            return (
+                f"pending={stats['pending']} processed={stats['processed']} "
+                f"excluded={stats['excluded']} failed={stats['failed']}"
+            )
+        if action == "backfill" and arguments[1:] == ["preview"]:
+            if self.journal_path is None:
+                raise OperatorControlError("journal path is unavailable")
+            report = backfill_preview(self.journal_path)
+            return (
+                "backfill preview only; no memory was written\n"
+                f"total={report['total_messages']} eligible={report['eligible_messages']} "
+                f"excluded_high_frequency={report['excluded_high_frequency']}"
+            )
+        if action == "backfill" and arguments[1:] == ["apply"]:
+            if self.journal_path is None or self.observations is None:
+                raise OperatorControlError("journal or observation queue is unavailable")
+            report = backfill_candidates(self.journal_path, self.observations)
+            return (
+                "candidate-only backfill completed; nothing was auto-activated\n"
+                f"total={report['total_messages']} eligible={report['eligible_messages']} "
+                f"excluded_high_frequency={report['excluded_high_frequency']}\n"
+                f"enqueued={report['enqueued']} "
+                f"already_present={report['already_present']}"
+            )
+        if action == "source" and arguments[1:] == ["status"]:
+            if self.conversation_guard is None:
+                raise OperatorControlError("conversation circuit breaker is disabled")
+            report = self.conversation_guard.source_status()
+            return (
+                f"active_cooldowns={report['active_cooldowns']} "
+                f"recent_non_owner_replies={report['recent_non_owner_replies']}"
+            )
         if action == "list":
             status_filter = None
             page = 1
@@ -279,9 +347,8 @@ class OwnerCommandRouter:
                 f"{item.item_id[:8]} | {item.status.value} | {self._short(item.text)}"
                 for item in records
             ]
-            return (
-                f"记忆列表 第{page}页(每页{page_size}条，短ID可直接用于命令)：\n"
-                + "\n".join(lines)
+            return f"记忆列表 第{page}页(每页{page_size}条，短ID可直接用于命令)：\n" + "\n".join(
+                lines
             )
         if action == "show":
             if len(arguments) != 2:
@@ -314,9 +381,7 @@ class OwnerCommandRouter:
             if len(arguments) == 1:
                 snapshot = control.snapshot()
             elif len(arguments) == 2 and arguments[1].casefold() in {"on", "off"}:
-                snapshot = control.set_memory_auto_review_enabled(
-                    arguments[1].casefold() == "on"
-                )
+                snapshot = control.set_memory_auto_review_enabled(arguments[1].casefold() == "on")
             elif len(arguments) == 3 and arguments[1].casefold() == "threshold":
                 snapshot = control.set_memory_auto_review_confidence(arguments[2])
             elif len(arguments) == 3 and arguments[1].casefold() == "evidence":
@@ -352,6 +417,35 @@ class OwnerCommandRouter:
                     )
             return f"记忆 {item.item_id} 已变更为 {item.status.value}。"
         raise OperatorControlError("未知记忆操作。发送 /higgs help 查看用法。")
+
+    def _remind(self, arguments: list[str]) -> str:
+        if self.reminders is None:
+            raise OperatorControlError("reminder module is disabled")
+        if not arguments or arguments == ["list"]:
+            jobs = self.reminders.list(limit=10)
+            if not jobs:
+                return "No reminders."
+            return "Recent reminders:\n" + "\n".join(
+                f"{job.job_id[:8]} | {job.status} | {self._short(job.content, 35)}" for job in jobs
+            )
+        action = arguments[0].casefold()
+        if action == "show" and len(arguments) == 2:
+            return format_job(self.reminders.get(arguments[1]))
+        if action == "confirm" and len(arguments) == 2:
+            return format_job(self.reminders.confirm(arguments[1]))
+        if action == "ack" and len(arguments) == 2:
+            job = self.reminders.acknowledge(arguments[1])
+            return f"Reminder {job.job_id[:8]} completed."
+        if action == "cancel" and len(arguments) == 2:
+            job = self.reminders.cancel(arguments[1])
+            return f"Reminder {job.job_id[:8]} cancelled."
+        if action == "snooze" and len(arguments) == 3:
+            suffix = arguments[2].casefold()
+            if not suffix.endswith("m") or not suffix[:-1].isdigit():
+                raise OperatorControlError("snooze duration example: 10m")
+            return format_job(self.reminders.snooze(arguments[1], int(suffix[:-1])))
+        raise OperatorControlError("usage: /higgs remind list|show|confirm|ack|cancel|snooze")
+
     def _backup(self, arguments: list[str]) -> str:
         if self.backup is None:
             raise OperatorControlError("当前实例未启用自动备份。")

@@ -16,6 +16,7 @@ from r_agent.memory import (
     MemoryRisk,
     MemoryScope,
     MemoryStore,
+    is_auto_review_safe_text,
 )
 from r_agent.vector_memory import MemoryVectorStore
 
@@ -92,7 +93,7 @@ class PassiveMemoryLearner:
             return MemoryKind.EPISODE_SUMMARY, MemoryRisk.HIGH, 0.1
         if any(marker in lowered for marker in _SENSITIVE_MARKERS):
             return MemoryKind.EPISODE_SUMMARY, MemoryRisk.MEDIUM, 0.3
-        if _PREFERENCE.search(text) is not None:
+        if _PREFERENCE.search(text) is not None and is_auto_review_safe_text(text):
             # This score reflects extractor certainty, not truth. Automatic review
             # still requires a second matching self-report from the same principal.
             return MemoryKind.PREFERENCE, MemoryRisk.LOW, 0.9

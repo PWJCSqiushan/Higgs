@@ -1,0 +1,21 @@
+{
+  "version": "2.0",
+  "statement": [
+    {
+      "effect": "allow",
+      "action": [
+        "name/cos:HeadObject",
+        "name/cos:PutObject",
+        "name/cos:InitiateMultipartUpload",
+        "name/cos:ListMultipartUploads",
+        "name/cos:ListParts",
+        "name/cos:UploadPart",
+        "name/cos:CompleteMultipartUpload",
+        "name/cos:AbortMultipartUpload"
+      ],
+      "resource": [
+        "qcs::cos:ap-beijing:uid/REPLACE_APPID:REPLACE_BUCKET/REPLACE_PREFIX/*"
+      ]
+    }
+  ]
+}

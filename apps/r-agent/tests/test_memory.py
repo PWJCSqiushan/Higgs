@@ -294,3 +294,35 @@ def test_auto_review_requires_repeated_low_risk_v2_self_preference(tmp_path: Pat
     )
     assert blocked.decision == "manual_review_required"
     assert blocked.record.status is MemoryStatus.CANDIDATE
+
+
+def test_auto_review_rejects_sensitive_preference_even_with_forged_low_risk_metadata(
+    tmp_path: Path,
+) -> None:
+    memory = store(tmp_path)
+    records = []
+    for message_id in ("sensitive-1", "sensitive-2"):
+        records.append(
+            memory.propose(
+                scope=MemoryScope.PRINCIPAL,
+                scope_id="alice",
+                kind=MemoryKind.PREFERENCE,
+                text="我喜欢用手机号作为账号",
+                source_channel="qq",
+                source_account_id="900001",
+                source_message_id=message_id,
+                source_principal_id="alice",
+                created_by="passive-observer-v2",
+                risk=MemoryRisk.LOW,
+                confidence=0.99,
+                now_ms=1_767_225_600_000,
+            )
+        )
+
+    outcome = memory.auto_review_candidate(
+        records[-1].item_id,
+        min_confidence=0.9,
+        min_evidence=2,
+    )
+    assert outcome.decision == "manual_review_required"
+    assert outcome.record.status is MemoryStatus.CANDIDATE

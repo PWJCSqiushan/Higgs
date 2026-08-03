@@ -86,7 +86,16 @@ uv run python -m r_agent.embedding_probe
 
 ## 记忆机制
 
-允许入站的群聊在不触发回复时仍可被观察。只有明确的第一人称自述可能形成低置信度候选记忆；可疑权限指令会进入隔离区。候选可以生成向量，但只有主人审核为 `active` 后，才会在同一 QQ 主体的对话中参与召回。
+允许入站的群聊在不触发回复时仍可被观察。只有明确的第一人称自述可能形成候选记忆；可疑权限指令会进入隔离区。默认的保守自动审核仅允许同一人重复表达的无害偏好自动激活，隐私、身份、健康、财务、政治、权限和凭据类内容仍必须人工审核。候选可以生成向量，但只有状态为 `active` 后，才会在同一 QQ 主体的对话中参与召回。
+
+```text
+/higgs memory list candidate 1
+/higgs memory show 短ID
+/higgs memory audit 短ID
+/higgs memory auto
+```
+
+完整 QQ 审核流程见 [主人聊天命令](docs/CHAT_COMMANDS.md)。本机 CLI 仍可用于隐私硬删除等高风险操作：
 
 ```powershell
 uv run r-agent memory list --status candidate

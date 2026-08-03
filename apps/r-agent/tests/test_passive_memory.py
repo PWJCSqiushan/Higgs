@@ -98,3 +98,28 @@ async def test_passive_learning_never_auto_activates_owner_or_prompt_claims(
     assert result.candidate is not None
     assert result.candidate.status is MemoryStatus.QUARANTINED
     assert result.auto_review_decision == "manual_review_required"
+
+
+async def test_passive_learning_sensitive_preference_stays_manual(tmp_path: Path) -> None:
+    memory = MemoryStore(tmp_path / "memory.sqlite")
+    memory.initialize()
+    vectors = MemoryVectorStore(memory.path, memory=memory)
+    learner = PassiveMemoryLearner(
+        memory=memory,
+        vectors=vectors,
+        embedding_client=None,
+        auto_review_policy=lambda: (True, 0.8, 2),
+    )
+
+    first = await learner.observe(
+        event("我喜欢用手机号作为账号", "private-1"), principal_id="alice"
+    )
+    second = await learner.observe(
+        event("我喜欢用手机号作为账号", "private-2"), principal_id="alice"
+    )
+
+    assert first.candidate is not None
+    assert second.candidate is not None
+    assert first.candidate.status is MemoryStatus.CANDIDATE
+    assert second.candidate.status is MemoryStatus.CANDIDATE
+    assert second.auto_review_decision == "manual_review_required"

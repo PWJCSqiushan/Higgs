@@ -5,6 +5,7 @@ $ErrorActionPreference = 'Stop'
 $matches = @(
     Get-CimInstance Win32_Process |
         Where-Object {
+            $_.Name -in @('uv.exe', 'python.exe', 'pythonw.exe') -and
             $_.CommandLine -and
             $_.CommandLine.Contains('r_agent.phase2_cli')
         }

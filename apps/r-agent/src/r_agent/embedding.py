@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
@@ -20,6 +21,47 @@ class EmbeddingClient(Protocol):
     async def embed(self, texts: Sequence[str]) -> list[tuple[float, ...]]: ...
 
     async def embed_one(self, text: str) -> tuple[float, ...]: ...
+
+
+class LocalHashEmbeddingClient:
+    """Privacy-preserving deterministic embedding fallback."""
+
+    def __init__(self, *, dimensions: int = 256) -> None:
+        if dimensions not in {256, 512, 1024, 2048}:
+            raise EmbeddingError("local embedding dimensions are unsupported")
+        self.dimensions = dimensions
+
+    @staticmethod
+    def _features(text: str) -> list[str]:
+        clean = " ".join(text.strip().split())
+        if not clean:
+            raise EmbeddingError("embedding input must not be empty")
+        if len(clean) > 8_000:
+            raise EmbeddingError("embedding input exceeded 8000 characters")
+        if len(clean) < 3:
+            return [clean]
+        return [clean[index : index + 3] for index in range(len(clean) - 2)]
+
+    def _embed_sync(self, text: str) -> tuple[float, ...]:
+        vector = [0.0] * self.dimensions
+        for feature in self._features(text):
+            digest = hashlib.blake2b(feature.encode("utf-8"), digest_size=16).digest()
+            index = int.from_bytes(digest[:8], "little") % self.dimensions
+            sign = 1.0 if digest[8] & 1 else -1.0
+            vector[index] += sign * (1.0 + digest[9] / 255.0)
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm == 0:
+            vector[0] = 1.0
+            norm = 1.0
+        return tuple(value / norm for value in vector)
+
+    async def embed_one(self, text: str) -> tuple[float, ...]:
+        return await asyncio.to_thread(self._embed_sync, text)
+
+    async def embed(self, texts: Sequence[str]) -> list[tuple[float, ...]]:
+        if not 1 <= len(texts) <= 64:
+            raise EmbeddingError("embedding batch must contain between 1 and 64 texts")
+        return [await self.embed_one(text) for text in texts]
 
 
 @dataclass(frozen=True, slots=True)
