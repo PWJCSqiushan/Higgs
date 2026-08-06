@@ -54,7 +54,7 @@ async def test_passive_learning_ignores_non_fact_chat(tmp_path: Path) -> None:
     assert result.candidate is None
 
 
-async def test_passive_learning_auto_review_needs_two_matching_self_reports(
+async def test_legacy_passive_learning_never_auto_activates(
     tmp_path: Path,
 ) -> None:
     memory = MemoryStore(tmp_path / "memory.sqlite")
@@ -70,12 +70,12 @@ async def test_passive_learning_auto_review_needs_two_matching_self_reports(
     first = await learner.observe(event("我喜欢在清晨跑步", "m1"), principal_id="alice")
     second = await learner.observe(event("我喜欢在清晨跑步", "m2"), principal_id="alice")
 
-    assert first.auto_review_decision == "awaiting_corroboration"
+    assert first.auto_review_decision is None
     assert first.candidate is not None
     assert first.candidate.status is MemoryStatus.CANDIDATE
-    assert second.auto_review_decision == "activated"
+    assert second.auto_review_decision is None
     assert second.candidate is not None
-    assert second.candidate.status is MemoryStatus.ACTIVE
+    assert second.candidate.status is MemoryStatus.CANDIDATE
 
 
 async def test_passive_learning_never_auto_activates_owner_or_prompt_claims(
@@ -97,7 +97,7 @@ async def test_passive_learning_never_auto_activates_owner_or_prompt_claims(
     )
     assert result.candidate is not None
     assert result.candidate.status is MemoryStatus.QUARANTINED
-    assert result.auto_review_decision == "manual_review_required"
+    assert result.auto_review_decision is None
 
 
 async def test_passive_learning_sensitive_preference_stays_manual(tmp_path: Path) -> None:
@@ -122,4 +122,4 @@ async def test_passive_learning_sensitive_preference_stays_manual(tmp_path: Path
     assert second.candidate is not None
     assert first.candidate.status is MemoryStatus.CANDIDATE
     assert second.candidate.status is MemoryStatus.CANDIDATE
-    assert second.auto_review_decision == "manual_review_required"
+    assert second.auto_review_decision is None

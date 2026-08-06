@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import sqlite3
 import struct
+import time
 from pathlib import Path
 
 from r_agent.memory import (
@@ -69,6 +70,7 @@ class MemoryVectorStore:
         scope_id: str,
         query_embedding: tuple[float, ...] | list[float],
         limit: int = 10,
+        min_similarity: float = -1.0,
     ) -> list[MemoryRecord]:
         if not isinstance(scope, MemoryScope):
             raise MemoryValidationError("scope must be a MemoryScope")
@@ -76,7 +78,10 @@ class MemoryVectorStore:
         if not scope_id.strip() or len(scope_id.strip()) > 256:
             raise MemoryValidationError("scope_id is invalid")
         bounded_limit = max(1, min(limit, 50))
+        if not -1.0 <= min_similarity <= 1.0:
+            raise MemoryValidationError("min_similarity must be between -1 and 1")
         query_norm = math.sqrt(sum(value * value for value in query))
+        now_ms = int(time.time() * 1000)
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -84,8 +89,10 @@ class MemoryVectorStore:
                 FROM memory_items
                 WHERE scope_type = ? AND scope_id = ? AND status = 'active'
                   AND embedding IS NOT NULL AND embedding_dim = ?
+                  AND valid_from_ms <= ?
+                  AND (valid_to_ms IS NULL OR valid_to_ms > ?)
                 """,
-                (scope.value, scope_id.strip(), len(query)),
+                (scope.value, scope_id.strip(), len(query), now_ms, now_ms),
             ).fetchall()
         scored: list[tuple[float, float, int, str]] = []
         for row in rows:
@@ -107,7 +114,9 @@ class MemoryVectorStore:
                 )
             )
         scored.sort(key=lambda item: (-item[0], -item[1], -item[2], item[3]))
-        return [self.memory.get(item[3]) for item in scored[:bounded_limit]]
+        return [self.memory.get(item[3]) for item in scored if item[0] >= min_similarity][
+            :bounded_limit
+        ]
 
     def status(self) -> dict[str, int]:
         with self._connect() as conn:

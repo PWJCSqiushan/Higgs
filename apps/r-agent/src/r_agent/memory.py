@@ -125,6 +125,7 @@ class MemoryRecord:
     source_account_id: str
     source_message_id: str
     source_principal_id: str
+    source_principal_role: str
     created_by: str
     risk: MemoryRisk
     confidence: float
@@ -134,6 +135,11 @@ class MemoryRecord:
     reviewed_by: str | None
     invalidated_reason: str | None
     embedding_dim: int | None
+    importance: float
+    source_trust: float
+    valid_from_ms: int
+    valid_to_ms: int | None
+    supersedes_item_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +193,7 @@ class MemoryStore:
                     source_account_id TEXT NOT NULL,
                     source_message_id TEXT NOT NULL,
                     source_principal_id TEXT NOT NULL,
+                    source_principal_role TEXT NOT NULL DEFAULT 'user',
                     created_by TEXT NOT NULL,
                     risk TEXT NOT NULL CHECK(risk IN ('low','medium','high')),
                     confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
@@ -198,9 +205,40 @@ class MemoryStore:
                     reviewed_by TEXT,
                     invalidated_reason TEXT,
                     embedding BLOB,
-                    embedding_dim INTEGER
+                    embedding_dim INTEGER,
+                    importance REAL NOT NULL DEFAULT 0.5,
+                    source_trust REAL NOT NULL DEFAULT 0.5,
+                    valid_from_ms INTEGER NOT NULL DEFAULT 0,
+                    valid_to_ms INTEGER,
+                    supersedes_item_id TEXT
                 )
                 """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_schema_versions (
+                    version INTEGER PRIMARY KEY,
+                    applied_at_ms INTEGER NOT NULL
+                )
+                """
+            )
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(memory_items)")}
+            for name, definition in (
+                ("importance", "REAL NOT NULL DEFAULT 0.5"),
+                ("source_trust", "REAL NOT NULL DEFAULT 0.5"),
+                ("valid_from_ms", "INTEGER NOT NULL DEFAULT 0"),
+                ("valid_to_ms", "INTEGER"),
+                ("supersedes_item_id", "TEXT"),
+                ("source_principal_role", "TEXT NOT NULL DEFAULT 'user'"),
+            ):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE memory_items ADD COLUMN {name} {definition}")
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO memory_schema_versions(version, applied_at_ms)
+                VALUES (2, ?)
+                """,
+                (int(time.time() * 1000),),
             )
             conn.execute(
                 """
@@ -248,6 +286,7 @@ class MemoryStore:
             source_account_id=str(row["source_account_id"]),
             source_message_id=str(row["source_message_id"]),
             source_principal_id=str(row["source_principal_id"]),
+            source_principal_role=str(row["source_principal_role"]),
             created_by=str(row["created_by"]),
             risk=MemoryRisk(row["risk"]),
             confidence=float(row["confidence"]),
@@ -261,6 +300,13 @@ class MemoryStore:
                 str(row["invalidated_reason"]) if row["invalidated_reason"] is not None else None
             ),
             embedding_dim=(int(row["embedding_dim"]) if row["embedding_dim"] is not None else None),
+            importance=float(row["importance"]),
+            source_trust=float(row["source_trust"]),
+            valid_from_ms=int(row["valid_from_ms"]),
+            valid_to_ms=(int(row["valid_to_ms"]) if row["valid_to_ms"] is not None else None),
+            supersedes_item_id=(
+                str(row["supersedes_item_id"]) if row["supersedes_item_id"] is not None else None
+            ),
         )
 
     @staticmethod
@@ -296,9 +342,15 @@ class MemoryStore:
         source_account_id: str,
         source_message_id: str,
         source_principal_id: str,
-        created_by: str,
+        source_principal_role: str = "user",
+        created_by: str = "unknown",
         risk: MemoryRisk = MemoryRisk.LOW,
         confidence: float = 0.5,
+        importance: float = 0.5,
+        source_trust: float = 0.5,
+        valid_from_ms: int | None = None,
+        valid_to_ms: int | None = None,
+        supersedes_item_id: str | None = None,
         now_ms: int | None = None,
     ) -> MemoryRecord:
         if not isinstance(scope, MemoryScope):
@@ -309,6 +361,8 @@ class MemoryStore:
             raise MemoryValidationError("risk must be a MemoryRisk")
         if not 0 <= confidence <= 1:
             raise MemoryValidationError("confidence must be between 0 and 1")
+        if not 0 <= importance <= 1 or not 0 <= source_trust <= 1:
+            raise MemoryValidationError("importance and source_trust must be between 0 and 1")
 
         clean_scope_id = self._clean_required(scope_id, field="scope_id", limit=256)
         if scope is MemoryScope.GLOBAL and clean_scope_id != "*":
@@ -326,8 +380,16 @@ class MemoryStore:
         clean_source_principal = self._clean_required(
             source_principal_id, field="source_principal_id", limit=128
         )
+        if source_principal_role not in {"owner", "user", "blocked"}:
+            raise MemoryValidationError("source_principal_role is invalid")
         clean_created_by = self._clean_required(created_by, field="created_by", limit=128)
         timestamp = int(time.time() * 1000) if now_ms is None else now_ms
+        valid_from = timestamp if valid_from_ms is None else int(valid_from_ms)
+        if valid_to_ms is not None and int(valid_to_ms) <= valid_from:
+            raise MemoryValidationError("valid_to_ms must be after valid_from_ms")
+        clean_supersedes = None
+        if supersedes_item_id is not None:
+            clean_supersedes = self._resolve_item_id(supersedes_item_id)
         initial_status = (
             MemoryStatus.QUARANTINED if risk is MemoryRisk.HIGH else MemoryStatus.CANDIDATE
         )
@@ -341,6 +403,8 @@ class MemoryStore:
                 "source_account_id": clean_source_account,
                 "source_message_id": clean_source_message,
                 "source_principal_id": clean_source_principal,
+                "valid_from_ms": valid_from,
+                "supersedes_item_id": clean_supersedes,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -354,9 +418,10 @@ class MemoryStore:
                 INSERT OR IGNORE INTO memory_items(
                     item_id, fingerprint, scope_type, scope_id, kind, text,
                     source_channel, source_account_id, source_message_id,
-                    source_principal_id, created_by, risk, confidence,
-                    status, created_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    source_principal_id, source_principal_role, created_by, risk, confidence,
+                    status, created_at_ms, importance, source_trust,
+                    valid_from_ms, valid_to_ms, supersedes_item_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item_id,
@@ -369,11 +434,17 @@ class MemoryStore:
                     clean_source_account,
                     clean_source_message,
                     clean_source_principal,
+                    source_principal_role,
                     clean_created_by,
                     risk.value,
                     confidence,
                     initial_status.value,
                     timestamp,
+                    importance,
+                    source_trust,
+                    valid_from,
+                    valid_to_ms,
+                    clean_supersedes,
                 ),
             )
             if cursor.rowcount == 1:
@@ -521,6 +592,7 @@ class MemoryStore:
                 record.status is MemoryStatus.CANDIDATE
                 and record.scope is MemoryScope.PRINCIPAL
                 and record.scope_id == record.source_principal_id
+                and record.source_principal_role == "owner"
                 and record.kind is MemoryKind.PREFERENCE
                 and record.risk is MemoryRisk.LOW
                 and record.created_by in {"passive-observer-v2", "memory-reconciler-v2"}
@@ -536,7 +608,8 @@ class MemoryStore:
                     SELECT COUNT(DISTINCT source_message_id)
                     FROM memory_items
                     WHERE scope_type = 'principal' AND scope_id = ?
-                      AND source_principal_id = ? AND kind = 'preference'
+                      AND source_principal_id = ? AND source_principal_role = 'owner'
+                      AND kind = 'preference'
                       AND text = ? AND created_by IN ('passive-observer-v2','memory-reconciler-v2')
                       AND risk = 'low' AND confidence >= ?
                       AND status IN ('candidate','active')
@@ -708,6 +781,44 @@ class MemoryStore:
             )
             if cursor.rowcount != 1:
                 raise MemoryTransitionError("memory changed during review; retry from fresh state")
+            if target is MemoryStatus.ACTIVE and row["supersedes_item_id"] is not None:
+                superseded_id = str(row["supersedes_item_id"])
+                previous = conn.execute(
+                    "SELECT * FROM memory_items WHERE item_id = ?",
+                    (superseded_id,),
+                ).fetchone()
+                if previous is None:
+                    raise MemoryTransitionError("superseded memory no longer exists")
+                if (
+                    str(previous["scope_type"]) != str(row["scope_type"])
+                    or str(previous["scope_id"]) != str(row["scope_id"])
+                    or str(previous["kind"]) != str(row["kind"])
+                ):
+                    raise MemoryTransitionError("superseded memory must share scope and kind")
+                conn.execute(
+                    """
+                    UPDATE memory_items
+                    SET status='invalidated', valid_to_ms=?, reviewed_at_ms=?,
+                        reviewed_by=?, invalidated_reason=?
+                    WHERE item_id=? AND status='active'
+                    """,
+                    (
+                        timestamp,
+                        timestamp,
+                        actor.principal_id,
+                        f"superseded by {item_id}",
+                        superseded_id,
+                    ),
+                )
+                self._audit(
+                    conn,
+                    item_id=superseded_id,
+                    action="superseded",
+                    actor_principal_id=actor.principal_id,
+                    actor_role=actor.role,
+                    details=item_id,
+                    now_ms=timestamp,
+                )
             self._audit(
                 conn,
                 item_id=item_id,
@@ -801,16 +912,22 @@ class MemoryStore:
         clean_scope_id = self._clean_required(scope_id, field="scope_id", limit=256)
         clean_query = self._clean_required(query, field="query", limit=500)
         bounded_limit = max(1, min(limit, 50))
+        now_ms = int(time.time() * 1000)
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM memory_items
                 WHERE scope_type = ? AND scope_id = ? AND status = 'active'
+                  AND valid_from_ms <= ?
+                  AND (
+                    valid_to_ms IS NULL
+                    OR valid_to_ms > ?
+                  )
                   AND instr(lower(text), lower(?)) > 0
                 ORDER BY confidence DESC, created_at_ms DESC
                 LIMIT ?
                 """,
-                (scope.value, clean_scope_id, clean_query, bounded_limit),
+                (scope.value, clean_scope_id, now_ms, now_ms, clean_query, bounded_limit),
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 
@@ -827,15 +944,22 @@ class MemoryStore:
         clean_scope_id = self._clean_required(scope_id, field="scope_id", limit=256)
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
             raise MemoryValidationError("limit must be between 1 and 20")
+        now_ms = int(time.time() * 1000)
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 SELECT * FROM memory_items
                 WHERE scope_type = ? AND scope_id = ? AND status = 'active'
-                ORDER BY confidence DESC, created_at_ms DESC, item_id ASC
+                  AND valid_from_ms <= ?
+                  AND (
+                    valid_to_ms IS NULL
+                    OR valid_to_ms > ?
+                  )
+                ORDER BY importance DESC, source_trust DESC, confidence DESC,
+                         created_at_ms DESC, item_id ASC
                 LIMIT ?
                 """,
-                (scope.value, clean_scope_id, limit),
+                (scope.value, clean_scope_id, now_ms, now_ms, limit),
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
 

@@ -28,6 +28,8 @@ class BackupManager:
         "conversation.sqlite",
         "memory.sqlite",
         "reply_audit.sqlite",
+        "reminders.sqlite",
+        "conversation_guard.sqlite",
     )
 
     def __init__(
@@ -136,6 +138,68 @@ class BackupManager:
             "interval_minutes": self.interval_minutes,
             "retention": self.retention,
         }
+
+    def verify_snapshot(self, snapshot: Path) -> dict[str, object]:
+        """Verify a snapshot without restoring or exposing database contents."""
+        resolved = snapshot.expanduser().resolve()
+        try:
+            resolved.relative_to(self.backup_dir)
+        except ValueError as exc:
+            raise BackupError("snapshot is outside the configured backup directory") from exc
+        manifest_path = resolved / "manifest.json"
+        if not manifest_path.is_file():
+            raise BackupError("snapshot manifest is missing")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise BackupError("snapshot manifest is invalid") from exc
+        databases = manifest.get("databases")
+        if not isinstance(databases, list) or any(
+            name not in self.DATABASE_NAMES for name in databases
+        ):
+            raise BackupError("snapshot database list is invalid")
+        verified: list[str] = []
+        for name in databases:
+            database = resolved / name
+            if not database.is_file():
+                raise BackupError(f"snapshot database is missing: {name}")
+            try:
+                with closing(sqlite3.connect(f"file:{database}?mode=ro", uri=True)) as conn:
+                    result = conn.execute("PRAGMA quick_check").fetchone()
+            except sqlite3.Error as exc:
+                raise BackupError(f"snapshot verification failed for {name}") from exc
+            if result is None or result[0] != "ok":
+                raise BackupError(f"snapshot verification failed for {name}")
+            verified.append(name)
+        return {"verified": tuple(verified), "secrets_included": False}
+
+    def restore_to(self, snapshot: Path, destination: Path) -> dict[str, object]:
+        """Restore a verified snapshot into a new empty directory.
+
+        Runtime databases are never overwritten in place.  Operators can restore
+        into a temporary directory, run acceptance checks, and then perform a
+        separately approved cut-over.
+        """
+        verified = self.verify_snapshot(snapshot)
+        target = destination.expanduser().resolve()
+        if target == self.data_dir or target == self.backup_dir:
+            raise BackupError("restore destination must be separate from runtime data")
+        if target.exists() and any(target.iterdir()):
+            raise BackupError("restore destination must be empty")
+        target.mkdir(parents=True, exist_ok=True)
+        restored: list[str] = []
+        try:
+            for name in verified["verified"]:
+                source = snapshot.expanduser().resolve() / str(name)
+                restored_path = target / str(name)
+                self._sqlite_backup(source, restored_path)
+                restored.append(str(name))
+        except Exception as exc:
+            move_to_trash(target, trash_root=destination.parent / ".trash")
+            if isinstance(exc, BackupError):
+                raise
+            raise BackupError("snapshot restore verification failed") from exc
+        return {"restored": tuple(restored), "secrets_included": False}
 
     async def run_periodically(self) -> None:
         while True:

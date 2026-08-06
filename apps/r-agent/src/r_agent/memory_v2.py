@@ -86,6 +86,7 @@ class ReconcileSummary:
     excluded: int
     embedded: int
     activated: int
+    failed: int = 0
 
 
 class MemoryObservationStore:
@@ -118,6 +119,9 @@ class MemoryObservationStore:
                     exclude_reason TEXT,
                     memory_item_id TEXT,
                     processed_at_ms INTEGER,
+                    error_type TEXT,
+                    error_sha256 TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(channel, account_id, message_id)
                 )
                 """
@@ -128,6 +132,16 @@ class MemoryObservationStore:
                 ON memory_observations(status, occurred_at_ms)
                 """
             )
+            columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(memory_observations)")
+            }
+            for name, definition in (
+                ("error_type", "TEXT"),
+                ("error_sha256", "TEXT"),
+                ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE memory_observations ADD COLUMN {name} {definition}")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS memory_reconcile_runs (
@@ -139,10 +153,18 @@ class MemoryObservationStore:
                     quarantined INTEGER NOT NULL,
                     excluded INTEGER NOT NULL,
                     embedded INTEGER NOT NULL,
-                    activated INTEGER NOT NULL
+                    activated INTEGER NOT NULL,
+                    failed INTEGER NOT NULL DEFAULT 0
                 )
                 """
             )
+            run_columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(memory_reconcile_runs)")
+            }
+            if "failed" not in run_columns:
+                conn.execute(
+                    "ALTER TABLE memory_reconcile_runs ADD COLUMN failed INTEGER NOT NULL DEFAULT 0"
+                )
 
     @staticmethod
     def _observation_id(event: InboundEvent) -> str:
@@ -230,6 +252,79 @@ class MemoryObservationStore:
                 ),
             )
 
+    def fail(self, observation_id: str, *, error: Exception, now_ms: int | None = None) -> None:
+        """Fail one observation without retaining exception text or message content."""
+        error_type = type(error).__name__[:80]
+        error_sha256 = hashlib.sha256(str(error).encode("utf-8")).hexdigest()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE memory_observations
+                SET status='failed', error_type=?, error_sha256=?, processed_at_ms=?
+                WHERE observation_id=? AND status='pending'
+                """,
+                (
+                    error_type,
+                    error_sha256,
+                    int(time.time() * 1000) if now_ms is None else now_ms,
+                    observation_id,
+                ),
+            )
+
+    def list_failed(self, *, limit: int = 20) -> list[dict[str, object]]:
+        """Return content-free failed-observation metadata for owner operations."""
+        bounded = max(1, min(limit, 200))
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT observation_id, error_type, error_sha256, retry_count,
+                       occurred_at_ms, processed_at_ms
+                FROM memory_observations WHERE status='failed'
+                ORDER BY processed_at_ms DESC, observation_id LIMIT ?
+                """,
+                (bounded,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def retry_failed(self, observation_id: str) -> bool:
+        clean = observation_id.strip()
+        if len(clean) < 8:
+            raise ValueError("observation id must contain at least 8 characters")
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT observation_id FROM memory_observations WHERE status='failed' AND observation_id LIKE ? LIMIT 2",
+                (f"{clean}%",),
+            ).fetchall()
+            if len(rows) != 1:
+                return False
+            cursor = conn.execute(
+                """
+                UPDATE memory_observations SET status='pending', error_type=NULL,
+                    error_sha256=NULL, processed_at_ms=NULL, retry_count=retry_count+1
+                WHERE observation_id=? AND status='failed'
+                """,
+                (str(rows[0]["observation_id"]),),
+            )
+        return cursor.rowcount == 1
+
+    def source_quality(self) -> list[dict[str, object]]:
+        """Return anonymous source quality counts without message text."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT principal_id, status, COUNT(*) AS n
+                FROM memory_observations GROUP BY principal_id, status
+                """
+            ).fetchall()
+        return [
+            {
+                "source": hashlib.sha256(str(row["principal_id"]).encode()).hexdigest()[:8],
+                "status": str(row["status"]),
+                "count": int(row["n"]),
+            }
+            for row in rows
+        ]
+
     def stats(self) -> dict[str, int | None]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -249,8 +344,8 @@ class MemoryObservationStore:
                 """
                 INSERT INTO memory_reconcile_runs(
                     started_at_ms, finished_at_ms, processed, candidates,
-                    quarantined, excluded, embedded, activated
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    quarantined, excluded, embedded, activated, failed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     started_at_ms,
@@ -261,6 +356,7 @@ class MemoryObservationStore:
                     summary.excluded,
                     summary.embedded,
                     summary.activated,
+                    summary.failed,
                 ),
             )
 
@@ -316,6 +412,67 @@ class MemoryReconciler:
         self.auto_review_confidence = auto_review_confidence
         self.auto_review_evidence = auto_review_evidence
 
+    async def _process_one(self, observation: Observation, counts: dict[str, int]) -> None:
+        extracted = _extract(observation)
+        if extracted is None:
+            await asyncio.to_thread(
+                self.observations.finish,
+                observation.observation_id,
+                status="excluded",
+                reason="no_atomic_fact",
+            )
+            counts["excluded"] += 1
+            return
+        kind, text, risk, confidence = extracted
+        record = await asyncio.to_thread(
+            self.memory.propose,
+            scope=MemoryScope.PRINCIPAL,
+            scope_id=observation.principal_id,
+            kind=kind,
+            text=text,
+            source_channel=observation.channel,
+            source_account_id=observation.account_id,
+            source_message_id=observation.message_id,
+            source_principal_id=observation.principal_id,
+            source_principal_role=observation.principal_role,
+            created_by="memory-reconciler-v2",
+            risk=risk,
+            confidence=confidence,
+            source_trust=1.0 if observation.principal_role == "owner" else 0.5,
+            valid_from_ms=observation.occurred_at_ms,
+            now_ms=observation.occurred_at_ms,
+        )
+        counts["quarantined" if risk is MemoryRisk.HIGH else "candidates"] += 1
+        if self.embedding_client is not None:
+            try:
+                vector = await self.embedding_client.embed_one(record.text)
+                await asyncio.to_thread(self.vectors.set, record.item_id, vector)
+                counts["embedded"] += 1
+            except EmbeddingError:
+                pass
+        if (
+            observation.principal_role == "owner"
+            and kind is MemoryKind.PREFERENCE
+            and risk is MemoryRisk.LOW
+            and confidence >= 0.90
+            and self.auto_review_enabled()
+            and is_auto_review_safe_text(text)
+        ):
+            outcome = await asyncio.to_thread(
+                self.memory.auto_review_candidate,
+                record.item_id,
+                min_confidence=max(0.90, self.auto_review_confidence()),
+                min_evidence=max(2, self.auto_review_evidence()),
+            )
+            if outcome.decision == "activated":
+                counts["activated"] += 1
+        await asyncio.to_thread(
+            self.observations.finish,
+            observation.observation_id,
+            status="processed",
+            memory_item_id=record.item_id,
+        )
+
     async def reconcile_once(self, *, limit: int = 50) -> ReconcileSummary:
         started = int(time.time() * 1000)
         counts = {
@@ -325,64 +482,20 @@ class MemoryReconciler:
             "excluded": 0,
             "embedded": 0,
             "activated": 0,
+            "failed": 0,
         }
-        for observation in await asyncio.to_thread(self.observations.pending, limit=limit):
+        pending = await asyncio.to_thread(self.observations.pending, limit=limit)
+        for observation in pending:
             counts["processed"] += 1
-            extracted = _extract(observation)
-            if extracted is None:
+            try:
+                await self._process_one(observation, counts)
+            except Exception as exc:
+                counts["failed"] += 1
                 await asyncio.to_thread(
-                    self.observations.finish,
+                    self.observations.fail,
                     observation.observation_id,
-                    status="excluded",
-                    reason="no_atomic_fact",
+                    error=exc,
                 )
-                counts["excluded"] += 1
-                continue
-            kind, text, risk, confidence = extracted
-            record = await asyncio.to_thread(
-                self.memory.propose,
-                scope=MemoryScope.PRINCIPAL,
-                scope_id=observation.principal_id,
-                kind=kind,
-                text=text,
-                source_channel=observation.channel,
-                source_account_id=observation.account_id,
-                source_message_id=observation.message_id,
-                source_principal_id=observation.principal_id,
-                created_by="memory-reconciler-v2",
-                risk=risk,
-                confidence=confidence,
-                now_ms=observation.occurred_at_ms,
-            )
-            counts["quarantined" if risk is MemoryRisk.HIGH else "candidates"] += 1
-            if self.embedding_client is not None:
-                try:
-                    vector = await self.embedding_client.embed_one(record.text)
-                    await asyncio.to_thread(self.vectors.set, record.item_id, vector)
-                    counts["embedded"] += 1
-                except EmbeddingError:
-                    pass
-            if (
-                observation.principal_role == "owner"
-                and kind is MemoryKind.PREFERENCE
-                and risk is MemoryRisk.LOW
-                and self.auto_review_enabled()
-                and is_auto_review_safe_text(text)
-            ):
-                outcome = await asyncio.to_thread(
-                    self.memory.auto_review_candidate,
-                    record.item_id,
-                    min_confidence=self.auto_review_confidence(),
-                    min_evidence=self.auto_review_evidence(),
-                )
-                if outcome.decision == "activated":
-                    counts["activated"] += 1
-            await asyncio.to_thread(
-                self.observations.finish,
-                observation.observation_id,
-                status="processed",
-                memory_item_id=record.item_id,
-            )
         summary = ReconcileSummary(**counts)
         await asyncio.to_thread(self.observations.record_run, summary, started_at_ms=started)
         return summary
@@ -395,7 +508,7 @@ class MemoryReconciler:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                # A malformed observation must not permanently kill memory maintenance.
+                # Store-wide faults are retried later; one bad row is isolated above.
                 pass
             await asyncio.sleep(interval_seconds)
 
