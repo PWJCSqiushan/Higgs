@@ -205,3 +205,32 @@ async def send_onebot_private_message(
         return None
     message_id = str(data["message_id"])
     return message_id[:64]
+
+
+async def send_onebot_group_message(
+    ws_url: str,
+    token: str | None,
+    *,
+    group_id: str,
+    text: str,
+    idempotency_key: str,
+) -> str | None:
+    """Send a group reminder and require a matching OneBot acknowledgement."""
+    if not group_id.isascii() or not group_id.isdigit() or len(group_id) > 20:
+        raise OutboundError("group target is invalid", delivery_unknown=False)
+    if not 1 <= len(text) <= 2000:
+        raise OutboundError("reply length outside safe bound", delivery_unknown=False)
+    safe_key = "".join(ch for ch in idempotency_key if ch.isalnum() or ch in {"-", ":"})[:80]
+    if not safe_key:
+        raise OutboundError("idempotency key is invalid", delivery_unknown=False)
+    response = await call_onebot_action(
+        ws_url,
+        token,
+        action="send_group_msg",
+        params={"group_id": int(group_id), "message": text},
+        echo=f"r-agent:group:{safe_key}",
+    )
+    data = response.get("data")
+    if not isinstance(data, Mapping) or data.get("message_id") is None:
+        return None
+    return str(data["message_id"])[:64]

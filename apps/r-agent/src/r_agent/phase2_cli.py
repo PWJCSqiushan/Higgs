@@ -41,6 +41,7 @@ from r_agent.phase2_outbound import (
     OutboundError,
     get_onebot_login_info,
     get_onebot_message_sender,
+    send_onebot_group_message,
     send_onebot_private_message,
     send_onebot_reply,
 )
@@ -670,23 +671,41 @@ async def listen() -> None:
                         "\u8bf7\u56de\u590d\u201c\u6536\u5230\u201d\uff0c\u6216\u53d1\u9001 "
                         f"/higgs remind ack {occurrence.job_id[:8]}"
                     )
+                    is_group = (
+                        occurrence.origin_channel == "qq" and occurrence.origin_surface == "group"
+                    )
+                    group_id = occurrence.origin_conversation_id.rsplit(":", 1)[-1]
+                    target_conversation = (
+                        occurrence.origin_conversation_id
+                        if is_group
+                        else f"qq:private:owner:{occurrence.owner_qq}"
+                    )
                     budget = await asyncio.to_thread(
                         risk_ledger.reserve_send,
                         event_type="reminder",
                         actor_class="owner",
                         account_id=expected_bot_qq or "unknown",
-                        conversation_id=f"qq:private:owner:{occurrence.owner_qq}",
+                        conversation_id=target_conversation,
                     )
                     if not budget.allowed or budget.reservation_id is None:
                         continue
                     try:
-                        message_id = await send_onebot_private_message(
-                            settings.onebot_ws_url,
-                            settings.onebot_access_token,
-                            user_id=occurrence.owner_qq,
-                            text=text,
-                            idempotency_key=occurrence.occurrence_key,
-                        )
+                        if is_group:
+                            message_id = await send_onebot_group_message(
+                                settings.onebot_ws_url,
+                                settings.onebot_access_token,
+                                group_id=group_id,
+                                text=text,
+                                idempotency_key=occurrence.occurrence_key,
+                            )
+                        else:
+                            message_id = await send_onebot_private_message(
+                                settings.onebot_ws_url,
+                                settings.onebot_access_token,
+                                user_id=occurrence.owner_qq,
+                                text=text,
+                                idempotency_key=occurrence.occurrence_key,
+                            )
                     except OutboundError as exc:
                         await asyncio.to_thread(
                             risk_ledger.finish_send,

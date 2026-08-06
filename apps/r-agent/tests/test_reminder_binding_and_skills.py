@@ -62,7 +62,7 @@ def test_generic_confirmation_is_same_conversation_and_unambiguous(tmp_path: Pat
     quoted = store.resolve_contextual(
         owner_principal_id="owner",
         statuses=frozenset({"pending_confirmation"}),
-        conversation_id="qq:group:9",
+        conversation_id="qq:group:1",
         reply_message_id="m1",
     )
     assert quoted is not None and quoted.job_id == first.job_id
@@ -74,6 +74,8 @@ def test_delivery_quote_binds_ack_but_another_group_does_not(tmp_path: Path) -> 
     job = create_job(store, conversation="qq:group:1", message="request")
     store.confirm(job.job_id)
     occurrence = store.prepare_due(now_ms=job.due_at_ms)[0]
+    assert occurrence.origin_surface == "group"
+    assert occurrence.origin_conversation_id == "qq:group:1"
     store.finish_occurrence(occurrence.occurrence_key, state="sent", message_id="delivery-1")
 
     assert (
@@ -84,10 +86,19 @@ def test_delivery_quote_binds_ack_but_another_group_does_not(tmp_path: Path) -> 
         )
         is None
     )
+    assert (
+        store.resolve_contextual(
+            owner_principal_id="owner",
+            statuses=frozenset({"awaiting_ack"}),
+            conversation_id="qq:private:owner",
+            reply_message_id="delivery-1",
+        )
+        is None
+    )
     quoted = store.resolve_contextual(
         owner_principal_id="owner",
         statuses=frozenset({"awaiting_ack"}),
-        conversation_id="qq:private:owner",
+        conversation_id="qq:group:1",
         reply_message_id="delivery-1",
     )
     assert quoted is not None and quoted.job_id == job.job_id

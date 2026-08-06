@@ -62,6 +62,9 @@ class DueOccurrence:
     content: str
     attempt: int
     scheduled_at_ms: int
+    origin_channel: str
+    origin_surface: str
+    origin_conversation_id: str
 
 
 def _number(value: str) -> int | None:
@@ -417,12 +420,14 @@ class ReminderStore:
                     SELECT DISTINCT j.* FROM reminder_jobs j
                     LEFT JOIN reminder_occurrences o ON o.job_id=j.job_id
                     WHERE j.owner_principal_id=? AND j.status IN ({placeholders})
+                      AND j.origin_conversation_id=?
                       AND (j.source_message_id=? OR o.message_id=?)
                     LIMIT 2
                     """,
                     (
                         owner_principal_id,
                         *ordered_statuses,
+                        conversation_id,
                         reply_message_id,
                         reply_message_id,
                     ),
@@ -594,6 +599,9 @@ class ReminderStore:
                             str(row["content"]),
                             target_attempt,
                             scheduled,
+                            str(row["origin_channel"]),
+                            str(row["origin_surface"]),
+                            str(row["origin_conversation_id"]),
                         )
                     )
         return due

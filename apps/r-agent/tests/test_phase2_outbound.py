@@ -6,6 +6,7 @@ from r_agent.events import ConversationKind, InboundEvent
 from r_agent.phase2_outbound import (
     OutboundError,
     get_onebot_message_sender,
+    send_onebot_group_message,
     send_onebot_reply,
 )
 
@@ -121,3 +122,34 @@ async def test_get_message_sender_verifies_quoted_author(
     assert sender == "900001"
     assert socket.sent is not None
     assert socket.sent["action"] == "get_msg"
+
+
+async def test_group_reminder_requires_ack_and_uses_group_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = FakeSocket(
+        [
+            json.dumps(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "echo": "r-agent:group:job:0",
+                    "data": {"message_id": 77},
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr("websockets.connect", lambda *args, **kwargs: FakeConnection(socket))
+
+    message_id = await send_onebot_group_message(
+        "ws://127.0.0.1:3001",
+        "token",
+        group_id="700001",
+        text="reminder",
+        idempotency_key="job:0",
+    )
+
+    assert message_id == "77"
+    assert socket.sent is not None
+    assert socket.sent["action"] == "send_group_msg"
+    assert socket.sent["params"] == {"group_id": 700001, "message": "reminder"}
