@@ -35,3 +35,28 @@ def test_consistent_backup_excludes_secrets_and_prunes(tmp_path: Path) -> None:
     assert "api_key" not in json.dumps(manifest).casefold()
     with sqlite3.connect(latest / "memory.sqlite") as conn:
         assert conn.execute("SELECT value FROM facts").fetchone()[0] == "verified"
+
+
+def test_all_runtime_databases_can_be_verified_and_restored(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    for name in BackupManager.DATABASE_NAMES:
+        with sqlite3.connect(data_dir / name) as conn:
+            conn.execute("CREATE TABLE marker(value INTEGER NOT NULL)")
+            conn.execute("INSERT INTO marker VALUES (1)")
+    manager = BackupManager(
+        data_dir=data_dir,
+        backup_dir=tmp_path / "backups",
+        interval_minutes=15,
+        retention=3,
+    )
+    snapshot = manager.create("all-runtime-stores-test")
+    assert len(BackupManager.DATABASE_NAMES) == 8
+    assert "risk_ledger.sqlite" in BackupManager.DATABASE_NAMES
+    assert manager.verify_snapshot(snapshot)["verified"] == BackupManager.DATABASE_NAMES
+    restored = tmp_path / "restore-check"
+    result = manager.restore_to(snapshot, restored)
+    assert result["restored"] == BackupManager.DATABASE_NAMES
+    for name in BackupManager.DATABASE_NAMES:
+        with sqlite3.connect(restored / name) as conn:
+            assert conn.execute("SELECT value FROM marker").fetchone()[0] == 1

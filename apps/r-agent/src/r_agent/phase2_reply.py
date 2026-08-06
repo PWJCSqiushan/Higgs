@@ -79,6 +79,7 @@ class ReplyPolicy:
         natural_trigger_groups: frozenset[str] = frozenset(),
         natural_trigger_terms: frozenset[str] = frozenset({"higgs"}),
         global_max_per_minute: int = 20,
+        owner_max_per_minute: int | None = None,
         owner_qq: str | None = None,
         runtime_enabled: bool = True,
     ):
@@ -92,6 +93,7 @@ class ReplyPolicy:
             term.casefold() for term in natural_trigger_terms if term.strip()
         )
         self.global_max_per_minute = global_max_per_minute
+        self.owner_max_per_minute = owner_max_per_minute or max_per_minute
         self.owner_qq = owner_qq
         self.runtime_enabled = runtime_enabled
         self._sent: dict[str, deque[float]] = {}
@@ -117,16 +119,17 @@ class ReplyPolicy:
         else:
             if event.group_id not in self.groups:
                 return ReplyDecision.GROUP_NOT_ENABLED
+            owner_reminder = _owner_reminder_message(event, self.owner_qq)
             if event.group_id in self.natural_trigger_groups:
                 natural_triggered = (
                     event.mentioned
                     or event.replied_to_account
                     or any(term in event.text.casefold() for term in self.natural_trigger_terms)
-                    or _owner_reminder_message(event, self.owner_qq)
+                    or owner_reminder
                 )
                 if not natural_triggered:
                     return ReplyDecision.GROUP_TRIGGER_REQUIRED
-            elif self.require_mention and not event.mentioned:
+            elif self.require_mention and not event.mentioned and not owner_reminder:
                 return ReplyDecision.MENTION_REQUIRED
         if owner_command:
             return ReplyDecision.DRAFTED if self.mode == "draft" else ReplyDecision.SENT
@@ -134,7 +137,10 @@ class ReplyPolicy:
         history = self._sent.setdefault(event.conversation_id, deque())
         while history and current - history[0] >= 60:
             history.popleft()
-        if len(history) >= self.max_per_minute:
+        conversation_limit = (
+            self.owner_max_per_minute if event.sender_id == self.owner_qq else self.max_per_minute
+        )
+        if len(history) >= conversation_limit:
             return ReplyDecision.RATE_LIMITED
         while self._global_sent and current - self._global_sent[0] >= 60:
             self._global_sent.popleft()
@@ -229,29 +235,47 @@ class PersonaBrain:
                 try:
                     if clean in {"\u786e\u8ba4", "\u786e\u8ba4\u63d0\u9192"}:
                         pending = await asyncio.to_thread(
-                            self.reminders.latest_pending, principal.principal_id
+                            self.reminders.resolve_contextual,
+                            owner_principal_id=principal.principal_id,
+                            statuses=frozenset({"pending_confirmation"}),
+                            conversation_id=event.conversation_id,
+                            reply_message_id=event.reply_message_id,
                         )
-                        if pending is not None:
-                            confirmed = await asyncio.to_thread(
-                                self.reminders.confirm, pending.job_id
-                            )
+                        if pending is None:
                             return (
-                                "\u63d0\u9192\u5df2\u786e\u8ba4\u5e76\u751f\u6548\u3002\n"
-                                + format_job(confirmed)
+                                "\u672a\u80fd\u552f\u4e00\u786e\u5b9a\u8981\u786e\u8ba4\u7684\u63d0\u9192\uff0c"
+                                "\u8bf7\u5f15\u7528\u521b\u5efa\u6d88\u606f\uff0c"
+                                "\u6216\u53d1\u9001 "
+                                "/higgs remind confirm \u77edID\u3002"
                             )
+                        confirmed = await asyncio.to_thread(self.reminders.confirm, pending.job_id)
+                        return (
+                            "\u63d0\u9192\u5df2\u786e\u8ba4\u5e76\u751f\u6548\u3002\n"
+                            + format_job(confirmed)
+                        )
                     if clean in {"\u6536\u5230", "\u77e5\u9053\u4e86", "\u5b8c\u6210\u4e86"}:
                         awaiting = await asyncio.to_thread(
-                            self.reminders.latest_awaiting_ack, principal.principal_id
+                            self.reminders.resolve_contextual,
+                            owner_principal_id=principal.principal_id,
+                            statuses=frozenset({"awaiting_ack"}),
+                            conversation_id=event.conversation_id,
+                            reply_message_id=event.reply_message_id,
                         )
-                        if awaiting is not None:
-                            completed = await asyncio.to_thread(
-                                self.reminders.acknowledge, awaiting.job_id
-                            )
+                        if awaiting is None:
                             return (
-                                "\u6536\u5230\uff0c\u63d0\u9192 "
-                                f"{completed.job_id[:8]} "
-                                "\u5df2\u5b8c\u6210\u3002"
+                                "\u672a\u80fd\u552f\u4e00\u786e\u5b9a\u8981\u7b7e\u6536\u7684\u63d0\u9192\uff0c"
+                                "\u8bf7\u5f15\u7528\u63d0\u9192\u6d88\u606f\uff0c"
+                                "\u6216\u53d1\u9001 "
+                                "/higgs remind ack \u77edID\u3002"
                             )
+                        completed = await asyncio.to_thread(
+                            self.reminders.acknowledge, awaiting.job_id
+                        )
+                        return (
+                            "\u6536\u5230\uff0c\u63d0\u9192 "
+                            f"{completed.job_id[:8]} "
+                            "\u5df2\u5b8c\u6210\u3002"
+                        )
                     parsed = parse_reminder_intent(clean)
                     if parsed is not None:
                         due_at_ms, content = parsed
@@ -261,6 +285,10 @@ class PersonaBrain:
                             owner_qq=event.sender_id,
                             content=content,
                             due_at_ms=due_at_ms,
+                            origin_channel=event.channel,
+                            origin_surface=event.conversation_kind.value,
+                            origin_conversation_id=event.conversation_id,
+                            source_message_id=event.message_id,
                         )
                         return (
                             "\u8bf7\u6838\u5bf9\u540e\u56de\u590d\u201c\u786e\u8ba4\u201d\uff1a\n"

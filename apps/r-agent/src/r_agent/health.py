@@ -18,6 +18,7 @@ class HealthReporter:
         self.interval_seconds = interval_seconds
         self._transport_connected = False
         self._qq_online = False
+        self._qq_state = "pending"
         self._qq_reason = "startup"
         self._lock = threading.Lock()
 
@@ -30,12 +31,20 @@ class HealthReporter:
             self._transport_connected = connected
             if not connected:
                 self._qq_online = False
+                self._qq_state = "pending"
                 self._qq_reason = "transport_disconnected"
         self.write()
 
     def set_qq_online(self, online: bool, *, reason: str = "probe") -> None:
+        """Backward-compatible boolean setter."""
+        self.set_qq_state("verified" if online else "rejected", reason=reason)
+
+    def set_qq_state(self, state: str, *, reason: str = "probe") -> None:
+        if state not in {"pending", "verified", "rejected"}:
+            raise ValueError("QQ state must be pending, verified, or rejected")
         with self._lock:
-            self._qq_online = online
+            self._qq_state = state
+            self._qq_online = state == "verified"
             self._qq_reason = reason[:120]
         self.write()
 
@@ -47,11 +56,12 @@ class HealthReporter:
     def write(self) -> None:
         with self._lock:
             payload = {
-                "schema": 2,
+                "schema": 3,
                 "pid": os.getpid(),
                 "connected": self._transport_connected,
                 "transport_connected": self._transport_connected,
                 "qq_online": self._qq_online,
+                "qq_state": self._qq_state,
                 "qq_reason": self._qq_reason,
                 "updated_at_unix": time.time(),
             }

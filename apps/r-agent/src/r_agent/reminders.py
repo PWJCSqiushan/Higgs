@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from r_agent.skills import normalized_parameter_hash
+
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _RETRY_OFFSETS_MS = (0, 5 * 60_000, 15 * 60_000, 30 * 60_000)
 _CN_DIGITS = {
@@ -45,6 +47,11 @@ class ReminderJob:
     created_at_ms: int
     confirmed_at_ms: int | None
     acknowledged_at_ms: int | None
+    origin_channel: str
+    origin_surface: str
+    origin_conversation_id: str
+    source_message_id: str | None
+    approved_parameter_sha256: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +62,9 @@ class DueOccurrence:
     content: str
     attempt: int
     scheduled_at_ms: int
+    origin_channel: str
+    origin_surface: str
+    origin_conversation_id: str
 
 
 def _number(value: str) -> int | None:
@@ -185,6 +195,15 @@ class ReminderStore:
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
+    @staticmethod
+    def _approved_parameters(row: sqlite3.Row) -> dict[str, object]:
+        """Return the exact side-effect parameters covered by owner confirmation."""
+        return {
+            "content": str(row["content"]),
+            "due_at_ms": int(row["due_at_ms"]),
+            "origin_conversation_id": str(row["origin_conversation_id"]),
+        }
+
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
@@ -203,7 +222,12 @@ class ReminderStore:
                     confirmed_at_ms INTEGER,
                     acknowledged_at_ms INTEGER,
                     cancelled_at_ms INTEGER,
-                    updated_at_ms INTEGER NOT NULL
+                    updated_at_ms INTEGER NOT NULL,
+                    origin_channel TEXT NOT NULL DEFAULT 'qq',
+                    origin_surface TEXT NOT NULL DEFAULT 'private',
+                    origin_conversation_id TEXT NOT NULL DEFAULT 'legacy',
+                    source_message_id TEXT,
+                    approved_parameter_sha256 TEXT
                 )
                 """
             )
@@ -236,6 +260,31 @@ class ReminderStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_reminder_due ON reminder_jobs(status, due_at_ms)"
             )
+            existing = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(reminder_jobs)").fetchall()
+            }
+            migrations = {
+                "origin_channel": "TEXT NOT NULL DEFAULT 'qq'",
+                "origin_surface": "TEXT NOT NULL DEFAULT 'private'",
+                "origin_conversation_id": "TEXT NOT NULL DEFAULT 'legacy'",
+                "source_message_id": "TEXT",
+                "approved_parameter_sha256": "TEXT",
+            }
+            for column, declaration in migrations.items():
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE reminder_jobs ADD COLUMN {column} {declaration}")
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_reminder_origin
+                ON reminder_jobs(owner_principal_id, origin_conversation_id, status)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_reminder_occurrence_message
+                ON reminder_occurrences(message_id)
+                """
+            )
 
     @staticmethod
     def _row(row: sqlite3.Row) -> ReminderJob:
@@ -249,6 +298,13 @@ class ReminderStore:
             int(row["created_at_ms"]),
             int(row["confirmed_at_ms"]) if row["confirmed_at_ms"] is not None else None,
             int(row["acknowledged_at_ms"]) if row["acknowledged_at_ms"] is not None else None,
+            str(row["origin_channel"]),
+            str(row["origin_surface"]),
+            str(row["origin_conversation_id"]),
+            str(row["source_message_id"]) if row["source_message_id"] is not None else None,
+            str(row["approved_parameter_sha256"])
+            if row["approved_parameter_sha256"] is not None
+            else None,
         )
 
     def _resolve(self, short_id: str) -> str:
@@ -272,6 +328,10 @@ class ReminderStore:
         owner_qq: str,
         content: str,
         due_at_ms: int,
+        origin_channel: str = "qq",
+        origin_surface: str = "private",
+        origin_conversation_id: str = "legacy",
+        source_message_id: str | None = None,
         now_ms: int | None = None,
     ) -> ReminderJob:
         now = int(time.time() * 1000) if now_ms is None else now_ms
@@ -280,16 +340,33 @@ class ReminderStore:
             raise ReminderError("提醒内容长度必须为1到500字")
         if not now + 5_000 <= due_at_ms <= now + 366 * 86_400_000:
             raise ReminderError("提醒时间必须在5秒后到366天内")
+        if origin_surface not in {"private", "group"}:
+            raise ReminderError("invalid reminder origin surface")
+        if not origin_channel.strip() or not origin_conversation_id.strip():
+            raise ReminderError("invalid reminder origin conversation")
         job_id = str(uuid.uuid4())
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO reminder_jobs(
                     job_id, owner_principal_id, owner_qq, content, due_at_ms,
-                    status, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, 'pending_confirmation', ?, ?)
+                    status, created_at_ms, updated_at_ms, origin_channel,
+                    origin_surface, origin_conversation_id, source_message_id
+                ) VALUES (?, ?, ?, ?, ?, 'pending_confirmation', ?, ?, ?, ?, ?, ?)
                 """,
-                (job_id, owner_principal_id, owner_qq, clean, due_at_ms, now, now),
+                (
+                    job_id,
+                    owner_principal_id,
+                    owner_qq,
+                    clean,
+                    due_at_ms,
+                    now,
+                    now,
+                    origin_channel.strip(),
+                    origin_surface,
+                    origin_conversation_id.strip(),
+                    source_message_id,
+                ),
             )
         return self.get(job_id)
 
@@ -323,6 +400,53 @@ class ReminderStore:
             ).fetchone()
         return self._row(row) if row is not None else None
 
+    def resolve_contextual(
+        self,
+        *,
+        owner_principal_id: str,
+        statuses: frozenset[str],
+        conversation_id: str,
+        reply_message_id: str | None = None,
+    ) -> ReminderJob | None:
+        """Resolve only an explicitly quoted or single same-conversation job."""
+        if not statuses or not statuses.issubset(self.STATUSES):
+            raise ReminderError("invalid reminder status filter")
+        placeholders = ",".join("?" for _ in statuses)
+        ordered_statuses = tuple(sorted(statuses))
+        with self._connect() as conn:
+            if reply_message_id:
+                rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT j.* FROM reminder_jobs j
+                    LEFT JOIN reminder_occurrences o ON o.job_id=j.job_id
+                    WHERE j.owner_principal_id=? AND j.status IN ({placeholders})
+                      AND j.origin_conversation_id=?
+                      AND (j.source_message_id=? OR o.message_id=?)
+                    LIMIT 2
+                    """,
+                    (
+                        owner_principal_id,
+                        *ordered_statuses,
+                        conversation_id,
+                        reply_message_id,
+                        reply_message_id,
+                    ),
+                ).fetchall()
+                if len(rows) == 1:
+                    return self._row(rows[0])
+                if len(rows) > 1:
+                    return None
+            rows = conn.execute(
+                f"""
+                SELECT * FROM reminder_jobs
+                WHERE owner_principal_id=? AND status IN ({placeholders})
+                  AND origin_conversation_id=?
+                ORDER BY created_at_ms DESC LIMIT 2
+                """,
+                (owner_principal_id, *ordered_statuses, conversation_id),
+            ).fetchall()
+        return self._row(rows[0]) if len(rows) == 1 else None
+
     def _transition(self, short_id: str, *, allowed: set[str], target: str) -> ReminderJob:
         job_id = self._resolve(short_id)
         now = int(time.time() * 1000)
@@ -351,7 +475,21 @@ class ReminderStore:
         return self.get(job_id)
 
     def confirm(self, short_id: str) -> ReminderJob:
-        return self._transition(short_id, allowed={"pending_confirmation"}, target="scheduled")
+        job_id = self._resolve(short_id)
+        now = int(time.time() * 1000)
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM reminder_jobs WHERE job_id=?", (job_id,)).fetchone()
+            if row is None or str(row["status"]) != "pending_confirmation":
+                raise ReminderError("reminder state does not allow confirmation")
+            digest = normalized_parameter_hash(self._approved_parameters(row))
+            conn.execute(
+                """
+                UPDATE reminder_jobs SET status='scheduled', confirmed_at_ms=?,
+                    approved_parameter_sha256=?, updated_at_ms=? WHERE job_id=?
+                """,
+                (now, digest, now, job_id),
+            )
+        return self.get(job_id)
 
     def acknowledge(self, short_id: str) -> ReminderJob:
         return self._transition(short_id, allowed={"awaiting_ack", "scheduled"}, target="completed")
@@ -375,7 +513,11 @@ class ReminderStore:
             if row is None or str(row[0]) not in {"scheduled", "awaiting_ack"}:
                 raise ReminderError("当前提醒不能延后")
             conn.execute(
-                "UPDATE reminder_jobs SET due_at_ms=?, status='scheduled', updated_at_ms=? WHERE job_id=?",
+                """
+                UPDATE reminder_jobs SET due_at_ms=?, status='pending_confirmation',
+                    confirmed_at_ms=NULL, approved_parameter_sha256=NULL, updated_at_ms=?
+                WHERE job_id=?
+                """,
                 (now + minutes * 60_000, now, job_id),
             )
             conn.execute(
@@ -406,6 +548,16 @@ class ReminderStore:
             ).fetchall()
             for row in jobs:
                 job_id = str(row["job_id"])
+                approved_digest = row["approved_parameter_sha256"]
+                actual_digest = normalized_parameter_hash(self._approved_parameters(row))
+                if approved_digest is None or str(approved_digest) != actual_digest:
+                    # Fail closed if a confirmed job was altered in storage or came
+                    # from a legacy path that never captured parameter approval.
+                    conn.execute(
+                        "UPDATE reminder_jobs SET status='failed', updated_at_ms=? WHERE job_id=?",
+                        (now, job_id),
+                    )
+                    continue
                 due_at = int(row["due_at_ms"])
                 if now > due_at + _RETRY_OFFSETS_MS[-1] + 60_000:
                     conn.execute(
@@ -447,6 +599,9 @@ class ReminderStore:
                             str(row["content"]),
                             target_attempt,
                             scheduled,
+                            str(row["origin_channel"]),
+                            str(row["origin_surface"]),
+                            str(row["origin_conversation_id"]),
                         )
                     )
         return due
@@ -483,6 +638,24 @@ class ReminderStore:
                 "INSERT INTO reminder_effects(occurrence_key,state,detail_sha256,created_at_ms) VALUES (?,?,?,?)",
                 (occurrence_key, state, digest, now),
             )
+
+    def recover_stale_prepared(
+        self, *, now_ms: int | None = None, stale_after_ms: int = 60_000
+    ) -> int:
+        """Mark crash-interrupted sends unknown instead of risking a duplicate send."""
+        if stale_after_ms < 1_000:
+            raise ReminderError("stale threshold is too short")
+        now = int(time.time() * 1000) if now_ms is None else now_ms
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE reminder_occurrences
+                SET state='unknown', finished_at_ms=?
+                WHERE state='prepared' AND prepared_at_ms <= ?
+                """,
+                (now, now - stale_after_ms),
+            )
+        return cursor.rowcount
 
 
 def format_job(job: ReminderJob) -> str:

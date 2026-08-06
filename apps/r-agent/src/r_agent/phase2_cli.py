@@ -26,7 +26,7 @@ from r_agent.embedding import (
 from r_agent.events import InboundEvent
 from r_agent.group_debounce import GroupMessageDebouncer
 from r_agent.health import HealthReporter
-from r_agent.identity import IdentityStore
+from r_agent.identity import IdentityStore, Principal
 from r_agent.ingest import IngestResult, IngestService
 from r_agent.journal import Journal
 from r_agent.memory import MemoryError, MemoryStore
@@ -41,6 +41,7 @@ from r_agent.phase2_outbound import (
     OutboundError,
     get_onebot_login_info,
     get_onebot_message_sender,
+    send_onebot_group_message,
     send_onebot_private_message,
     send_onebot_reply,
 )
@@ -48,6 +49,7 @@ from r_agent.phase2_reply import PersonaBrain, ReplyAudit, ReplyDecision, ReplyP
 from r_agent.qq_text import QqTextError, to_qq_plain_text
 from r_agent.recall import RecallLedger
 from r_agent.reminders import ReminderStore
+from r_agent.risk_ledger import RiskLedger, RiskLimits
 from r_agent.safety import OutboundSafetyPolicy, SafetyError
 from r_agent.vector_memory import MemoryVectorStore
 
@@ -83,6 +85,13 @@ class Phase2Settings:
     require_mention: bool
     max_per_minute: int
     global_max_per_minute: int
+    non_owner_hourly_limit: int
+    non_owner_daily_limit: int
+    owner_conversation_per_minute: int
+    owner_hourly_limit: int
+    owner_daily_limit: int
+    global_hourly_limit: int
+    global_daily_limit: int
     group_debounce_seconds: float
     private_debounce_seconds: float
     safety_enabled: bool
@@ -186,10 +195,19 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         natural_trigger_terms=natural_trigger_terms,
         runtime_enabled=_boolean("R_AGENT_RUNTIME_ENABLED", True),
         require_mention=_boolean("R_AGENT_REPLY_GROUP_REQUIRE_MENTION", True),
-        max_per_minute=bounded_int("R_AGENT_REPLY_MAX_PER_MINUTE", "6", 1, 10),
+        max_per_minute=bounded_int("R_AGENT_REPLY_MAX_PER_MINUTE", "2", 1, 10),
         history_turns=bounded_int("R_AGENT_HISTORY_TURNS", "8", 1, 20),
         memory_items=bounded_int("R_AGENT_MEMORY_CONTEXT_ITEMS", "8", 0, 20),
-        global_max_per_minute=bounded_int("R_AGENT_REPLY_GLOBAL_MAX_PER_MINUTE", "20", 1, 60),
+        global_max_per_minute=bounded_int("R_AGENT_REPLY_GLOBAL_MAX_PER_MINUTE", "6", 1, 60),
+        non_owner_hourly_limit=bounded_int("R_AGENT_REPLY_NON_OWNER_HOURLY_LIMIT", "20", 1, 500),
+        non_owner_daily_limit=bounded_int("R_AGENT_REPLY_NON_OWNER_DAILY_LIMIT", "80", 1, 2000),
+        owner_conversation_per_minute=bounded_int(
+            "R_AGENT_REPLY_OWNER_CONVERSATION_PER_MINUTE", "4", 1, 6
+        ),
+        owner_hourly_limit=bounded_int("R_AGENT_REPLY_OWNER_HOURLY_LIMIT", "40", 1, 500),
+        owner_daily_limit=bounded_int("R_AGENT_REPLY_OWNER_DAILY_LIMIT", "120", 1, 2000),
+        global_hourly_limit=bounded_int("R_AGENT_REPLY_GLOBAL_HOURLY_LIMIT", "60", 1, 1000),
+        global_daily_limit=bounded_int("R_AGENT_REPLY_GLOBAL_DAILY_LIMIT", "200", 1, 5000),
         group_debounce_seconds=bounded_float("R_AGENT_GROUP_DEBOUNCE_SECONDS", "2.5", 0.5, 10.0),
         private_debounce_seconds=bounded_float(
             "R_AGENT_PRIVATE_DEBOUNCE_SECONDS", "4.0", 0.5, 10.0
@@ -293,6 +311,7 @@ async def process_reply(
     breaker: ConversationCircuitBreaker | None = None,
     owner_qq: str | None = None,
     qq_online: bool = True,
+    risk_ledger: RiskLedger | None = None,
 ) -> ReplyPlan:
     """Create one auditable outcome without letting provider errors stop the listener."""
     decision = policy.gate(event, result)
@@ -308,20 +327,41 @@ async def process_reply(
         )
         if not guard.allowed:
             return ReplyPlan(ReplyDecision.CIRCUIT_BREAKER)
+    reservation_id: int | None = None
+    if decision is ReplyDecision.SENT and risk_ledger is not None:
+        budget = await asyncio.to_thread(
+            risk_ledger.reserve_send,
+            event_type="reply",
+            actor_class="owner" if event.sender_id == owner_qq else "non_owner",
+            account_id=event.account_id,
+            conversation_id=event.conversation_id,
+        )
+        if not budget.allowed:
+            return ReplyPlan(ReplyDecision.GLOBAL_RATE_LIMITED)
+        reservation_id = budget.reservation_id
     try:
         text = to_qq_plain_text(await brain.draft(event))
     except (ModelError, QqTextError):
+        if risk_ledger is not None and reservation_id is not None:
+            await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="failed")
         return ReplyPlan(ReplyDecision.MODEL_FAILED)
 
     if safety is not None and not safety.evaluate(text).allowed:
+        if risk_ledger is not None and reservation_id is not None:
+            await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="failed")
         return ReplyPlan(ReplyDecision.SENSITIVE_BLOCKED)
     policy.mark_generated(event)
     if decision is ReplyDecision.DRAFTED:
         return ReplyPlan(ReplyDecision.DRAFTED, text)
     try:
         await sender(event, text)
-    except OutboundError:
+    except OutboundError as exc:
+        if risk_ledger is not None and reservation_id is not None:
+            outcome = "unknown" if exc.delivery_unknown else "failed"
+            await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome=outcome)
         return ReplyPlan(ReplyDecision.SEND_FAILED, text)
+    if risk_ledger is not None and reservation_id is not None:
+        await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="sent")
     return ReplyPlan(ReplyDecision.SENT, text)
 
 
@@ -365,6 +405,27 @@ async def listen() -> None:
     reminders.initialize()
     breaker = ConversationCircuitBreaker(settings.data_dir / "conversation_guard.sqlite")
     breaker.initialize()
+    risk_ledger = RiskLedger(
+        settings.data_dir / "risk_ledger.sqlite",
+        limits=RiskLimits(
+            conversation_per_minute=phase.max_per_minute,
+            global_per_minute=phase.global_max_per_minute,
+            non_owner_per_hour=phase.non_owner_hourly_limit,
+            non_owner_per_day=phase.non_owner_daily_limit,
+            owner_conversation_per_minute=phase.owner_conversation_per_minute,
+            owner_per_hour=phase.owner_hourly_limit,
+            owner_per_day=phase.owner_daily_limit,
+            global_per_hour=phase.global_hourly_limit,
+            global_per_day=phase.global_daily_limit,
+        ),
+    )
+    risk_ledger.initialize()
+    risk_ledger.record_event(
+        "version",
+        client_version=_value("R_AGENT_QQ_CLIENT_VERSION"),
+        transport_version=_value("R_AGENT_NAPCAT_VERSION"),
+        egress_asn=_value("R_AGENT_EGRESS_ASN"),
+    )
     policy = ReplyPolicy(
         mode=phase.mode,
         private_users=phase.private_users.union({settings.owner_qq} if settings.owner_qq else ()),
@@ -372,6 +433,7 @@ async def listen() -> None:
         natural_trigger_groups=phase.natural_trigger_groups,
         natural_trigger_terms=phase.natural_trigger_terms,
         global_max_per_minute=phase.global_max_per_minute,
+        owner_max_per_minute=phase.owner_conversation_per_minute,
         owner_qq=settings.owner_qq,
         runtime_enabled=phase.runtime_enabled,
         require_mention=phase.require_mention,
@@ -407,6 +469,7 @@ async def listen() -> None:
         retention=phase.backup_retention,
         config_snapshot=lambda: asdict(operator_control.snapshot()),
     )
+    operator_control.attach_risk_ledger(risk_ledger)
     operator_control.attach_backup(backup.create)
     try:
         await asyncio.to_thread(backup.create, "startup")
@@ -417,7 +480,11 @@ async def listen() -> None:
         os.environ.get("R_AGENT_HEALTH_FILE", str(settings.data_dir / "health.json"))
     )
     health = HealthReporter(health_path)
-    online = OnlineState(health, PushPlusNotifier(_value("R_AGENT_PUSHPLUS_TOKEN")))
+    online = OnlineState(
+        health,
+        PushPlusNotifier(_value("R_AGENT_PUSHPLUS_TOKEN")),
+        risk_ledger=risk_ledger,
+    )
     health.set_transport_connected(False)
     expected_bot_qq = _value("R_AGENT_EXPECTED_BOT_QQ")
     reconciler = MemoryReconciler(
@@ -448,6 +515,8 @@ async def listen() -> None:
         reminders=reminders,
         journal_path=settings.data_dir / "journal.sqlite",
         conversation_guard=breaker,
+        risk_ledger=risk_ledger,
+        recall_ledger=recall,
     )
     brain = PersonaBrain(
         client,
@@ -496,6 +565,7 @@ async def listen() -> None:
                 breaker=breaker,
                 owner_qq=settings.owner_qq,
                 qq_online=online.snapshot().qq_online,
+                risk_ledger=risk_ledger,
             )
             await asyncio.to_thread(audit.record, event, plan)
             principal = None
@@ -592,6 +662,7 @@ async def listen() -> None:
 
     async def reminder_loop() -> None:
         while True:
+            await asyncio.to_thread(reminders.recover_stale_prepared)
             if online.snapshot().qq_online:
                 due = await asyncio.to_thread(reminders.prepare_due)
                 for occurrence in due:
@@ -601,21 +672,56 @@ async def listen() -> None:
                         "\u8bf7\u56de\u590d\u201c\u6536\u5230\u201d\uff0c\u6216\u53d1\u9001 "
                         f"/higgs remind ack {occurrence.job_id[:8]}"
                     )
+                    is_group = (
+                        occurrence.origin_channel == "qq" and occurrence.origin_surface == "group"
+                    )
+                    group_id = occurrence.origin_conversation_id.rsplit(":", 1)[-1]
+                    target_conversation = (
+                        occurrence.origin_conversation_id
+                        if is_group
+                        else f"qq:private:owner:{occurrence.owner_qq}"
+                    )
+                    budget = await asyncio.to_thread(
+                        risk_ledger.reserve_send,
+                        event_type="reminder",
+                        actor_class="owner",
+                        account_id=expected_bot_qq or "unknown",
+                        conversation_id=target_conversation,
+                    )
+                    if not budget.allowed or budget.reservation_id is None:
+                        continue
                     try:
-                        message_id = await send_onebot_private_message(
-                            settings.onebot_ws_url,
-                            settings.onebot_access_token,
-                            user_id=occurrence.owner_qq,
-                            text=text,
-                            idempotency_key=occurrence.occurrence_key,
+                        if is_group:
+                            message_id = await send_onebot_group_message(
+                                settings.onebot_ws_url,
+                                settings.onebot_access_token,
+                                group_id=group_id,
+                                text=text,
+                                idempotency_key=occurrence.occurrence_key,
+                            )
+                        else:
+                            message_id = await send_onebot_private_message(
+                                settings.onebot_ws_url,
+                                settings.onebot_access_token,
+                                user_id=occurrence.owner_qq,
+                                text=text,
+                                idempotency_key=occurrence.occurrence_key,
+                            )
+                    except OutboundError as exc:
+                        await asyncio.to_thread(
+                            risk_ledger.finish_send,
+                            budget.reservation_id,
+                            outcome="unknown" if exc.delivery_unknown else "failed",
                         )
-                    except OutboundError:
                         await asyncio.to_thread(
                             reminders.finish_occurrence,
                             occurrence.occurrence_key,
                             state="unknown",
                         )
                     else:
+                        await asyncio.to_thread(
+                            risk_ledger.finish_send, budget.reservation_id, outcome="sent"
+                        )
                         await asyncio.to_thread(
                             reminders.finish_occurrence,
                             occurrence.occurrence_key,
@@ -624,9 +730,55 @@ async def listen() -> None:
                         )
             await asyncio.sleep(5)
 
+    async def candidate_review_notification_loop() -> None:
+        await asyncio.sleep(60)
+        while True:
+            if online.snapshot().qq_online and settings.owner_qq:
+                counts = await asyncio.to_thread(
+                    memory.status_counts,
+                    actor=Principal("higgs-runtime", "owner"),
+                )
+                total = counts["candidate"]
+                if await asyncio.to_thread(observations.candidate_notification_due, total):
+                    budget = await asyncio.to_thread(
+                        risk_ledger.reserve_send,
+                        event_type="proactive",
+                        actor_class="owner",
+                        account_id=expected_bot_qq or "unknown",
+                        conversation_id=f"qq:private:owner:{settings.owner_qq}",
+                    )
+                    if budget.allowed and budget.reservation_id is not None:
+                        try:
+                            await send_onebot_private_message(
+                                settings.onebot_ws_url,
+                                settings.onebot_access_token,
+                                user_id=settings.owner_qq,
+                                text=(
+                                    f"Higgs 有 {total} 条候选记忆等待审核。\n"
+                                    "发送 /higgs memory list candidate 1 查看。"
+                                ),
+                                idempotency_key=f"memory-candidates:{total // 8}",
+                            )
+                        except OutboundError as exc:
+                            outcome = "unknown" if exc.delivery_unknown else "failed"
+                            await asyncio.to_thread(
+                                risk_ledger.finish_send,
+                                budget.reservation_id,
+                                outcome=outcome,
+                            )
+                            if exc.delivery_unknown:
+                                await asyncio.to_thread(observations.mark_candidate_notified, total)
+                        else:
+                            await asyncio.to_thread(
+                                risk_ledger.finish_send, budget.reservation_id, outcome="sent"
+                            )
+                            await asyncio.to_thread(observations.mark_candidate_notified, total)
+            await asyncio.sleep(900)
+
     online_probe_task = asyncio.create_task(online_probe_loop())
     reminder_task = asyncio.create_task(reminder_loop())
-    for background_task in (online_probe_task, reminder_task):
+    candidate_notification_task = asyncio.create_task(candidate_review_notification_loop())
+    for background_task in (online_probe_task, reminder_task, candidate_notification_task):
         background_task.add_done_callback(
             lambda task: task.exception() if not task.cancelled() else None
         )
@@ -676,6 +828,15 @@ async def listen() -> None:
                         if not isinstance(raw, dict) or raw.get("post_type") != "message":
                             continue
                         event = parse_message_event(raw)
+                        learning_allowed = await asyncio.to_thread(
+                            risk_ledger.note_inbound,
+                            event.conversation_id,
+                            actor_class=(
+                                "owner" if event.sender_id == settings.owner_qq else "non_owner"
+                            ),
+                            account_id=event.account_id,
+                            now_ms=event.occurred_at_ms,
+                        )
                         if (
                             event.group_id in phase.natural_trigger_groups
                             and event.reply_message_id is not None
@@ -692,7 +853,7 @@ async def listen() -> None:
                                 if replied_sender == event.account_id:
                                     event = replace(event, replied_to_account=True)
                         result = await asyncio.to_thread(service.ingest, event)
-                        if result.stored:
+                        if result.stored and learning_allowed:
                             principal = await asyncio.to_thread(
                                 service.identities.resolve,
                                 event.channel,

@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from r_agent.group_debounce import GroupMessageDebouncer
     from r_agent.ingest import IngestService
     from r_agent.phase2_reply import ReplyPolicy
+    from r_agent.risk_ledger import RiskLedger
 
 _log = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ class LiveOperatorControl:
         self._memory_auto_review_confidence = memory_auto_review_confidence
         self._memory_auto_review_evidence = memory_auto_review_evidence
         self._debouncer: GroupMessageDebouncer | None = None
+        self._risk_ledger: RiskLedger | None = None
         self._on_change: Callable[[str], object] | None = None
         self._lock = threading.RLock()
 
@@ -73,6 +75,10 @@ class LiveOperatorControl:
         with self._lock:
             self._debouncer = debouncer
             debouncer.quiet_seconds = self._debounce_seconds
+
+    def attach_risk_ledger(self, ledger: RiskLedger) -> None:
+        with self._lock:
+            self._risk_ledger = ledger
 
     def attach_backup(self, callback: Callable[[str], object]) -> None:
         with self._lock:
@@ -270,11 +276,21 @@ class LiveOperatorControl:
             global_rate = int(global_value)
         except ValueError as exc:
             raise OperatorControlError("频率必须是整数。") from exc
-        if not 1 <= conversation_rate <= 10 or not 1 <= global_rate <= 60:
-            raise OperatorControlError("单会话频率范围1至10，全局频率范围1至60。")
+        if (
+            not 1 <= conversation_rate <= 10
+            or not 4 <= global_rate <= 60
+            or conversation_rate > global_rate
+        ):
+            raise OperatorControlError("单会话频率范围1至10且不得超过全局频率; 全局频率范围4至60。")
         with self._lock:
             self.reply_policy.max_per_minute = conversation_rate
             self.reply_policy.global_max_per_minute = global_rate
+            if self._risk_ledger is not None:
+                self._risk_ledger.limits = replace(
+                    self._risk_ledger.limits,
+                    conversation_per_minute=conversation_rate,
+                    global_per_minute=global_rate,
+                )
             self._persist(
                 {
                     "R_AGENT_REPLY_MAX_PER_MINUTE": str(conversation_rate),

@@ -136,27 +136,6 @@ class PassiveMemoryLearner:
             except EmbeddingError:
                 pass
 
-        if self.auto_review_policy is None:
-            return PassiveLearningResult(candidate, embedded=embedded)
-        enabled, threshold, evidence = self.auto_review_policy()
-        if not enabled:
-            return PassiveLearningResult(candidate, embedded=embedded)
-        outcome = await asyncio.to_thread(
-            self.memory.auto_review_candidate,
-            candidate.item_id,
-            min_confidence=threshold,
-            min_evidence=evidence,
-            now_ms=event.occurred_at_ms,
-        )
-        if outcome.decision in {"activated", "duplicate_invalidated"} and self.on_auto_review:
-            try:
-                await asyncio.to_thread(self.on_auto_review, f"memory-auto-{outcome.decision}")
-            except Exception as exc:
-                # A backup failure must not break QQ ingest.
-                _log.warning("auto_review_backup_failed type=%s", type(exc).__name__)
-        return PassiveLearningResult(
-            outcome.record,
-            embedded=embedded,
-            auto_review_decision=outcome.decision,
-            evidence_count=outcome.evidence_count,
-        )
+        # Legacy passive observations are always candidate-only. Automatic activation
+        # belongs exclusively to MemoryReconciler, which receives a verified role.
+        return PassiveLearningResult(candidate, embedded=embedded)

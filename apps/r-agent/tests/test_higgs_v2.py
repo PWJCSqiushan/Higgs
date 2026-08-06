@@ -7,7 +7,7 @@ from r_agent.events import ConversationKind, InboundEvent
 from r_agent.health import HealthReporter, check_health
 from r_agent.memory import MemoryStatus, MemoryStore
 from r_agent.memory_v2 import MemoryObservationStore, MemoryReconciler
-from r_agent.online_reliability import OnlineState
+from r_agent.online_reliability import OnlineState, onebot_online_hint
 from r_agent.phase2_reply import PersonaBrain
 from r_agent.reminders import SHANGHAI, ReminderStore, parse_reminder_intent
 from r_agent.vector_memory import MemoryVectorStore
@@ -165,11 +165,14 @@ async def test_online_state_alerts_once_per_incident_and_health_is_two_layered(
     online = OnlineState(health, notifier)  # type: ignore[arg-type]
 
     await online.set_transport(True)
+    assert online.snapshot().qq_state == "pending"
     await online.set_qq_online(True, reason="probe_ok")
+    assert online.snapshot().qq_state == "verified"
     assert notifier.messages == []
     assert check_health(health_path, require_qq_online=True) == (True, "ok")
 
     await online.set_qq_online(False, reason="kicked_offline")
+    assert online.snapshot().qq_state == "rejected"
     await online.set_qq_online(False, reason="kicked_offline")
     assert len(notifier.messages) == 1
     assert check_health(health_path, require_qq_online=True) == (False, "qq_offline")
@@ -177,9 +180,22 @@ async def test_online_state_alerts_once_per_incident_and_health_is_two_layered(
     await online.set_qq_online(True, reason="probe_ok")
     assert len(notifier.messages) == 2
 
+    await online.set_transport(False)
+    assert online.snapshot().qq_state == "pending"
+
 
 def test_persona_brain_accepts_reminder_store(tmp_path: Path) -> None:
     store = ReminderStore(tmp_path / "reminders.sqlite")
     store.initialize()
     brain = PersonaBrain(None, "persona", reminders=store)
     assert brain.reminders is store
+
+
+def test_onebot_kick_notice_is_fail_closed() -> None:
+    assert onebot_online_hint(
+        {
+            "post_type": "notice",
+            "notice_type": "client_status",
+            "sub_type": "KickedOffLine",
+        }
+    ) == (False, "KickedOffLine")

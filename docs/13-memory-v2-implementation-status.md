@@ -7,7 +7,7 @@
 - High-frequency historical sources are excluded before candidate backfill. Backfill never auto-activates memories.
 - Low-risk repeated owner preferences can auto-activate at confidence 0.90 and two independent message IDs. Credentials, permissions, owner claims, prompt injection and sensitive facts remain manual/quarantined.
 - Memory governance and reminder commands use short IDs and owner-only authorization.
-- Reminder creation requires owner private chat plus explicit confirmation. Sends are idempotent and retry at due, +5, +15 and +30 minutes; offline delivery is paused.
+- Reminder creation requires the owner in a whitelisted private chat or group, plus explicit confirmation; delivery remains private by default. Sends are idempotent and retry at due, +5, +15 and +30 minutes; offline delivery is paused.
 - Lexical retrieval uses SQLite FTS5 trigram when available. FTS and vector ranks are fused with reciprocal-rank fusion inside the exact principal scope.
 - The default embedding backend is a local deterministic trigram hash vectorizer. It keeps QQ text on the server. A remote OpenAI-compatible backend is opt-in with R_AGENT_EMBEDDING_BACKEND=remote.
 - GitHub Actions runs uv, Ruff and the complete pytest suite on every push and pull request.

@@ -11,7 +11,11 @@ from r_agent.events import ConversationKind, InboundEvent
 
 
 class OutboundError(RuntimeError):
-    """A OneBot action was not acknowledged safely."""
+    """A OneBot action failed, with explicit delivery uncertainty."""
+
+    def __init__(self, message: str, *, delivery_unknown: bool = True) -> None:
+        super().__init__(message)
+        self.delivery_unknown = delivery_unknown
 
 
 async def _wait_for_action_response(socket: Any, *, echo: str) -> Mapping[str, object]:
@@ -71,8 +75,8 @@ async def send_onebot_reply(
         raise
     except Exception as exc:
         raise OutboundError("OneBot action failed") from exc
-    if response.get("status") != "ok" or response.get("retcode") not in {0, None}:
-        raise OutboundError("OneBot action rejected")
+    if response.get("status") != "ok" or response.get("retcode") != 0:
+        raise OutboundError("OneBot action rejected", delivery_unknown=False)
 
 
 async def get_onebot_message_sender(
@@ -106,8 +110,8 @@ async def get_onebot_message_sender(
         raise
     except Exception as exc:
         raise OutboundError("OneBot get_msg action failed") from exc
-    if response.get("status") != "ok" or response.get("retcode") not in {0, None}:
-        raise OutboundError("OneBot get_msg action rejected")
+    if response.get("status") != "ok" or response.get("retcode") != 0:
+        raise OutboundError("OneBot get_msg action rejected", delivery_unknown=False)
     data = response.get("data")
     if not isinstance(data, Mapping):
         raise OutboundError("OneBot get_msg data was malformed")
@@ -148,8 +152,8 @@ async def call_onebot_action(
         raise
     except Exception as exc:
         raise OutboundError(f"OneBot {action} action failed") from exc
-    if response.get("status") != "ok" or response.get("retcode") not in {0, None}:
-        raise OutboundError(f"OneBot {action} action rejected")
+    if response.get("status") != "ok" or response.get("retcode") != 0:
+        raise OutboundError(f"OneBot {action} action rejected", delivery_unknown=False)
     return response
 
 
@@ -201,3 +205,32 @@ async def send_onebot_private_message(
         return None
     message_id = str(data["message_id"])
     return message_id[:64]
+
+
+async def send_onebot_group_message(
+    ws_url: str,
+    token: str | None,
+    *,
+    group_id: str,
+    text: str,
+    idempotency_key: str,
+) -> str | None:
+    """Send a group reminder and require a matching OneBot acknowledgement."""
+    if not group_id.isascii() or not group_id.isdigit() or len(group_id) > 20:
+        raise OutboundError("group target is invalid", delivery_unknown=False)
+    if not 1 <= len(text) <= 2000:
+        raise OutboundError("reply length outside safe bound", delivery_unknown=False)
+    safe_key = "".join(ch for ch in idempotency_key if ch.isalnum() or ch in {"-", ":"})[:80]
+    if not safe_key:
+        raise OutboundError("idempotency key is invalid", delivery_unknown=False)
+    response = await call_onebot_action(
+        ws_url,
+        token,
+        action="send_group_msg",
+        params={"group_id": int(group_id), "message": text},
+        echo=f"r-agent:group:{safe_key}",
+    )
+    data = response.get("data")
+    if not isinstance(data, Mapping) or data.get("message_id") is None:
+        return None
+    return str(data["message_id"])[:64]

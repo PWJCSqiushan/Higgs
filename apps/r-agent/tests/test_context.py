@@ -74,7 +74,7 @@ def test_context_includes_sent_history_and_owner_approved_memory(tmp_path: Path)
         persona="你是有判断力、诚实而自然的长期助手。",
     )
 
-    built = builder.build(event("2", "那下午呢?"), principal_id="owner")
+    built = builder.build(event("2", "上午深度学习怎么安排?"), principal_id="owner")
     assert [message["role"] for message in built.messages] == [
         "system",
         "user",
@@ -82,7 +82,7 @@ def test_context_includes_sent_history_and_owner_approved_memory(tmp_path: Path)
         "user",
     ]
     assert "主人偏好上午安排深度学习" in built.messages[0]["content"]
-    assert built.messages[-1]["content"] == "那下午呢?"
+    assert built.messages[-1]["content"] == "上午深度学习怎么安排?"
     assert built.memory_item_ids == (item.item_id,)
     ledger = recall.get_for_owner(built.turn_id, actor=OWNER)
     assert ledger.memory_item_ids == (item.item_id,)
