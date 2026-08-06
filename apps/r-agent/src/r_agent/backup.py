@@ -30,6 +30,7 @@ class BackupManager:
         "reply_audit.sqlite",
         "reminders.sqlite",
         "conversation_guard.sqlite",
+        "risk_ledger.sqlite",
     )
 
     def __init__(

@@ -37,7 +37,7 @@ def test_consistent_backup_excludes_secrets_and_prunes(tmp_path: Path) -> None:
         assert conn.execute("SELECT value FROM facts").fetchone()[0] == "verified"
 
 
-def test_seven_database_snapshot_can_be_verified_and_restored(tmp_path: Path) -> None:
+def test_all_runtime_databases_can_be_verified_and_restored(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     for name in BackupManager.DATABASE_NAMES:
@@ -50,7 +50,9 @@ def test_seven_database_snapshot_can_be_verified_and_restored(tmp_path: Path) ->
         interval_minutes=15,
         retention=3,
     )
-    snapshot = manager.create("seven-store-test")
+    snapshot = manager.create("all-runtime-stores-test")
+    assert len(BackupManager.DATABASE_NAMES) == 8
+    assert "risk_ledger.sqlite" in BackupManager.DATABASE_NAMES
     assert manager.verify_snapshot(snapshot)["verified"] == BackupManager.DATABASE_NAMES
     restored = tmp_path / "restore-check"
     result = manager.restore_to(snapshot, restored)

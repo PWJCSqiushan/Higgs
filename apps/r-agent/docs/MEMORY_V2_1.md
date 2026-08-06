@@ -20,8 +20,9 @@ triggers, vector-only matches require a similarity threshold, and fused results
 are capped at eight records and roughly 1,200 characters. HNSW is deliberately
 not enabled at the current data size.
 
-Backups include all seven runtime SQLite stores: identity, journal,
-conversation, memory, reply audit, reminders and conversation guard. Restore
+Backups include all eight runtime SQLite stores: identity, journal,
+conversation, memory, reply audit, reminders, conversation guard and the
+content-free risk ledger. Restore
 verification always targets a new empty directory; it never overwrites live
 runtime databases.
 
