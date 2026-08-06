@@ -11,7 +11,11 @@ from r_agent.events import ConversationKind, InboundEvent
 
 
 class OutboundError(RuntimeError):
-    """A OneBot action was not acknowledged safely."""
+    """A OneBot action failed, with explicit delivery uncertainty."""
+
+    def __init__(self, message: str, *, delivery_unknown: bool = True) -> None:
+        super().__init__(message)
+        self.delivery_unknown = delivery_unknown
 
 
 async def _wait_for_action_response(socket: Any, *, echo: str) -> Mapping[str, object]:
@@ -71,8 +75,8 @@ async def send_onebot_reply(
         raise
     except Exception as exc:
         raise OutboundError("OneBot action failed") from exc
-    if response.get("status") != "ok" or response.get("retcode") not in {0, None}:
-        raise OutboundError("OneBot action rejected")
+    if response.get("status") != "ok" or response.get("retcode") != 0:
+        raise OutboundError("OneBot action rejected", delivery_unknown=False)
 
 
 async def get_onebot_message_sender(
@@ -106,8 +110,8 @@ async def get_onebot_message_sender(
         raise
     except Exception as exc:
         raise OutboundError("OneBot get_msg action failed") from exc
-    if response.get("status") != "ok" or response.get("retcode") not in {0, None}:
-        raise OutboundError("OneBot get_msg action rejected")
+    if response.get("status") != "ok" or response.get("retcode") != 0:
+        raise OutboundError("OneBot get_msg action rejected", delivery_unknown=False)
     data = response.get("data")
     if not isinstance(data, Mapping):
         raise OutboundError("OneBot get_msg data was malformed")
@@ -148,8 +152,8 @@ async def call_onebot_action(
         raise
     except Exception as exc:
         raise OutboundError(f"OneBot {action} action failed") from exc
-    if response.get("status") != "ok" or response.get("retcode") not in {0, None}:
-        raise OutboundError(f"OneBot {action} action rejected")
+    if response.get("status") != "ok" or response.get("retcode") != 0:
+        raise OutboundError(f"OneBot {action} action rejected", delivery_unknown=False)
     return response
 
 

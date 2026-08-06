@@ -20,9 +20,9 @@ class ConversationCircuitBreaker:
         self,
         path: Path,
         *,
-        limit: int = 20,
+        limit: int = 8,
         window_seconds: int = 1800,
-        cooldown_seconds: int = 1800,
+        cooldown_seconds: int = 3600,
     ) -> None:
         self.path = path
         self.limit = limit

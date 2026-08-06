@@ -79,6 +79,7 @@ class ReplyPolicy:
         natural_trigger_groups: frozenset[str] = frozenset(),
         natural_trigger_terms: frozenset[str] = frozenset({"higgs"}),
         global_max_per_minute: int = 20,
+        owner_max_per_minute: int | None = None,
         owner_qq: str | None = None,
         runtime_enabled: bool = True,
     ):
@@ -92,6 +93,7 @@ class ReplyPolicy:
             term.casefold() for term in natural_trigger_terms if term.strip()
         )
         self.global_max_per_minute = global_max_per_minute
+        self.owner_max_per_minute = owner_max_per_minute or max_per_minute
         self.owner_qq = owner_qq
         self.runtime_enabled = runtime_enabled
         self._sent: dict[str, deque[float]] = {}
@@ -135,7 +137,10 @@ class ReplyPolicy:
         history = self._sent.setdefault(event.conversation_id, deque())
         while history and current - history[0] >= 60:
             history.popleft()
-        if len(history) >= self.max_per_minute:
+        conversation_limit = (
+            self.owner_max_per_minute if event.sender_id == self.owner_qq else self.max_per_minute
+        )
+        if len(history) >= conversation_limit:
             return ReplyDecision.RATE_LIMITED
         while self._global_sent and current - self._global_sent[0] >= 60:
             self._global_sent.popleft()

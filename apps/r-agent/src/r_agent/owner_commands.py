@@ -20,6 +20,7 @@ from r_agent.operator_control import (
     OperatorControlError,
 )
 from r_agent.reminders import ReminderError, ReminderStore, format_job
+from r_agent.risk_ledger import RiskLedger
 from r_agent.vector_memory import MemoryVectorStore
 
 
@@ -51,6 +52,7 @@ class OwnerCommandRouter:
         reminders: ReminderStore | None = None,
         journal_path: Path | None = None,
         conversation_guard: ConversationCircuitBreaker | None = None,
+        risk_ledger: RiskLedger | None = None,
     ) -> None:
         self.context = context
         self.vectors = vectors
@@ -61,6 +63,7 @@ class OwnerCommandRouter:
         self.reminders = reminders
         self.journal_path = journal_path
         self.conversation_guard = conversation_guard
+        self.risk_ledger = risk_ledger
 
     def handle(self, text: str, *, actor: Principal) -> str | None:
         clean = text.strip()
@@ -96,6 +99,8 @@ class OwnerCommandRouter:
                 return self._memory(arguments, actor=actor)
             if command == "remind":
                 return self._remind(arguments)
+            if command in {"risk", "风控"}:
+                return self._risk(arguments)
             if command in {"backup", "备份"}:
                 return self._backup(arguments)
         except (OperatorControlError, MemoryError, ReminderError) as exc:
@@ -123,6 +128,7 @@ class OwnerCommandRouter:
             "/higgs memory backfill preview|apply\n"
             "/higgs remind list|show|confirm|ack|cancel|snooze\n"
             "/higgs memory activate|quarantine|invalidate|restore 记忆ID或短ID [原因]\n"
+            "/higgs risk\n"
             "/higgs backup [now]\n"
             "永久删除记忆仍需在本机CLI双重确认。"
         )
@@ -164,6 +170,20 @@ class OwnerCommandRouter:
             f"被动学习：{self.context.passive_learning_enabled}\n"
             f"向量模块：{self.context.embedding_enabled}"
             f"{rate_line}{auto_review_line}"
+        )
+
+    def _risk(self, arguments: list[str]) -> str:
+        if arguments:
+            raise OperatorControlError("用法：/higgs risk")
+        if self.risk_ledger is None:
+            raise OperatorControlError("风控台账未启用。")
+        report = self.risk_ledger.stats()
+        return (
+            f"24小时发送={report['sent_24h']} 失败={report['failed_24h']} "
+            f"限流={report['limited_24h']} "
+            f"半小时峰值={report['peak_half_hour_24h']}\n"
+            f"疑似机器人来源={report['suspected_robot_sources']} "
+            f"24小时被踢={report['kicked_offline_24h']}"
         )
 
     def _require_control(self) -> LiveOperatorControl:
