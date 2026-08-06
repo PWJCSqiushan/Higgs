@@ -592,6 +592,7 @@ async def listen() -> None:
 
     async def reminder_loop() -> None:
         while True:
+            await asyncio.to_thread(reminders.recover_stale_prepared)
             if online.snapshot().qq_online:
                 due = await asyncio.to_thread(reminders.prepare_due)
                 for occurrence in due:
