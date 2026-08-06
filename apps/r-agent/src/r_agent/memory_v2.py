@@ -165,6 +165,15 @@ class MemoryObservationStore:
                 conn.execute(
                     "ALTER TABLE memory_reconcile_runs ADD COLUMN failed INTEGER NOT NULL DEFAULT 0"
                 )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_notification_state (
+                    key TEXT PRIMARY KEY,
+                    value INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                )
+                """
+            )
 
     @staticmethod
     def _observation_id(event: InboundEvent) -> str:
@@ -324,6 +333,32 @@ class MemoryObservationStore:
             }
             for row in rows
         ]
+
+    def candidate_notification_due(self, total_candidates: int, *, threshold: int = 8) -> bool:
+        """Return whether another content-free owner review reminder is due."""
+        if threshold < 1 or total_candidates < threshold:
+            return False
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM memory_notification_state WHERE key='candidate_notified'"
+            ).fetchone()
+        last_notified = int(row[0]) if row is not None else 0
+        return total_candidates // threshold > last_notified // threshold
+
+    def mark_candidate_notified(self, total_candidates: int, *, now_ms: int | None = None) -> None:
+        if total_candidates < 0:
+            raise ValueError("candidate count cannot be negative")
+        now = int(time.time() * 1000) if now_ms is None else now_ms
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO memory_notification_state(key, value, updated_at_ms)
+                VALUES ('candidate_notified', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value=MAX(value, excluded.value), updated_at_ms=excluded.updated_at_ms
+                """,
+                (total_candidates, now),
+            )
 
     def stats(self) -> dict[str, int | None]:
         with self._connect() as conn:

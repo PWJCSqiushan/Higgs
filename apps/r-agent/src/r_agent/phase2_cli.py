@@ -26,7 +26,7 @@ from r_agent.embedding import (
 from r_agent.events import InboundEvent
 from r_agent.group_debounce import GroupMessageDebouncer
 from r_agent.health import HealthReporter
-from r_agent.identity import IdentityStore
+from r_agent.identity import IdentityStore, Principal
 from r_agent.ingest import IngestResult, IngestService
 from r_agent.journal import Journal
 from r_agent.memory import MemoryError, MemoryStore
@@ -730,9 +730,55 @@ async def listen() -> None:
                         )
             await asyncio.sleep(5)
 
+    async def candidate_review_notification_loop() -> None:
+        await asyncio.sleep(60)
+        while True:
+            if online.snapshot().qq_online and settings.owner_qq:
+                counts = await asyncio.to_thread(
+                    memory.status_counts,
+                    actor=Principal("higgs-runtime", "owner"),
+                )
+                total = counts["candidate"]
+                if await asyncio.to_thread(observations.candidate_notification_due, total):
+                    budget = await asyncio.to_thread(
+                        risk_ledger.reserve_send,
+                        event_type="proactive",
+                        actor_class="owner",
+                        account_id=expected_bot_qq or "unknown",
+                        conversation_id=f"qq:private:owner:{settings.owner_qq}",
+                    )
+                    if budget.allowed and budget.reservation_id is not None:
+                        try:
+                            await send_onebot_private_message(
+                                settings.onebot_ws_url,
+                                settings.onebot_access_token,
+                                user_id=settings.owner_qq,
+                                text=(
+                                    f"Higgs 有 {total} 条候选记忆等待审核。\n"
+                                    "发送 /higgs memory list candidate 1 查看。"
+                                ),
+                                idempotency_key=f"memory-candidates:{total // 8}",
+                            )
+                        except OutboundError as exc:
+                            outcome = "unknown" if exc.delivery_unknown else "failed"
+                            await asyncio.to_thread(
+                                risk_ledger.finish_send,
+                                budget.reservation_id,
+                                outcome=outcome,
+                            )
+                            if exc.delivery_unknown:
+                                await asyncio.to_thread(observations.mark_candidate_notified, total)
+                        else:
+                            await asyncio.to_thread(
+                                risk_ledger.finish_send, budget.reservation_id, outcome="sent"
+                            )
+                            await asyncio.to_thread(observations.mark_candidate_notified, total)
+            await asyncio.sleep(900)
+
     online_probe_task = asyncio.create_task(online_probe_loop())
     reminder_task = asyncio.create_task(reminder_loop())
-    for background_task in (online_probe_task, reminder_task):
+    candidate_notification_task = asyncio.create_task(candidate_review_notification_loop())
+    for background_task in (online_probe_task, reminder_task, candidate_notification_task):
         background_task.add_done_callback(
             lambda task: task.exception() if not task.cancelled() else None
         )

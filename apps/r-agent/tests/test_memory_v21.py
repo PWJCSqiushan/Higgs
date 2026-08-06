@@ -213,3 +213,19 @@ async def test_bad_observation_does_not_block_batch(tmp_path: Path, monkeypatch)
     assert failed[0]["error_type"] == "ValueError"
     assert "private message" not in str(failed)
     assert observations.retry_failed(str(failed[0]["observation_id"])[:8]) is True
+
+
+def test_candidate_review_notification_fires_once_per_eight_item_bucket(
+    tmp_path: Path,
+) -> None:
+    observations = MemoryObservationStore(tmp_path / "memory.sqlite")
+    observations.initialize()
+
+    assert not observations.candidate_notification_due(7)
+    assert observations.candidate_notification_due(8)
+    observations.mark_candidate_notified(8, now_ms=1_000)
+    assert not observations.candidate_notification_due(15)
+    assert observations.candidate_notification_due(16)
+    observations.mark_candidate_notified(17, now_ms=2_000)
+    assert not observations.candidate_notification_due(23)
+    assert observations.candidate_notification_due(24)
