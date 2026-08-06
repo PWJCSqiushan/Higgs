@@ -30,3 +30,21 @@ Deferred gray feature: a model-assisted structured candidate extractor remains
 disabled until its strict JSON schema, content bounds and adversarial tests are
 reviewed. A model will only be allowed to propose candidates, never activate
 memory.
+
+## Owner QQ operations
+
+The following commands expose only bounded, content-free operational metadata:
+
+```text
+/higgs memory stats
+/higgs memory observations
+/higgs memory observations failed 10
+/higgs memory observations retry <observation-short-id>
+/higgs memory recall 10
+/higgs memory source status
+```
+
+Failed-observation output contains an eight-character observation ID, exception
+type, retry count and an error hash. Recent-recall output contains the actual
+short memory IDs that were injected and a query hash; it never prints the
+original query or failed observation text.

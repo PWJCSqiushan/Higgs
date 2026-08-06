@@ -19,6 +19,7 @@ from r_agent.operator_control import (
     LiveOperatorControl,
     OperatorControlError,
 )
+from r_agent.recall import RecallLedger
 from r_agent.reminders import ReminderError, ReminderStore, format_job
 from r_agent.risk_ledger import RiskLedger
 from r_agent.vector_memory import MemoryVectorStore
@@ -53,6 +54,7 @@ class OwnerCommandRouter:
         journal_path: Path | None = None,
         conversation_guard: ConversationCircuitBreaker | None = None,
         risk_ledger: RiskLedger | None = None,
+        recall_ledger: RecallLedger | None = None,
     ) -> None:
         self.context = context
         self.vectors = vectors
@@ -64,6 +66,7 @@ class OwnerCommandRouter:
         self.journal_path = journal_path
         self.conversation_guard = conversation_guard
         self.risk_ledger = risk_ledger
+        self.recall_ledger = recall_ledger
 
     def handle(self, text: str, *, actor: Principal) -> str | None:
         clean = text.strip()
@@ -124,7 +127,8 @@ class OwnerCommandRouter:
             "/higgs memory show 记忆ID或短ID\n"
             "/higgs memory audit 记忆ID或短ID\n"
             "/higgs memory auto [on|off|threshold 数值|evidence 次数]\n"
-            "/higgs memory stats | observations | source status\n"
+            "/higgs memory stats | observations [failed [limit]|retry ID]\n"
+            "/higgs memory recall [limit] | source status\n"
             "/higgs memory backfill preview|apply\n"
             "/higgs remind list|show|confirm|ack|cancel|snooze\n"
             "/higgs memory activate|quarantine|invalidate|restore 记忆ID或短ID [原因]\n"
@@ -297,11 +301,59 @@ class OwnerCommandRouter:
         if action == "observations":
             if self.observations is None:
                 raise OperatorControlError("memory observation queue is disabled")
+            if len(arguments) >= 2 and arguments[1].casefold() == "failed":
+                if len(arguments) > 3:
+                    raise OperatorControlError("usage: /higgs memory observations failed [limit]")
+                try:
+                    limit = int(arguments[2]) if len(arguments) == 3 else 10
+                except ValueError as exc:
+                    raise OperatorControlError("limit must be an integer") from exc
+                if not 1 <= limit <= 50:
+                    raise OperatorControlError("limit must be between 1 and 50")
+                failed = self.observations.list_failed(limit=limit)
+                if not failed:
+                    return "failed_observations=0"
+                lines = [
+                    f"{str(item['observation_id'])[:8]} | {item['error_type']} | "
+                    f"retries={item['retry_count']} | error={str(item['error_sha256'])[:8]}"
+                    for item in failed
+                ]
+                return f"failed_observations={len(failed)}\n" + "\n".join(lines)
+            if len(arguments) == 3 and arguments[1].casefold() == "retry":
+                retried = self.observations.retry_failed(arguments[2])
+                if not retried:
+                    raise OperatorControlError("failed observation ID is missing or ambiguous")
+                return f"observation {arguments[2][:8]} queued for retry"
+            if len(arguments) != 1:
+                raise OperatorControlError(
+                    "usage: /higgs memory observations [failed [limit]|retry ID]"
+                )
             stats = self.observations.stats()
             return (
                 f"pending={stats['pending']} processed={stats['processed']} "
                 f"excluded={stats['excluded']} failed={stats['failed']}"
             )
+        if action == "recall":
+            if self.recall_ledger is None:
+                raise OperatorControlError("recall ledger is disabled")
+            if len(arguments) > 2:
+                raise OperatorControlError("usage: /higgs memory recall [limit]")
+            try:
+                limit = int(arguments[1]) if len(arguments) == 2 else 10
+            except ValueError as exc:
+                raise OperatorControlError("limit must be an integer") from exc
+            if not 1 <= limit <= 50:
+                raise OperatorControlError("limit must be between 1 and 50")
+            entries = self.recall_ledger.list_recent(actor=actor, limit=limit)
+            if not entries:
+                return "recent_recalls=0"
+            lines = [
+                f"{entry.recall_id[:8]} | {entry.created_at_ms} | "
+                f"items={','.join(item[:8] for item in entry.memory_item_ids) or '-'} | "
+                f"query={entry.query_sha256[:8]}"
+                for entry in entries
+            ]
+            return f"recent_recalls={len(entries)}\n" + "\n".join(lines)
         if action == "backfill" and arguments[1:] == ["preview"]:
             if self.journal_path is None:
                 raise OperatorControlError("journal path is unavailable")
@@ -326,10 +378,17 @@ class OwnerCommandRouter:
             if self.conversation_guard is None:
                 raise OperatorControlError("conversation circuit breaker is disabled")
             report = self.conversation_guard.source_status()
-            return (
+            base = (
                 f"active_cooldowns={report['active_cooldowns']} "
                 f"recent_non_owner_replies={report['recent_non_owner_replies']}"
             )
+            if self.observations is None:
+                return base
+            quality = self.observations.source_quality()
+            if not quality:
+                return base + "\nobservation_sources=0"
+            lines = [f"{item['source']}:{item['status']}={item['count']}" for item in quality[:20]]
+            return base + "\nobservation_sources=" + " ".join(lines)
         if action == "list":
             status_filter = None
             page = 1

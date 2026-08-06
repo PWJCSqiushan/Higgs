@@ -516,6 +516,7 @@ async def listen() -> None:
         journal_path=settings.data_dir / "journal.sqlite",
         conversation_guard=breaker,
         risk_ledger=risk_ledger,
+        recall_ledger=recall,
     )
     brain = PersonaBrain(
         client,
