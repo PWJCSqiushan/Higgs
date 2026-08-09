@@ -35,14 +35,23 @@
 - `uv run pytest -q`：170 项通过。
 - 新增测试覆盖 principal 隔离、版本绑定、shadow 零副作用、live 节点提醒、群聊拒绝、地图授权前零调用、任务追加和离线有效期补发。
 
+## GitHub 与线上灰度结果
+
+- 分支已推送，Draft PR 为 `#6`；push 与 PR 触发的 GitHub Actions 均通过。
+- 部署前快照验证 10/10，线上十个运行数据库均存在。
+- 只重建了 Higgs agent，NapCat 容器和 QQ 登录态没有重启。
+- 在线探针、预期测试账号校验和真实主人私聊发送均成功。
+- agent 约使用 32 MiB/384 MiB，NapCat 约使用 367 MiB/960 MiB。
+- 线上为 `R_AGENT_DAILY_PLAN_MODE=shadow`，每天最多 10 份草案、3 次地图优化；尚未配置高德 Key。
+- 原有记忆库仍有 6 条记录，今日计划库初始为 0，部署没有覆盖历史记忆、提醒或聊天数据。
+
 ## 下一步待办
 
-1. 提交并推送 `codex/higgs-daily-planner`，创建 PR 并等待 GitHub Actions。
-2. CI 通过后，在服务器 secrets 中只添加 `R_AGENT_DAILY_PLAN_MODE=shadow` 和两个配额变量；暂不配置高德 Key。
-3. 创建部署前十库备份，只重建 Higgs agent，不重启 NapCat。
-4. 线上验证 QQ 在线、普通聊天和记忆不回归，再由主人私聊测试多待办草案。
-5. shadow 稳定后配置高德 Web Service Key，单独验收歧义地点和路线授权。
-6. 完成 shadow 验收后再由主人决定是否切换 `live`，切换前必须实测 T-10/T0 的幂等发送和取消。
+1. 主人在私聊中发送“今天要取快递、买一桶水、去菜市场买菜，18:20前取到快递，帮我安排”完成首次真实 shadow 验收。
+2. 验证 `/higgs plan today`、`add`、`show` 和 `confirm`；shadow 下 confirm 必须明确提示不会激活或创建提醒。
+3. shadow 稳定后再申请并配置高德 Web Service Key，单独验收歧义地点和路线授权。
+4. 完成地图与取消测试后再把 PR 标为 ready/合并；是否切换 `live` 必须由主人明确决定。
+5. 切换 `live` 前必须实测 T-10/T0 幂等发送、完成/跳过撤销和重启恢复。
 
 ## 部署中的已修复问题
 
