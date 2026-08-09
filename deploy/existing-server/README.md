@@ -47,6 +47,22 @@ not automatically accept it from a `?token=` query parameter.
 If NapCat repeatedly reaches its hard memory limit, stop this stack and migrate
 to the planned 4-core / 8-GB server instead of removing the limit.
 
+## Daily-plan rollout
+
+The agent now keeps ten consistent SQLite stores. `agenda.sqlite` contains
+principal-isolated daily plans and `skills.sqlite` contains exact-parameter
+approvals; both are included in startup and periodic recovery snapshots. Start
+the planner in `shadow` mode on this 2-GB host:
+
+```dotenv
+R_AGENT_DAILY_PLAN_MODE=shadow
+R_AGENT_DAILY_PLAN_DRAFTS_PER_DAY=10
+R_AGENT_DAILY_PLAN_MAP_OPTIMIZATIONS_PER_DAY=3
+```
+
+Do not configure `R_AGENT_AMAP_WEB_KEY` until Amap Web Service access is ready.
+The key belongs only in `/srv/secrets/higgs/higgs.env`.
+
 ## Operator commands
 
 Run these from `/srv/apps/higgs/current/deploy/existing-server`:

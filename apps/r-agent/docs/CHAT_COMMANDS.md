@@ -190,6 +190,34 @@ Higgs 会先返回提醒时间、追发规则和 8 位任务 ID；主人回复�
 
 追发时间为到点、`+5`、`+15`、`+30` 分钟，最多四次。任务绑定创建会话和任务 ID；在另一个群随口说“收到”不会误确认。QQ 离线期间暂停发送，恢复后只补发仍有效的提醒。
 
+## 今日计划
+
+第一版只允许主人和已验证的私聊白名单用户创建自己的计划，群聊不创建个人计划。
+
+```text
+/higgs plan today
+/higgs plan add <待办内容>
+/higgs plan draft
+/higgs plan map-consent <计划短ID>
+/higgs plan confirm <计划短ID>
+/higgs plan show <计划短ID>
+/higgs plan done <任务短ID>
+/higgs plan skip <任务短ID>
+/higgs plan replan <计划短ID>
+/higgs plan cancel <计划短ID>
+/higgs plan history
+```
+
+计划确认绑定计划 ID、版本、参数指纹和原始私聊。重新规划只生成草案，必须再次确认；完成、跳过或取消会撤销尚未发送的节点提醒。地图授权与计划确认是两次独立动作，执行 `map-consent` 前地点不会发给高德。
+
+主人跨用户取消必须填写原因：
+
+```text
+/higgs plan admin cancel <计划短ID> <原因>
+```
+
+详细状态机、安全边界和配置见 [今日计划设计与使用](../../../docs/15-daily-plan.md)。
+
 ## 在线状态探针
 
 健康检查必须区分“Higgs 能连接 OneBot”和“QQ 账号真实在线”：

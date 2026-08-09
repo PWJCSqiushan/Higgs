@@ -52,6 +52,10 @@ class ReminderJob:
     origin_conversation_id: str
     source_message_id: str | None
     approved_parameter_sha256: str | None
+    delivery_policy: str = "persistent_ack"
+    source_kind: str | None = None
+    source_id: str | None = None
+    expires_at_ms: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +69,9 @@ class DueOccurrence:
     origin_channel: str
     origin_surface: str
     origin_conversation_id: str
+    delivery_policy: str = "persistent_ack"
+    source_kind: str | None = None
+    source_id: str | None = None
 
 
 def _number(value: str) -> int | None:
@@ -198,11 +205,27 @@ class ReminderStore:
     @staticmethod
     def _approved_parameters(row: sqlite3.Row) -> dict[str, object]:
         """Return the exact side-effect parameters covered by owner confirmation."""
-        return {
+        parameters: dict[str, object] = {
             "content": str(row["content"]),
             "due_at_ms": int(row["due_at_ms"]),
             "origin_conversation_id": str(row["origin_conversation_id"]),
         }
+        policy = str(row["delivery_policy"])
+        source_kind = row["source_kind"]
+        source_id = row["source_id"]
+        expires_at_ms = row["expires_at_ms"]
+        # Preserve hashes for existing reminder rows while binding agenda effects
+        # to their delivery policy and source version.
+        if policy != "persistent_ack" or source_kind is not None or source_id is not None:
+            parameters.update(
+                {
+                    "delivery_policy": policy,
+                    "source_kind": str(source_kind) if source_kind is not None else None,
+                    "source_id": str(source_id) if source_id is not None else None,
+                    "expires_at_ms": int(expires_at_ms) if expires_at_ms is not None else None,
+                }
+            )
+        return parameters
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -227,7 +250,11 @@ class ReminderStore:
                     origin_surface TEXT NOT NULL DEFAULT 'private',
                     origin_conversation_id TEXT NOT NULL DEFAULT 'legacy',
                     source_message_id TEXT,
-                    approved_parameter_sha256 TEXT
+                    approved_parameter_sha256 TEXT,
+                    delivery_policy TEXT NOT NULL DEFAULT 'persistent_ack',
+                    source_kind TEXT,
+                    source_id TEXT,
+                    expires_at_ms INTEGER
                 )
                 """
             )
@@ -269,6 +296,10 @@ class ReminderStore:
                 "origin_conversation_id": "TEXT NOT NULL DEFAULT 'legacy'",
                 "source_message_id": "TEXT",
                 "approved_parameter_sha256": "TEXT",
+                "delivery_policy": "TEXT NOT NULL DEFAULT 'persistent_ack'",
+                "source_kind": "TEXT",
+                "source_id": "TEXT",
+                "expires_at_ms": "INTEGER",
             }
             for column, declaration in migrations.items():
                 if column not in existing:
@@ -277,6 +308,12 @@ class ReminderStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_reminder_origin
                 ON reminder_jobs(owner_principal_id, origin_conversation_id, status)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_reminder_source
+                ON reminder_jobs(source_kind, source_id, status)
                 """
             )
             conn.execute(
@@ -305,6 +342,10 @@ class ReminderStore:
             str(row["approved_parameter_sha256"])
             if row["approved_parameter_sha256"] is not None
             else None,
+            str(row["delivery_policy"]),
+            str(row["source_kind"]) if row["source_kind"] is not None else None,
+            str(row["source_id"]) if row["source_id"] is not None else None,
+            int(row["expires_at_ms"]) if row["expires_at_ms"] is not None else None,
         )
 
     def _resolve(self, short_id: str) -> str:
@@ -332,6 +373,10 @@ class ReminderStore:
         origin_surface: str = "private",
         origin_conversation_id: str = "legacy",
         source_message_id: str | None = None,
+        delivery_policy: str = "persistent_ack",
+        source_kind: str | None = None,
+        source_id: str | None = None,
+        expires_at_ms: int | None = None,
         now_ms: int | None = None,
     ) -> ReminderJob:
         now = int(time.time() * 1000) if now_ms is None else now_ms
@@ -344,6 +389,12 @@ class ReminderStore:
             raise ReminderError("invalid reminder origin surface")
         if not origin_channel.strip() or not origin_conversation_id.strip():
             raise ReminderError("invalid reminder origin conversation")
+        if delivery_policy not in {"persistent_ack", "agenda_once"}:
+            raise ReminderError("invalid reminder delivery policy")
+        if (source_kind is None) != (source_id is None):
+            raise ReminderError("reminder source kind and ID must be provided together")
+        if expires_at_ms is not None and expires_at_ms <= due_at_ms:
+            raise ReminderError("reminder expiry must be after due time")
         job_id = str(uuid.uuid4())
         with self._connect() as conn:
             conn.execute(
@@ -351,8 +402,9 @@ class ReminderStore:
                 INSERT INTO reminder_jobs(
                     job_id, owner_principal_id, owner_qq, content, due_at_ms,
                     status, created_at_ms, updated_at_ms, origin_channel,
-                    origin_surface, origin_conversation_id, source_message_id
-                ) VALUES (?, ?, ?, ?, ?, 'pending_confirmation', ?, ?, ?, ?, ?, ?)
+                    origin_surface, origin_conversation_id, source_message_id,
+                    delivery_policy, source_kind, source_id, expires_at_ms
+                ) VALUES (?, ?, ?, ?, ?, 'pending_confirmation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -366,9 +418,56 @@ class ReminderStore:
                     origin_surface,
                     origin_conversation_id.strip(),
                     source_message_id,
+                    delivery_policy,
+                    source_kind,
+                    source_id,
+                    expires_at_ms,
                 ),
             )
         return self.get(job_id)
+
+    def create_scheduled(
+        self,
+        *,
+        owner_principal_id: str,
+        owner_qq: str,
+        content: str,
+        due_at_ms: int,
+        origin_conversation_id: str,
+        source_kind: str,
+        source_id: str,
+        expires_at_ms: int | None = None,
+        now_ms: int | None = None,
+    ) -> ReminderJob:
+        """Create an agenda-owned one-shot reminder after plan-level confirmation."""
+        pending = self.create_pending(
+            owner_principal_id=owner_principal_id,
+            owner_qq=owner_qq,
+            content=content,
+            due_at_ms=due_at_ms,
+            origin_channel="qq",
+            origin_surface="private",
+            origin_conversation_id=origin_conversation_id,
+            delivery_policy="agenda_once",
+            source_kind=source_kind,
+            source_id=source_id,
+            expires_at_ms=expires_at_ms,
+            now_ms=now_ms,
+        )
+        return self.confirm(pending.job_id)
+
+    def cancel_by_source(self, *, source_kind: str, source_id: str) -> int:
+        now = int(time.time() * 1000)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE reminder_jobs SET status='cancelled', cancelled_at_ms=?, updated_at_ms=?
+                WHERE source_kind=? AND source_id=?
+                  AND status IN ('pending_confirmation','scheduled','awaiting_ack')
+                """,
+                (now, now, source_kind, source_id),
+            )
+        return cursor.rowcount
 
     def get(self, short_id: str) -> ReminderJob:
         job_id = self._resolve(short_id)
@@ -559,16 +658,23 @@ class ReminderStore:
                     )
                     continue
                 due_at = int(row["due_at_ms"])
-                if now > due_at + _RETRY_OFFSETS_MS[-1] + 60_000:
+                policy = str(row["delivery_policy"])
+                offsets = (0,) if policy == "agenda_once" else _RETRY_OFFSETS_MS
+                expires_at_ms = int(row["expires_at_ms"]) if row["expires_at_ms"] else None
+                if expires_at_ms is not None and now > expires_at_ms:
+                    conn.execute(
+                        "UPDATE reminder_jobs SET status='missed', updated_at_ms=? WHERE job_id=?",
+                        (now, job_id),
+                    )
+                    continue
+                if policy != "agenda_once" and now > due_at + offsets[-1] + 60_000:
                     conn.execute(
                         "UPDATE reminder_jobs SET status='missed', updated_at_ms=? WHERE job_id=?",
                         (now, job_id),
                     )
                     continue
                 eligible = [
-                    attempt
-                    for attempt, offset in enumerate(_RETRY_OFFSETS_MS)
-                    if due_at + offset <= now
+                    attempt for attempt, offset in enumerate(offsets) if due_at + offset <= now
                 ]
                 target_attempt = max(eligible)
                 existing = {
@@ -579,7 +685,7 @@ class ReminderStore:
                 }
                 if target_attempt in existing:
                     continue
-                scheduled = due_at + _RETRY_OFFSETS_MS[target_attempt]
+                scheduled = due_at + offsets[target_attempt]
                 key = f"{job_id}:{target_attempt}"
                 cursor = conn.execute(
                     """
@@ -602,6 +708,9 @@ class ReminderStore:
                             str(row["origin_channel"]),
                             str(row["origin_surface"]),
                             str(row["origin_conversation_id"]),
+                            policy,
+                            str(row["source_kind"]) if row["source_kind"] else None,
+                            str(row["source_id"]) if row["source_id"] else None,
                         )
                     )
         return due
@@ -614,7 +723,11 @@ class ReminderStore:
         now = int(time.time() * 1000)
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT job_id FROM reminder_occurrences WHERE occurrence_key=? AND state='prepared'",
+                """
+                SELECT o.job_id,j.delivery_policy FROM reminder_occurrences o
+                JOIN reminder_jobs j ON j.job_id=o.job_id
+                WHERE o.occurrence_key=? AND o.state='prepared'
+                """,
                 (occurrence_key,),
             ).fetchone()
             if row is None:
@@ -627,9 +740,12 @@ class ReminderStore:
                 (state, message_id, now, occurrence_key),
             )
             if state == "sent":
+                target = (
+                    "completed" if str(row["delivery_policy"]) == "agenda_once" else "awaiting_ack"
+                )
                 conn.execute(
-                    "UPDATE reminder_jobs SET status='awaiting_ack', updated_at_ms=? WHERE job_id=?",
-                    (now, str(row["job_id"])),
+                    "UPDATE reminder_jobs SET status=?, updated_at_ms=? WHERE job_id=?",
+                    (target, now, str(row["job_id"])),
                 )
             digest = (
                 __import__("hashlib").sha256(f"{state}:{message_id or ''}".encode()).hexdigest()
