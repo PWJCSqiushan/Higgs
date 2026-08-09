@@ -62,6 +62,9 @@ R_AGENT_DAILY_PLAN_MAP_OPTIMIZATIONS_PER_DAY=3
 
 Do not configure `R_AGENT_AMAP_WEB_KEY` until Amap Web Service access is ready.
 The key belongs only in `/srv/secrets/higgs/higgs.env`.
+Use `configure_daily_plan.py --image higgs-agent:<40-character-commit> --mode shadow`
+to back up both private env files to `/srv/trash` and update them atomically without
+printing any existing secret.
 
 ## Operator commands
 
