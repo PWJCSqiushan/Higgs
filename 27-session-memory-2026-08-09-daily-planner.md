@@ -43,3 +43,9 @@
 4. 线上验证 QQ 在线、普通聊天和记忆不回归，再由主人私聊测试多待办草案。
 5. shadow 稳定后配置高德 Web Service Key，单独验收歧义地点和路线授权。
 6. 完成 shadow 验收后再由主人决定是否切换 `live`，切换前必须实测 T-10/T0 的幂等发送和取消。
+
+## 部署中的已修复问题
+
+- 首次原子更新私有 env 时只保留了权限位，没有保留 UID/GID，导致新 agent 无法读取 `higgs.env` 并短暂重启。
+- NapCat 没有重启，QQ 登录态未受影响；恢复 `higgs.env` 属主后 agent 立即恢复 healthy，在线探针通过。
+- `configure_daily_plan.py` 已补为同时保留 mode、UID 和 GID，后续原子替换不会再次改变配置文件属主。

@@ -17,6 +17,7 @@ IMAGE_RE = re.compile(r"higgs-agent:[0-9a-f]{40}")
 def update_env(path: Path, values: dict[str, str]) -> None:
     if not path.is_file():
         raise FileNotFoundError(path)
+    original_stat = path.stat()
     original = path.read_text(encoding="utf-8")
     remaining = dict(values)
     lines: list[str] = []
@@ -31,13 +32,16 @@ def update_env(path: Path, values: dict[str, str]) -> None:
             lines.append(line)
     lines.extend(f"{key}={value}" for key, value in remaining.items())
     payload = "\n".join(lines) + "\n"
-    mode = path.stat().st_mode & 0o777
+    mode = original_stat.st_mode & 0o777
     with tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", dir=path.parent, delete=False
     ) as handle:
         handle.write(payload)
         temporary = Path(handle.name)
     os.chmod(temporary, mode)
+    chown = getattr(os, "chown", None)
+    if chown is not None:
+        chown(temporary, original_stat.st_uid, original_stat.st_gid)
     os.replace(temporary, path)
 
 
