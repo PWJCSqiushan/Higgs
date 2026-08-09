@@ -19,6 +19,7 @@ from typing import Any
 
 class ApprovalMode(StrEnum):
     NONE = "none"
+    EXPLICIT_CONFIRM = "explicit_confirm"
     OWNER_CONFIRM = "owner_confirm"
     OWNER_PREAUTHORIZED = "owner_preauthorized"
 
@@ -259,6 +260,39 @@ def default_skill_registry() -> SkillRegistry:
             approval_mode=ApprovalMode.OWNER_CONFIRM,
             idempotency_strategy="reminder occurrence key (job UUID + attempt)",
             audit_policy="hash parameters; retain transitions and OneBot receipt",
+            timeout_seconds=15,
+            enabled=True,
+        )
+    )
+    registry.register(
+        SkillDescriptor(
+            name="daily_plan",
+            description=(
+                "Create a principal-isolated daily plan and schedule its node reminders "
+                "after exact-version confirmation."
+            ),
+            input_schema={
+                "type": "object",
+                "required": [
+                    "plan_id",
+                    "version",
+                    "parameter_sha256",
+                    "origin_conversation_id",
+                ],
+                "properties": {
+                    "plan_id": {"type": "string", "maxLength": 64},
+                    "version": {"type": "integer"},
+                    "parameter_sha256": {"type": "string", "maxLength": 64},
+                    "origin_conversation_id": {"type": "string", "maxLength": 200},
+                },
+                "additionalProperties": False,
+            },
+            caller_roles=frozenset({"owner", "user"}),
+            surfaces=frozenset({"private"}),
+            external_side_effects=True,
+            approval_mode=ApprovalMode.EXPLICIT_CONFIRM,
+            idempotency_strategy="plan UUID + immutable version + reminder occurrence key",
+            audit_policy="hash exact plan version; retain confirmation and effect transitions",
             timeout_seconds=15,
             enabled=True,
         )

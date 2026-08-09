@@ -31,6 +31,8 @@ class BackupManager:
         "reminders.sqlite",
         "conversation_guard.sqlite",
         "risk_ledger.sqlite",
+        "agenda.sqlite",
+        "skills.sqlite",
     )
 
     def __init__(

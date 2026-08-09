@@ -12,11 +12,14 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from r_agent.access import IngressPolicy
+from r_agent.agenda import AgendaStore
+from r_agent.amap import AmapRouteClient
 from r_agent.backup import BackupError, BackupManager
 from r_agent.config import ConfigError, Settings, parse_qq_set
 from r_agent.context import ContextBuilder
 from r_agent.conversation import ConversationStore
 from r_agent.conversation_guard import ConversationCircuitBreaker
+from r_agent.daily_plan import DailyPlanConfig, DailyPlanService
 from r_agent.embedding import (
     EmbeddingConfig,
     EmbeddingError,
@@ -51,6 +54,7 @@ from r_agent.recall import RecallLedger
 from r_agent.reminders import ReminderStore
 from r_agent.risk_ledger import RiskLedger, RiskLimits
 from r_agent.safety import OutboundSafetyPolicy, SafetyError
+from r_agent.skills import SkillApprovalStore, default_skill_registry
 from r_agent.vector_memory import MemoryVectorStore
 
 _log = logging.getLogger(__name__)
@@ -108,6 +112,9 @@ class Phase2Settings:
     backup_dir: Path
     backup_interval_minutes: int
     backup_retention: int
+    daily_plan_mode: str
+    daily_plan_drafts_per_day: int
+    daily_plan_map_optimizations_per_day: int
 
 
 def _phase2_settings(settings: Settings) -> Phase2Settings:
@@ -181,6 +188,11 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
     embedding_dimensions = bounded_int("R_AGENT_EMBEDDING_DIMENSIONS", "256", 256, 2048)
     if embedding_dimensions not in {256, 512, 1024, 2048}:
         raise ConfigError("R_AGENT_EMBEDDING_DIMENSIONS is unsupported")
+    daily_plan_mode = _value("R_AGENT_DAILY_PLAN_MODE", "off").lower()
+    if daily_plan_mode not in {"off", "shadow", "live"}:
+        raise ConfigError("R_AGENT_DAILY_PLAN_MODE must be off, shadow, or live")
+    if daily_plan_mode == "live" and mode != "live":
+        raise ConfigError("live daily plans require R_AGENT_REPLY_MODE=live")
     backup_dir_value = _value("R_AGENT_BACKUP_DIR")
     backup_dir = (
         Path(backup_dir_value).expanduser().resolve()
@@ -226,6 +238,11 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         backup_dir=backup_dir,
         backup_interval_minutes=bounded_int("R_AGENT_BACKUP_INTERVAL_MINUTES", "360", 15, 1440),
         backup_retention=bounded_int("R_AGENT_BACKUP_RETENTION", "20", 3, 100),
+        daily_plan_mode=daily_plan_mode,
+        daily_plan_drafts_per_day=bounded_int("R_AGENT_DAILY_PLAN_DRAFTS_PER_DAY", "10", 1, 50),
+        daily_plan_map_optimizations_per_day=bounded_int(
+            "R_AGENT_DAILY_PLAN_MAP_OPTIMIZATIONS_PER_DAY", "3", 0, 20
+        ),
     )
 
 
@@ -403,6 +420,10 @@ async def listen() -> None:
     observations.initialize()
     reminders = ReminderStore(settings.data_dir / "reminders.sqlite")
     reminders.initialize()
+    agenda = AgendaStore(settings.data_dir / "agenda.sqlite")
+    agenda.initialize()
+    skill_approvals = SkillApprovalStore(settings.data_dir / "skills.sqlite")
+    skill_approvals.initialize()
     breaker = ConversationCircuitBreaker(settings.data_dir / "conversation_guard.sqlite")
     breaker.initialize()
     risk_ledger = RiskLedger(
@@ -518,6 +539,20 @@ async def listen() -> None:
         risk_ledger=risk_ledger,
         recall_ledger=recall,
     )
+    amap_key = _value("R_AGENT_AMAP_WEB_KEY")
+    daily_plans = DailyPlanService(
+        store=agenda,
+        reminders=reminders,
+        registry=default_skill_registry(),
+        approvals=skill_approvals,
+        config=DailyPlanConfig(
+            mode=phase.daily_plan_mode,
+            drafts_per_day=phase.daily_plan_drafts_per_day,
+            map_optimizations_per_day=phase.daily_plan_map_optimizations_per_day,
+        ),
+        model_client=client,
+        amap=AmapRouteClient(amap_key) if amap_key else None,
+    )
     brain = PersonaBrain(
         client,
         persona,
@@ -526,6 +561,7 @@ async def listen() -> None:
         embedding_client=embeddings,
         owner_commands=owner_commands,
         reminders=reminders,
+        daily_plans=daily_plans,
     )
     passive_learner = (
         PassiveMemoryLearner(
@@ -666,12 +702,15 @@ async def listen() -> None:
             if online.snapshot().qq_online:
                 due = await asyncio.to_thread(reminders.prepare_due)
                 for occurrence in due:
-                    text = (
-                        f"\u63d0\u9192\uff1a{occurrence.content}\n"
-                        f"ID: {occurrence.job_id[:8]}\n"
-                        "\u8bf7\u56de\u590d\u201c\u6536\u5230\u201d\uff0c\u6216\u53d1\u9001 "
-                        f"/higgs remind ack {occurrence.job_id[:8]}"
-                    )
+                    if occurrence.delivery_policy == "agenda_once":
+                        text = occurrence.content
+                    else:
+                        text = (
+                            f"\u63d0\u9192\uff1a{occurrence.content}\n"
+                            f"ID: {occurrence.job_id[:8]}\n"
+                            "\u8bf7\u56de\u590d\u201c\u6536\u5230\u201d\uff0c\u6216\u53d1\u9001 "
+                            f"/higgs remind ack {occurrence.job_id[:8]}"
+                        )
                     is_group = (
                         occurrence.origin_channel == "qq" and occurrence.origin_surface == "group"
                     )

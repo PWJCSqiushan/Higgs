@@ -13,6 +13,7 @@ from pathlib import Path
 
 from r_agent.context import ContextBuilder
 from r_agent.conversation import ConversationError
+from r_agent.daily_plan import DailyPlanService
 from r_agent.embedding import EmbeddingClient, EmbeddingError
 from r_agent.events import ConversationKind, InboundEvent
 from r_agent.identity import IdentityStore
@@ -211,6 +212,7 @@ class PersonaBrain:
         embedding_client: EmbeddingClient | None = None,
         owner_commands: OwnerCommandRouter | None = None,
         reminders: ReminderStore | None = None,
+        daily_plans: DailyPlanService | None = None,
     ):
         self.client = client
         self.persona = persona
@@ -220,6 +222,7 @@ class PersonaBrain:
         self.owner_commands = owner_commands
 
         self.reminders = reminders
+        self.daily_plans = daily_plans
 
     async def draft(self, event: InboundEvent) -> str:
         if self.context_builder is not None:
@@ -230,6 +233,10 @@ class PersonaBrain:
                 event.channel,
                 event.sender_id,
             )
+            if self.daily_plans is not None:
+                plan_reply = await self.daily_plans.handle_event(event, principal)
+                if plan_reply is not None:
+                    return plan_reply
             if self.reminders is not None and principal.role == "owner":
                 clean = event.text.strip()
                 try:

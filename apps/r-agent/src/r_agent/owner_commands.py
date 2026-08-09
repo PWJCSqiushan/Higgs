@@ -131,6 +131,7 @@ class OwnerCommandRouter:
             "/higgs memory recall [limit] | source status\n"
             "/higgs memory backfill preview|apply\n"
             "/higgs remind list|show|confirm|ack|cancel|snooze\n"
+            "/higgs plan today|add|show|confirm|done|skip|replan|cancel|history\n"
             "/higgs memory activate|quarantine|invalidate|restore 记忆ID或短ID [原因]\n"
             "/higgs risk\n"
             "/higgs backup [now]\n"

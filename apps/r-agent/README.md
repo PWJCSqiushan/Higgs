@@ -104,6 +104,27 @@ uv run r-agent memory activate <item_id> --reason '主人核实'
 uv run r-agent memory invalidate <item_id> --reason '事实已过期'
 ```
 
+## 今日计划
+
+主人和私聊白名单用户可以各自创建隔离的今日计划。推荐先启用 shadow 模式：
+
+```dotenv
+R_AGENT_DAILY_PLAN_MODE=shadow
+R_AGENT_DAILY_PLAN_DRAFTS_PER_DAY=10
+R_AGENT_DAILY_PLAN_MAP_OPTIMIZATIONS_PER_DAY=3
+```
+
+```text
+今天要取快递、买一桶水、去菜市场买菜，18:20前取到快递，帮我安排
+/higgs plan today
+/higgs plan map-consent 计划短ID
+/higgs plan confirm 计划短ID
+/higgs plan done 任务短ID
+/higgs plan replan 计划短ID
+```
+
+shadow 模式的确认只校验版本和权限，不激活计划、不创建真实提醒。切换到 `live` 后，确认会创建 08:00 总览及 T-10/T0 一次性节点提醒。地图调用必须针对当前草案单独授权，地点歧义时拒绝猜测。完整说明见 [今日计划设计与使用](../../docs/15-daily-plan.md)。
+
 ## 安全边界
 
 - QQ 登录态、OneBot token、API Key、人格私有文件、数据库和本地敏感词库均被 Git 忽略。
