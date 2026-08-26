@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from r_agent.events import ConversationKind, InboundEvent
@@ -16,6 +17,16 @@ class OutboundError(RuntimeError):
     def __init__(self, message: str, *, delivery_unknown: bool = True) -> None:
         super().__init__(message)
         self.delivery_unknown = delivery_unknown
+
+
+@dataclass(frozen=True, slots=True)
+class OneBotAccountStatus:
+    """Authoritative QQ runtime state paired with the active account identity."""
+
+    online: bool
+    good: bool
+    account_id: str | None
+    nickname: str
 
 
 async def _wait_for_action_response(socket: Any, *, echo: str) -> Mapping[str, object]:
@@ -175,6 +186,41 @@ async def get_onebot_login_info(ws_url: str, token: str | None) -> tuple[str, st
     if not normalized.isascii() or not normalized.isdigit() or len(normalized) > 20:
         raise OutboundError("OneBot get_login_info user was malformed")
     return normalized, str(nickname)[:100]
+
+
+async def get_onebot_account_status(
+    ws_url: str,
+    token: str | None,
+) -> OneBotAccountStatus:
+    """Require OneBot's runtime status before treating login identity as online."""
+    response = await call_onebot_action(
+        ws_url,
+        token,
+        action="get_status",
+        params={},
+        echo="r-agent:status-probe",
+    )
+    data = response.get("data")
+    if not isinstance(data, Mapping):
+        raise OutboundError("OneBot get_status data was malformed")
+    online = data.get("online")
+    good = data.get("good")
+    if not isinstance(online, bool) or not isinstance(good, bool):
+        raise OutboundError("OneBot get_status flags were malformed")
+    if not online or not good:
+        return OneBotAccountStatus(
+            online=online,
+            good=good,
+            account_id=None,
+            nickname="",
+        )
+    account_id, nickname = await get_onebot_login_info(ws_url, token)
+    return OneBotAccountStatus(
+        online=True,
+        good=True,
+        account_id=account_id,
+        nickname=nickname,
+    )
 
 
 async def send_onebot_private_message(

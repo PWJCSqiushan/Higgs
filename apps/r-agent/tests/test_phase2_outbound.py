@@ -5,6 +5,7 @@ import pytest
 from r_agent.events import ConversationKind, InboundEvent
 from r_agent.phase2_outbound import (
     OutboundError,
+    get_onebot_account_status,
     get_onebot_message_sender,
     send_onebot_group_message,
     send_onebot_reply,
@@ -122,6 +123,65 @@ async def test_get_message_sender_verifies_quoted_author(
     assert sender == "900001"
     assert socket.sent is not None
     assert socket.sent["action"] == "get_msg"
+
+
+async def test_account_status_does_not_treat_login_info_as_online_when_status_is_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = FakeSocket(
+        [
+            json.dumps(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "echo": "r-agent:status-probe",
+                    "data": {"online": False, "good": True},
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr("websockets.connect", lambda *args, **kwargs: FakeConnection(socket))
+
+    status = await get_onebot_account_status("ws://127.0.0.1:3001", "token")
+
+    assert status.online is False
+    assert status.good is True
+    assert status.account_id is None
+    assert socket.sent is not None
+    assert socket.sent["action"] == "get_status"
+
+
+async def test_account_status_requires_online_status_before_login_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = FakeSocket(
+        [
+            json.dumps(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "echo": "r-agent:status-probe",
+                    "data": {"online": True, "good": True},
+                }
+            ),
+            json.dumps(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "echo": "r-agent:online-probe",
+                    "data": {"user_id": 900001, "nickname": "Higgs"},
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr("websockets.connect", lambda *args, **kwargs: FakeConnection(socket))
+
+    status = await get_onebot_account_status("ws://127.0.0.1:3001", "token")
+
+    assert status.online is True
+    assert status.good is True
+    assert status.account_id == "900001"
+    assert status.nickname == "Higgs"
 
 
 async def test_group_reminder_requires_ack_and_uses_group_target(

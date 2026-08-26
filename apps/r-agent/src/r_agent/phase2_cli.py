@@ -42,7 +42,7 @@ from r_agent.owner_commands import OwnerCommandContext, OwnerCommandRouter
 from r_agent.passive_memory import PassiveMemoryLearner
 from r_agent.phase2_outbound import (
     OutboundError,
-    get_onebot_login_info,
+    get_onebot_account_status,
     get_onebot_message_sender,
     send_onebot_group_message,
     send_onebot_private_message,
@@ -684,16 +684,20 @@ async def listen() -> None:
         while True:
             if online.snapshot().transport_connected:
                 try:
-                    account_id, _ = await get_onebot_login_info(
+                    status = await get_onebot_account_status(
                         settings.onebot_ws_url, settings.onebot_access_token
                     )
                 except OutboundError:
-                    await online.set_qq_online(False, reason="get_login_info_failed")
+                    await online.set_qq_online(False, reason="onebot_status_probe_failed")
                 else:
-                    if expected_bot_qq and account_id != expected_bot_qq:
+                    if not status.online:
+                        await online.set_qq_online(False, reason="get_status_offline")
+                    elif not status.good:
+                        await online.set_qq_online(False, reason="get_status_unhealthy")
+                    elif expected_bot_qq and status.account_id != expected_bot_qq:
                         await online.set_qq_online(False, reason="wrong_qq_account")
                     else:
-                        await online.set_qq_online(True, reason="get_login_info_ok")
+                        await online.set_qq_online(True, reason="get_status_ok")
             await asyncio.sleep(30)
 
     async def reminder_loop() -> None:
@@ -844,17 +848,22 @@ async def listen() -> None:
                 delay = 1.0
                 await online.set_transport(True)
                 try:
-                    account_id, _ = await get_onebot_login_info(
+                    status = await get_onebot_account_status(
                         settings.onebot_ws_url, settings.onebot_access_token
                     )
                 except OutboundError:
-                    await online.set_qq_online(False, reason="initial_login_probe_failed")
+                    await online.set_qq_online(False, reason="initial_status_probe_failed")
                 else:
-                    account_ok = not expected_bot_qq or account_id == expected_bot_qq
-                    await online.set_qq_online(
-                        account_ok,
-                        reason="initial_login_probe_ok" if account_ok else "wrong_qq_account",
-                    )
+                    if not status.online:
+                        await online.set_qq_online(False, reason="get_status_offline")
+                    elif not status.good:
+                        await online.set_qq_online(False, reason="get_status_unhealthy")
+                    else:
+                        account_ok = not expected_bot_qq or status.account_id == expected_bot_qq
+                        await online.set_qq_online(
+                            account_ok,
+                            reason="get_status_ok" if account_ok else "wrong_qq_account",
+                        )
                 async for frame in socket:
                     if not isinstance(frame, str):
                         continue
