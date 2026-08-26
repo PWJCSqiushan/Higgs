@@ -45,11 +45,14 @@
 - 主人已授权进入部署准备；通过本机既有密钥和已知主机指纹完成只读预检，没有记录服务器地址、凭据或账号标识。
 - 生产仍运行 `d7aa96d`。NapCat 容器 healthy 但 QQ 权威状态为离线，agent 按预期 unhealthy；日志有两次踢线信号，未自动重启或登录。
 - 现有十库中九库完整。`memory.sqlite` 的五条旧记录在旧版 SQLite 下仍保留新增默认列之前的物理编码，导致 `integrity_check` 报告 `importance/source_trust` NOT NULL 问题，逻辑读取未丢失。
-- 部署被主动暂停。新增一次性 schema v3 物化迁移和回归测试，本地总验收为 `250 passed, 4 skipped`；必须先通过 PR/Ubuntu CI、创建可回滚快照，再允许生产启动迁移。
+- 一次性 schema v3 物化迁移已通过 PR #14、Ubuntu CI 和合并后主线 CI；部署前已创建 root-only 十库与私有配置原始恢复快照，旧 memory 告警按原样保留。
+- 不可变源码发布 `acb49ed1377d9fe43fa7737e9af4eb3309e67585` 已安装并切换 current，旧链接进入 `/srv/trash`；运行中的旧 agent/NapCat 尚未重建。
+- 两次构建都在 frozen lock 的上游 wheel 下载阶段停滞，有限等待后已取消且无残留。隔离临时容器从腾讯镜像安装相同 SDK 与依赖成功，故障定位为锁文件源 URL 与现有服务器网络路径不兼容。
+- Dockerfile 改为按锁定版本通过腾讯镜像预热实际 venv，再执行 offline frozen sync；增加部署顺序测试后本地总验收为 `251 passed, 4 skipped`，继续生产构建前必须先过 PR/CI。
 
 ## 后续节点
 
-1. 合并 schema v3 修复并创建部署前一致性/原始恢复快照。
-2. 部署新主线，显式保持官方 QQ 与模型候选提取关闭，复核十二库、宿主状态 timer 与发送边界。
-3. 到扫码环节请主人恢复 NapCat 登录，随后开始 48 小时匿名观测。
+1. 合并 OpenCloudOS 构建修复，从新主线重新打包并完成镜像构建。
+2. 显式保持官方 QQ 与模型候选提取关闭，只重建 agent；复核 schema v3 与十二库后安装宿主状态 timer。
+3. 谨慎应用 NapCat 有限重启策略，到扫码环节请主人恢复登录，随后开始 48 小时匿名观测。
 4. 官方开放平台登录和沙箱应用创建到真实联调阶段再请主人配合；真实模型评测同样需要私有配置后单独执行。
