@@ -95,6 +95,15 @@ uv run python -m r_agent.embedding_probe
 /higgs memory auto
 ```
 
+模型候选默认关闭，只能进入独立 shadow 队列。主人可只读查看模型候选：
+
+```text
+/higgs memory model list
+/higgs memory model show 候选短ID
+```
+
+评测集与真实模型评测门槛见 [Memory V2.1 模型候选评测](docs/MEMORY_V2_1_EVALUATION.md)。
+
 完整 QQ 审核流程见 [主人聊天命令](docs/CHAT_COMMANDS.md)。本机 CLI 仍可用于隐私硬删除等高风险操作：
 
 ```powershell

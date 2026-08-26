@@ -35,7 +35,11 @@ from r_agent.journal import Journal
 from r_agent.memory import MemoryError, MemoryStore
 from r_agent.memory_v2 import MemoryObservationStore, MemoryReconciler
 from r_agent.model_client import ModelConfig, ModelError, OpenAICompatibleClient
-from r_agent.model_memory_candidates import ModelCandidateExtractor, ModelCandidateShadowStore
+from r_agent.model_memory_candidates import (
+    MODEL_CANDIDATE_DEFAULT_MODE,
+    ModelCandidateExtractor,
+    ModelCandidateShadowStore,
+)
 from r_agent.official_qq import OfficialQQAdapter, OfficialQQConfig
 from r_agent.onebot import OneBotParseError, parse_message_event
 from r_agent.onebot_adapter import OneBotAdapter
@@ -473,7 +477,9 @@ async def listen() -> None:
     audit.initialize()
     observations = MemoryObservationStore(settings.data_dir / "memory.sqlite")
     observations.initialize()
-    model_candidate_mode = _value("R_AGENT_MEMORY_MODEL_CANDIDATES", "off").casefold()
+    model_candidate_mode = _value(
+        "R_AGENT_MEMORY_MODEL_CANDIDATES", MODEL_CANDIDATE_DEFAULT_MODE
+    ).casefold()
     if model_candidate_mode not in {"off", "shadow"}:
         raise ConfigError("R_AGENT_MEMORY_MODEL_CANDIDATES must be off or shadow")
     if model_candidate_mode == "shadow" and client is None:
@@ -648,6 +654,7 @@ async def listen() -> None:
         recall_ledger=recall,
         transport_state=transport_state,
         server_status=server_status,
+        model_candidate_shadow_store=model_candidate_store,
     )
     amap_key = _value("R_AGENT_AMAP_WEB_KEY")
     daily_plans = DailyPlanService(

@@ -81,6 +81,10 @@ _MEDIUM_MARKERS = (
     "宗教",
 )
 
+# Production never enables model proposals implicitly.  Operators must opt in
+# to the isolated ``shadow`` mode after an explicit review of real-model eval.
+MODEL_CANDIDATE_DEFAULT_MODE = "off"
+
 
 class CandidateModel(Protocol):
     async def complete(self, *, system: str, user: str, max_tokens: int = 400) -> str: ...
@@ -101,6 +105,36 @@ class CandidateResult:
     decision: CandidateDecision
     reason: str
     candidate: ModelMemoryCandidate | None = None
+
+
+class ModelCandidateStoreError(RuntimeError):
+    """Base error for read-only model-candidate queue access."""
+
+
+class ModelCandidateNotFoundError(ModelCandidateStoreError):
+    """A requested proposal ID does not exist."""
+
+
+class ModelCandidateAmbiguousError(ModelCandidateStoreError):
+    """A short proposal ID matched more than one proposal."""
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowCandidateRecord:
+    """One immutable, owner-reviewable shadow proposal row."""
+
+    proposal_id: str
+    observation_id: str
+    principal_id: str
+    evidence_message_id: str
+    kind: str | None
+    scope: str | None
+    confidence: float | None
+    sensitive_level: SensitiveLevel | None
+    normalized_content: str | None
+    decision: CandidateDecision
+    reason: str
+    created_at_ms: int
 
 
 def preflight_risk(text: str) -> CandidateResult | None:
@@ -227,9 +261,14 @@ class ModelCandidateShadowStore:
     def __init__(self, path: Path) -> None:
         self.path = path
 
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path, timeout=5)
+        conn.row_factory = sqlite3.Row
+        return conn
+
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(
                 """
@@ -252,7 +291,7 @@ class ModelCandidateShadowStore:
 
     def record(self, observation: Observation, results: tuple[CandidateResult, ...]) -> int:
         inserted = 0
-        with sqlite3.connect(self.path) as conn:
+        with self._connect() as conn:
             for index, result in enumerate(results):
                 candidate = result.candidate
                 raw_id = f"{observation.observation_id}:{index}:{result.decision}:{result.reason}"
@@ -282,6 +321,98 @@ class ModelCandidateShadowStore:
                 )
                 inserted += cursor.rowcount
         return inserted
+
+    @staticmethod
+    def _validate_window(*, limit: int, offset: int) -> None:
+        if not 1 <= limit <= 50:
+            raise ModelCandidateStoreError("limit must be between 1 and 50")
+        if offset < 0:
+            raise ModelCandidateStoreError("offset must not be negative")
+
+    @staticmethod
+    def _record_from_row(row: sqlite3.Row) -> ShadowCandidateRecord:
+        return ShadowCandidateRecord(
+            proposal_id=str(row["proposal_id"]),
+            observation_id=str(row["observation_id"]),
+            principal_id=str(row["principal_id"]),
+            evidence_message_id=str(row["evidence_message_id"]),
+            kind=str(row["kind"]) if row["kind"] is not None else None,
+            scope=str(row["scope"]) if row["scope"] is not None else None,
+            confidence=(float(row["confidence"]) if row["confidence"] is not None else None),
+            sensitive_level=(
+                SensitiveLevel(str(row["sensitive_level"]))
+                if row["sensitive_level"] is not None
+                else None
+            ),
+            normalized_content=(
+                str(row["normalized_content"]) if row["normalized_content"] is not None else None
+            ),
+            decision=CandidateDecision(str(row["decision"])),
+            reason=str(row["reason"]),
+            created_at_ms=int(row["created_at_ms"]),
+        )
+
+    def list_candidates(
+        self,
+        *,
+        decision: CandidateDecision | None = None,
+        limit: int = 8,
+        offset: int = 0,
+    ) -> tuple[ShadowCandidateRecord, ...]:
+        """List immutable queue rows; this method cannot change proposal state."""
+        self._validate_window(limit=limit, offset=offset)
+        clauses: list[str] = []
+        parameters: list[object] = []
+        if decision is not None:
+            clauses.append("decision = ?")
+            parameters.append(decision.value)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        parameters.extend((limit, offset))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT proposal_id, observation_id, principal_id, evidence_message_id,
+                       kind, scope, confidence, sensitive_level, normalized_content,
+                       decision, reason, created_at_ms
+                FROM model_memory_candidate_shadow
+                {where}
+                ORDER BY created_at_ms DESC, proposal_id DESC
+                LIMIT ? OFFSET ?
+                """,
+                parameters,
+            ).fetchall()
+        return tuple(self._record_from_row(row) for row in rows)
+
+    # The explicit review name makes the read-only intent clear to callers.
+    list_for_review = list_candidates
+
+    def get_for_review(self, proposal_id: str) -> ShadowCandidateRecord:
+        """Return one exact or unambiguous short-ID match for owner review."""
+        clean = proposal_id.strip().casefold()
+        if not clean or len(clean) > 32 or any(char not in "0123456789abcdef" for char in clean):
+            raise ModelCandidateNotFoundError("model candidate ID is invalid")
+        if len(clean) < 6:
+            raise ModelCandidateNotFoundError(
+                "model candidate ID prefix must contain at least 6 characters"
+            )
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT proposal_id, observation_id, principal_id, evidence_message_id,
+                       kind, scope, confidence, sensitive_level, normalized_content,
+                       decision, reason, created_at_ms
+                FROM model_memory_candidate_shadow
+                WHERE proposal_id LIKE ?
+                ORDER BY proposal_id
+                LIMIT 2
+                """,
+                (f"{clean}%",),
+            ).fetchall()
+        if not rows:
+            raise ModelCandidateNotFoundError("model candidate ID was not found")
+        if len(rows) > 1:
+            raise ModelCandidateAmbiguousError("model candidate short ID is ambiguous")
+        return self._record_from_row(rows[0])
 
     async def extract_and_record(
         self,

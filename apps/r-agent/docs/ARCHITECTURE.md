@@ -24,6 +24,8 @@ NapCat / OneBot
 - `identity.py`：QQ 外部身份映射；主人角色只接受本机配置。
 - `context.py`：按当前主体构造有界上下文，聊天文字不能覆盖系统规则。
 - `memory.py`：候选、隔离、激活、作废和删除的状态机。
+- `model_memory_candidates.py`：严格校验、只读审核队列和永不自动激活的模型候选。
+- `model_memory_evaluation.py`：通过完整候选提取器运行的脱敏中文评测集与聚合指标。
 - `vector_memory.py`、`embedding.py`：主体作用域内的向量写入与相似度召回。
 - `passive_memory.py`：从未回复群聊中提取低置信度候选，永不自动激活。
 - `safety.py`、`qq_text.py`：发送前文本清理与敏感输出拦截。
@@ -41,3 +43,4 @@ NapCat / OneBot
 - 新的入口权限必须先写测试，再接入 `phase2_cli.py`。
 - 模型、QQ 发送、向量服务失败都必须转为可审计结果，不能绕过安全门。
 - 日志只写决定和计数，不记录 API Key、敏感词命中内容或完整记忆正文。
+- 模型候选生产默认关闭；真实模型评测达到门槛前不得开启 shadow，审核队列只提供主人 list/show。
