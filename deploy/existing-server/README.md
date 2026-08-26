@@ -49,9 +49,10 @@ to the planned 4-core / 8-GB server instead of removing the limit.
 
 ## Daily-plan rollout
 
-The agent now keeps ten consistent SQLite stores. `agenda.sqlite` contains
-principal-isolated daily plans and `skills.sqlite` contains exact-parameter
-approvals; both are included in startup and periodic recovery snapshots. Start
+The agent now keeps twelve consistent SQLite stores. In addition to the ten
+planner-era stores, `transport.sqlite` contains anonymous channel state and
+`tool_audit.sqlite` contains hashed tool decisions/receipts. All twelve are
+included in startup and periodic recovery snapshots. Start
 the planner in `shadow` mode on this 2-GB host:
 
 ```dotenv
