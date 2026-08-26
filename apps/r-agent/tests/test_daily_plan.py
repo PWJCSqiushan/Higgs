@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, tzinfo
 from pathlib import Path
 
 import pytest
 
+import r_agent.daily_plan as daily_plan
 from r_agent.agenda import AgendaError, AgendaStore
 from r_agent.daily_plan import DailyPlanConfig, DailyPlanService
 from r_agent.events import ConversationKind, InboundEvent
@@ -126,7 +127,16 @@ async def test_shadow_plan_never_creates_real_reminders(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_plan_add_creates_a_new_versioned_draft(tmp_path: Path) -> None:
+async def test_plan_add_creates_a_new_versioned_draft(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class MorningDateTime(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            fixed = datetime(2026, 8, 9, 9, 0, tzinfo=SHANGHAI)
+            return fixed if tz is None else fixed.astimezone(tz)
+
+    monkeypatch.setattr(daily_plan, "datetime", MorningDateTime)
     planner = service(tmp_path, mode="shadow")
     principal = Principal("owner", "owner")
     await planner.handle_event(event("今天的待办：背单词、写代码，帮我安排"), principal)
