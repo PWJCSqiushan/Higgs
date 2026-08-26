@@ -3,6 +3,11 @@ import json
 import pytest
 
 from r_agent.events import ConversationKind, InboundEvent
+from r_agent.phase2_cli import (
+    ONLINE_PROBE_INTERVAL_SECONDS,
+    ONLINE_PROBE_MAX_DETECTION_SECONDS,
+    ONLINE_PROBE_TIMEOUT_SECONDS,
+)
 from r_agent.phase2_outbound import (
     OutboundError,
     get_onebot_account_status,
@@ -48,6 +53,11 @@ class FakeConnection:
 
     async def __aexit__(self, *args: object) -> None:
         return None
+
+
+class BlackHoleSocket(FakeSocket):
+    async def recv(self) -> str:
+        raise TimeoutError("probe response unavailable")
 
 
 async def test_outbound_ignores_event_before_matching_ack(
@@ -182,6 +192,53 @@ async def test_account_status_requires_online_status_before_login_identity(
     assert status.good is True
     assert status.account_id == "900001"
     assert status.nickname == "Higgs"
+
+
+@pytest.mark.parametrize(
+    ("online", "good"),
+    [(False, True), (True, False)],
+)
+async def test_account_status_rejects_unhealthy_status_without_login_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    online: bool,
+    good: bool,
+) -> None:
+    socket = FakeSocket(
+        [
+            json.dumps(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "echo": "r-agent:status-probe",
+                    "data": {"online": online, "good": good},
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr("websockets.connect", lambda *args, **kwargs: FakeConnection(socket))
+
+    status = await get_onebot_account_status("ws://127.0.0.1:3001", "token")
+
+    assert status.online is online
+    assert status.good is good
+    assert status.account_id is None
+
+
+async def test_account_status_blackhole_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    socket = BlackHoleSocket([])
+    monkeypatch.setattr("websockets.connect", lambda *args, **kwargs: FakeConnection(socket))
+
+    with pytest.raises(OutboundError, match="action failed"):
+        await get_onebot_account_status("ws://127.0.0.1:3001", "token")
+
+
+def test_online_probe_detection_budget_stays_within_sixty_seconds() -> None:
+    assert ONLINE_PROBE_INTERVAL_SECONDS == 30.0
+    assert ONLINE_PROBE_TIMEOUT_SECONDS == 20.0
+    assert ONLINE_PROBE_MAX_DETECTION_SECONDS == (
+        ONLINE_PROBE_INTERVAL_SECONDS + ONLINE_PROBE_TIMEOUT_SECONDS
+    )
+    assert ONLINE_PROBE_MAX_DETECTION_SECONDS <= 60.0
 
 
 async def test_group_reminder_requires_ack_and_uses_group_target(

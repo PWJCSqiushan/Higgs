@@ -55,9 +55,14 @@ from r_agent.reminders import ReminderStore
 from r_agent.risk_ledger import RiskLedger, RiskLimits
 from r_agent.safety import OutboundSafetyPolicy, SafetyError
 from r_agent.skills import SkillApprovalStore, default_skill_registry
+from r_agent.transport_state import TransportStateStore
 from r_agent.vector_memory import MemoryVectorStore
 
 _log = logging.getLogger(__name__)
+
+ONLINE_PROBE_INTERVAL_SECONDS = 30.0
+ONLINE_PROBE_TIMEOUT_SECONDS = 20.0
+ONLINE_PROBE_MAX_DETECTION_SECONDS = ONLINE_PROBE_INTERVAL_SECONDS + ONLINE_PROBE_TIMEOUT_SECONDS
 
 
 def _value(name: str, default: str = "") -> str:
@@ -447,6 +452,8 @@ async def listen() -> None:
         transport_version=_value("R_AGENT_NAPCAT_VERSION"),
         egress_asn=_value("R_AGENT_EGRESS_ASN"),
     )
+    transport_state = TransportStateStore(settings.data_dir / "transport.sqlite")
+    transport_state.initialize()
     policy = ReplyPolicy(
         mode=phase.mode,
         private_users=phase.private_users.union({settings.owner_qq} if settings.owner_qq else ()),
@@ -500,14 +507,29 @@ async def listen() -> None:
     health_path = Path(
         os.environ.get("R_AGENT_HEALTH_FILE", str(settings.data_dir / "health.json"))
     )
-    health = HealthReporter(health_path)
+    napcat_health_path = Path(
+        os.environ.get(
+            "R_AGENT_NAPCAT_HEALTH_FILE",
+            "/run/higgs-napcat-health/heartbeat",
+        )
+    )
+    health = HealthReporter(health_path, napcat_health_path=napcat_health_path)
     online = OnlineState(
         health,
         PushPlusNotifier(_value("R_AGENT_PUSHPLUS_TOKEN")),
         risk_ledger=risk_ledger,
+        transport_state=transport_state,
     )
     health.set_transport_connected(False)
     expected_bot_qq = _value("R_AGENT_EXPECTED_BOT_QQ")
+    if phase.mode == "live":
+        expected_values = parse_qq_set(
+            expected_bot_qq,
+            name="R_AGENT_EXPECTED_BOT_QQ",
+        )
+        if len(expected_values) != 1:
+            raise ConfigError("live mode requires one R_AGENT_EXPECTED_BOT_QQ")
+        expected_bot_qq = next(iter(expected_values))
     reconciler = MemoryReconciler(
         observations=observations,
         memory=memory,
@@ -538,6 +560,7 @@ async def listen() -> None:
         conversation_guard=breaker,
         risk_ledger=risk_ledger,
         recall_ledger=recall,
+        transport_state=transport_state,
     )
     amap_key = _value("R_AGENT_AMAP_WEB_KEY")
     daily_plans = DailyPlanService(
@@ -684,10 +707,13 @@ async def listen() -> None:
         while True:
             if online.snapshot().transport_connected:
                 try:
-                    status = await get_onebot_account_status(
-                        settings.onebot_ws_url, settings.onebot_access_token
+                    status = await asyncio.wait_for(
+                        get_onebot_account_status(
+                            settings.onebot_ws_url, settings.onebot_access_token
+                        ),
+                        timeout=ONLINE_PROBE_TIMEOUT_SECONDS,
                     )
-                except OutboundError:
+                except (OutboundError, TimeoutError):
                     await online.set_qq_online(False, reason="onebot_status_probe_failed")
                 else:
                     if not status.online:
@@ -698,7 +724,7 @@ async def listen() -> None:
                         await online.set_qq_online(False, reason="wrong_qq_account")
                     else:
                         await online.set_qq_online(True, reason="get_status_ok")
-            await asyncio.sleep(30)
+            await asyncio.sleep(ONLINE_PROBE_INTERVAL_SECONDS)
 
     async def reminder_loop() -> None:
         while True:
@@ -871,7 +897,11 @@ async def listen() -> None:
                         raw = json.loads(frame)
                         hint = onebot_online_hint(raw)
                         if hint is not None and hint[0] is False:
-                            await online.set_qq_online(False, reason=hint[1])
+                            await online.set_qq_online(
+                                False,
+                                reason=hint[1],
+                                health_receipt=False,
+                            )
 
                         if not isinstance(raw, dict) or raw.get("post_type") != "message":
                             continue

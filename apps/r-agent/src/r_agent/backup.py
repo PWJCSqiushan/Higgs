@@ -33,6 +33,7 @@ class BackupManager:
         "risk_ledger.sqlite",
         "agenda.sqlite",
         "skills.sqlite",
+        "transport.sqlite",
     )
 
     def __init__(

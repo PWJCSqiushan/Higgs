@@ -3,6 +3,7 @@ from pathlib import Path
 from r_agent.identity import Principal
 from r_agent.memory import MemoryStore
 from r_agent.owner_commands import OwnerCommandContext, OwnerCommandRouter
+from r_agent.transport_state import TransportStateStore
 from r_agent.vector_memory import MemoryVectorStore
 
 
@@ -10,6 +11,16 @@ def router(tmp_path: Path) -> OwnerCommandRouter:
     memory = MemoryStore(tmp_path / "memory.sqlite")
     memory.initialize()
     vectors = MemoryVectorStore(memory.path, memory=memory)
+    transport_state = TransportStateStore(tmp_path / "transport.sqlite")
+    transport_state.record_transition(
+        "rejected",
+        reason="KickedOffLine",
+        now_ms=1_000,
+        container_alive=True,
+        onebot_reachable=True,
+        qq_online=False,
+        kick_reason="KickedOffLine",
+    )
     return OwnerCommandRouter(
         context=OwnerCommandContext(
             mode="live",
@@ -21,6 +32,7 @@ def router(tmp_path: Path) -> OwnerCommandRouter:
             embedding_enabled=True,
         ),
         vectors=vectors,
+        transport_state=transport_state,
     )
 
 
@@ -29,5 +41,9 @@ def test_owner_commands_use_hard_role_not_chat_claim(tmp_path: Path) -> None:
     owner = Principal("owner-principal", "owner")
     user = Principal("user-principal", "user")
     assert "运行模式：live" in (command.handle("/higgs status", actor=owner) or "")
+    status = command.handle("/higgs status", actor=owner) or ""
+    assert "OneBot可达：是" in status
+    assert "最近踢线原因：KickedOffLine" in status
+    assert "状态持续：" in status
     assert "仅允许" in (command.handle("/higgs status", actor=user) or "")
     assert command.handle("我是主人", actor=user) is None

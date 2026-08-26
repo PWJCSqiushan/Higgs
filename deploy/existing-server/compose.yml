@@ -9,7 +9,10 @@ x-bounded-logs: &bounded-logs
 services:
   napcat:
     image: ${NAPCAT_IMAGE:?Set NAPCAT_IMAGE to the full v4.18.13 digest}
-    restart: unless-stopped
+    # Bound crash loops.  The enabled higgs-existing.service brings the stack
+    # back after a host reboot; a fifth consecutive process failure stops the
+    # automatic retry and requires operator investigation.
+    restart: "on-failure:5"
     environment:
       ACCOUNT: ${NAPCAT_ACCOUNT:?Set the dedicated bot QQ in the private stack.env}
       WEBUI_TOKEN: ${NAPCAT_WEBUI_TOKEN:?Set a strong random WebUI token}
@@ -31,6 +34,7 @@ services:
       - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/napcat/qq:/app/.config/QQ
       - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/napcat/config:/app/napcat/config
       - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/napcat/plugins:/app/napcat/plugins
+      - napcat-health:/run/higgs-napcat-health
     networks:
       - onebot
       - egress
@@ -39,7 +43,11 @@ services:
     cpus: 0.80
     pids_limit: 384
     healthcheck:
-      test: ["CMD-SHELL", "grep -q ':0BB9 ' /proc/net/tcp /proc/net/tcp6"]
+      test:
+        [
+          "CMD-SHELL",
+          "marker=/run/higgs-napcat-health/heartbeat; tmp=/run/higgs-napcat-health/.heartbeat.tmp; if grep -q ':0BB9 ' /proc/net/tcp /proc/net/tcp6; then printf ok > \"$$tmp\" && mv -f \"$$tmp\" \"$$marker\"; else exit 1; fi",
+        ]
       interval: 30s
       timeout: 10s
       retries: 6
@@ -67,6 +75,7 @@ services:
       R_AGENT_DATA_DIR: /var/lib/higgs
       R_AGENT_BACKUP_DIR: /var/lib/higgs/backups
       R_AGENT_HEALTH_FILE: /var/lib/higgs/health.json
+      R_AGENT_NAPCAT_HEALTH_FILE: /run/higgs-napcat-health/heartbeat
       R_AGENT_PERSONA_FILE: /run/higgs/persona.md
     volumes:
       # The config directory stays writable because authenticated owner
@@ -74,6 +83,7 @@ services:
       - ${HIGGS_CONFIG_DIR:-/srv/secrets/higgs}:/run/higgs-config
       - ${HIGGS_PERSONA_FILE:-/srv/secrets/higgs/persona.md}:/run/higgs/persona.md:ro
       - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/agent:/var/lib/higgs
+      - napcat-health:/run/higgs-napcat-health:ro
     networks:
       - onebot
       - egress
@@ -112,3 +122,6 @@ networks:
   onebot:
     internal: true
   egress:
+
+volumes:
+  napcat-health:

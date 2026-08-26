@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from urllib import error, parse, request
 
 from r_agent.health import HealthReporter
+from r_agent.transport_state import TransportStateError, TransportStateStore
 
 if TYPE_CHECKING:
     from r_agent.risk_ledger import RiskLedger
@@ -72,10 +73,12 @@ class OnlineState:
         notifier: PushPlusNotifier,
         *,
         risk_ledger: RiskLedger | None = None,
+        transport_state: TransportStateStore | None = None,
     ) -> None:
         self.health = health
         self.notifier = notifier
         self.risk_ledger = risk_ledger
+        self.transport_state = transport_state
         self._transport = False
         self._online = False
         self._state = "pending"
@@ -83,6 +86,15 @@ class OnlineState:
         self._changed_at_ms = int(time.time() * 1000)
         self._reason = "startup"
         self._lock = threading.Lock()
+        if self.transport_state is not None:
+            self.transport_state.initialize()
+            persisted = self.transport_state.snapshot()
+            self._transport = persisted.onebot_reachable
+            self._online = persisted.qq_online
+            self._state = persisted.state
+            self._incident_id = persisted.incident_id
+            self._changed_at_ms = persisted.state_started_at_ms
+            self._reason = persisted.last_health_reason or "startup"
 
     def snapshot(self) -> OnlineSnapshot:
         with self._lock:
@@ -100,38 +112,105 @@ class OnlineState:
             self._transport = connected
             if not connected:
                 self._state = "pending"
+            state = "verified" if connected and self._online else "pending"
+            online = self._online if connected else False
         self.health.set_transport_connected(connected)
+        if self.transport_state is not None:
+            self.transport_state.record_transition(
+                state,
+                reason="onebot_connected" if connected else "transport_disconnected",
+                napcat_container_alive=self.health.napcat_container_alive,
+                onebot_reachable=connected,
+                qq_online=online,
+                account_match=None if not connected else self._account_match(online, self._reason),
+            )
         if not connected:
             await self.set_qq_state("pending", reason="transport_disconnected")
 
-    async def set_qq_online(self, online: bool, *, reason: str) -> None:
-        await self.set_qq_state("verified" if online else "rejected", reason=reason)
+    async def set_qq_online(
+        self,
+        online: bool,
+        *,
+        reason: str,
+        health_receipt: bool = True,
+    ) -> None:
+        await self.set_qq_state(
+            "verified" if online else "rejected",
+            reason=reason,
+            health_receipt=health_receipt,
+        )
 
-    async def set_qq_state(self, state: str, *, reason: str) -> None:
+    async def set_qq_state(
+        self,
+        state: str,
+        *,
+        reason: str,
+        health_receipt: bool = True,
+    ) -> None:
         if state not in {"pending", "verified", "rejected"}:
             raise ValueError("QQ state must be pending, verified, or rejected")
         alert: tuple[str, str] | None = None
         now_ms = int(time.time() * 1000)
         online = state == "verified"
+        account_match = self._account_match(online, reason)
         with self._lock:
             previous = self._online
+            previous_state = self._state
             self._online = online
             self._reason = reason[:120]
             self._state = state
-            if previous != online:
+            entered_rejected = state == "rejected" and previous_state != "rejected"
+            if not online and (previous or entered_rejected):
                 self._changed_at_ms = now_ms
-                if not online:
-                    self._incident_id += 1
-                    alert = (
-                        "Higgs QQ 已离线",
-                        f"事故 #{self._incident_id}。普通回复与提醒发送已暂停；后台与备份仍运行。",
-                    )
-                elif self._incident_id > 0:
+                self._incident_id += 1
+                alert = (
+                    "Higgs QQ 已离线",
+                    f"事故 #{self._incident_id}。普通回复与提醒发送已暂停；后台与备份仍运行。",
+                )
+            elif previous != online:
+                self._changed_at_ms = now_ms
+                if self._incident_id > 0:
                     alert = (
                         "Higgs QQ 已恢复",
                         f"事故 #{self._incident_id} 已恢复，待发送提醒将按规则补发。",
                     )
         self.health.set_qq_state(self._state, reason=reason)
+        self.health.set_account_match(account_match)
+        kick_reason = reason if self._is_kick_reason(reason) else None
+        if kick_reason is not None or not online:
+            self.health.set_kick_reason(kick_reason)
+        if health_receipt:
+            self.health.record_action_receipt(
+                "ok" if online else "failed",
+                reason=reason,
+            )
+        if self.transport_state is not None:
+            try:
+                persisted = self.transport_state.record_transition(
+                    state,
+                    reason=reason,
+                    now_ms=now_ms,
+                    napcat_container_alive=self.health.napcat_container_alive,
+                    onebot_reachable=self._transport,
+                    qq_online=online,
+                    account_match=account_match,
+                    kick_reason=kick_reason,
+                    health_receipt=("ok" if online else "failed", reason)
+                    if health_receipt
+                    else None,
+                )
+            except TransportStateError:
+                # A broken observability store must never turn a QQ state
+                # transition into a reconnect loop or duplicate alert storm.
+                persisted = None
+            if persisted is not None:
+                with self._lock:
+                    self._incident_id = persisted.incident_id
+                    self._changed_at_ms = persisted.state_started_at_ms
+                if alert is not None:
+                    kind = "recovery" if online else "incident"
+                    if not self.transport_state.claim_alert(kind, persisted.incident_id):
+                        alert = None
         if self.risk_ledger is not None:
             await asyncio.to_thread(
                 self.risk_ledger.record_online_transition,
@@ -148,6 +227,17 @@ class OnlineState:
                 )
             except NotificationError:
                 pass
+
+    @staticmethod
+    def _is_kick_reason(reason: str) -> bool:
+        marker = reason.casefold()
+        return "kick" in marker or marker in {"kickedoffline", "kicked_offline"}
+
+    @staticmethod
+    def _account_match(online: bool, reason: str) -> bool | None:
+        if reason == "wrong_qq_account":
+            return False
+        return True if online else None
 
 
 def onebot_online_hint(payload: object) -> tuple[bool, str] | None:

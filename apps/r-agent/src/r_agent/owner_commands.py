@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from r_agent.backup import BackupError, BackupManager
@@ -22,6 +24,7 @@ from r_agent.operator_control import (
 from r_agent.recall import RecallLedger
 from r_agent.reminders import ReminderError, ReminderStore, format_job
 from r_agent.risk_ledger import RiskLedger
+from r_agent.transport_state import TransportStateStore
 from r_agent.vector_memory import MemoryVectorStore
 
 
@@ -55,6 +58,7 @@ class OwnerCommandRouter:
         conversation_guard: ConversationCircuitBreaker | None = None,
         risk_ledger: RiskLedger | None = None,
         recall_ledger: RecallLedger | None = None,
+        transport_state: TransportStateStore | None = None,
     ) -> None:
         self.context = context
         self.vectors = vectors
@@ -67,6 +71,7 @@ class OwnerCommandRouter:
         self.conversation_guard = conversation_guard
         self.risk_ledger = risk_ledger
         self.recall_ledger = recall_ledger
+        self.transport_state = transport_state
 
     def handle(self, text: str, *, actor: Principal) -> str | None:
         clean = text.strip()
@@ -165,7 +170,7 @@ class OwnerCommandRouter:
                 f"(置信度≥{snapshot.memory_auto_review_confidence:.2f}，"
                 f"重复佐证≥{snapshot.memory_auto_review_evidence}次)"
             )
-        return (
+        status = (
             f"普通回复：{'启用' if enabled else '暂停'}\n"
             f"运行模式：{self.context.mode}\n"
             f"获准好友：{private_count}\n"
@@ -175,6 +180,53 @@ class OwnerCommandRouter:
             f"被动学习：{self.context.passive_learning_enabled}\n"
             f"向量模块：{self.context.embedding_enabled}"
             f"{rate_line}{auto_review_line}"
+        )
+        transport_status = self._transport_status()
+        return f"{status}{transport_status}"
+
+    def _transport_status(self) -> str:
+        """Format anonymous persisted transport dimensions for the owner."""
+        if self.transport_state is None:
+            return ""
+        snapshot = self.transport_state.snapshot()
+
+        def flag(value: bool | None) -> str:
+            if value is None:
+                return "未验证"
+            return "是" if value else "否"
+
+        def age(timestamp_ms: int | None) -> str:
+            if timestamp_ms is None:
+                return "无"
+            seconds = max(0, int((time.time() * 1000 - timestamp_ms) / 1000))
+            return f"{seconds}秒前"
+
+        def timestamp(timestamp_ms: int) -> str:
+            return datetime.fromtimestamp(timestamp_ms / 1000, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        state_name = {
+            "verified": "在线",
+            "rejected": "异常",
+            "pending": "待确认",
+        }.get(snapshot.state, "未知")
+        action = snapshot.last_action_state
+        action_name = {"ok": "正常", "failed": "失败", "unknown": "未知"}.get(action, "未知")
+        duration_seconds = max(0, snapshot.duration_ms // 1000)
+        return (
+            f"\nQQ通道：{state_name}\n"
+            f"NapCat容器存活：{flag(snapshot.napcat_container_alive)}\n"
+            f"OneBot可达：{flag(snapshot.onebot_reachable)}\n"
+            f"QQ在线：{flag(snapshot.qq_online)}\n"
+            f"账号匹配：{flag(snapshot.account_match)}\n"
+            f"最近动作回执：{action_name}({snapshot.last_action_reason or '无'}，"
+            f"{age(snapshot.last_action_at_ms)})\n"
+            f"最近健康回执：{snapshot.last_health_state}("
+            f"{snapshot.last_health_reason or '无'}，{age(snapshot.last_health_at_ms)})\n"
+            f"最近踢线原因：{snapshot.kick_reason or '无'}\n"
+            f"状态开始：{timestamp(snapshot.state_started_at_ms)}\n"
+            f"故障持续：{snapshot.fault_duration_ms // 1000}秒\n"
+            f"状态持续：{duration_seconds}秒\n"
+            f"恢复结果：{snapshot.recovery_result or '无'}"
         )
 
     def _risk(self, arguments: list[str]) -> str:
