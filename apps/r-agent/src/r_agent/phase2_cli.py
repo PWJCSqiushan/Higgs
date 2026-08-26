@@ -55,6 +55,7 @@ from r_agent.reminders import ReminderStore
 from r_agent.risk_ledger import RiskLedger, RiskLimits
 from r_agent.safety import OutboundSafetyPolicy, SafetyError
 from r_agent.skills import SkillApprovalStore, default_skill_registry
+from r_agent.transport_state import TransportStateStore
 from r_agent.vector_memory import MemoryVectorStore
 
 _log = logging.getLogger(__name__)
@@ -447,6 +448,8 @@ async def listen() -> None:
         transport_version=_value("R_AGENT_NAPCAT_VERSION"),
         egress_asn=_value("R_AGENT_EGRESS_ASN"),
     )
+    transport_state = TransportStateStore(settings.data_dir / "transport.sqlite")
+    transport_state.initialize()
     policy = ReplyPolicy(
         mode=phase.mode,
         private_users=phase.private_users.union({settings.owner_qq} if settings.owner_qq else ()),
@@ -505,6 +508,7 @@ async def listen() -> None:
         health,
         PushPlusNotifier(_value("R_AGENT_PUSHPLUS_TOKEN")),
         risk_ledger=risk_ledger,
+        transport_state=transport_state,
     )
     health.set_transport_connected(False)
     expected_bot_qq = _value("R_AGENT_EXPECTED_BOT_QQ")
@@ -538,6 +542,7 @@ async def listen() -> None:
         conversation_guard=breaker,
         risk_ledger=risk_ledger,
         recall_ledger=recall,
+        transport_state=transport_state,
     )
     amap_key = _value("R_AGENT_AMAP_WEB_KEY")
     daily_plans = DailyPlanService(
@@ -871,7 +876,11 @@ async def listen() -> None:
                         raw = json.loads(frame)
                         hint = onebot_online_hint(raw)
                         if hint is not None and hint[0] is False:
-                            await online.set_qq_online(False, reason=hint[1])
+                            await online.set_qq_online(
+                                False,
+                                reason=hint[1],
+                                health_receipt=False,
+                            )
 
                         if not isinstance(raw, dict) or raw.get("post_type") != "message":
                             continue
