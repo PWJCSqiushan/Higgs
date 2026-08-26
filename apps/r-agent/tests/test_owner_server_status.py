@@ -43,4 +43,7 @@ def test_router_exposes_server_status_only_as_explicit_owner_command(tmp_path: P
     )
     owner = Principal("owner-principal", "owner")
     assert "服务器状态" in (router.handle("/higgs server status", actor=owner) or "")
+    assert "仅允许主人私聊" in (
+        router.handle("/higgs server status", actor=owner, surface="group") or ""
+    )
     assert "用法" in (router.handle("/higgs server now", actor=owner) or "")

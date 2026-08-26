@@ -314,6 +314,7 @@ class PersonaBrain:
                     self.owner_commands.handle,
                     event.text,
                     actor=principal,
+                    surface=event.conversation_kind.value,
                 )
                 if command_reply is not None:
                     return command_reply

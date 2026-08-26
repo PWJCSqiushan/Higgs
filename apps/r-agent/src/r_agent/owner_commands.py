@@ -76,7 +76,7 @@ class OwnerCommandRouter:
         self.transport_state = transport_state
         self.server_status = server_status
 
-    def handle(self, text: str, *, actor: Principal) -> str | None:
+    def handle(self, text: str, *, actor: Principal, surface: str = "private") -> str | None:
         clean = text.strip()
         if not clean.casefold().startswith(self.PREFIX):
             return None
@@ -93,7 +93,7 @@ class OwnerCommandRouter:
             if command in {"status", "状态"}:
                 return self._status()
             if command in {"server", "服务器"}:
-                return self._server(arguments, actor=actor)
+                return self._server(arguments, actor=actor, surface=surface)
             if command in {"enable", "启用"}:
                 return self._set_enabled(True)
             if command in {"disable", "停用"}:
@@ -149,9 +149,11 @@ class OwnerCommandRouter:
             "永久删除记忆仍需在本机CLI双重确认。"
         )
 
-    def _server(self, arguments: list[str], *, actor: Principal) -> str:
+    def _server(self, arguments: list[str], *, actor: Principal, surface: str) -> str:
         if len(arguments) != 1 or arguments[0].casefold() != "status":
             raise OperatorControlError("用法：/higgs server status")
+        if surface.strip().casefold() != "private":
+            raise OperatorControlError("服务器状态命令仅允许主人私聊。")
         if self.server_status is None:
             raise OperatorControlError("服务器状态工具未启用。")
         return self.server_status.handle(actor=actor)
