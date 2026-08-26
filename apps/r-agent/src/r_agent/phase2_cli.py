@@ -328,7 +328,7 @@ async def process_reply(
     result: IngestResult,
     policy: ReplyPolicy,
     brain: PersonaBrain,
-    sender: Callable[[InboundEvent, str], Awaitable[DeliveryReceipt | None]],
+    sender: Callable[[InboundEvent, str], Awaitable[DeliveryReceipt]],
     safety: OutboundSafetyPolicy | None = None,
     breaker: ConversationCircuitBreaker | None = None,
     owner_qq: str | None = None,
@@ -377,10 +377,7 @@ async def process_reply(
         return ReplyPlan(ReplyDecision.DRAFTED, text)
     try:
         receipt = await sender(event, text)
-        # Older in-process test senders returned None.  The live runtime always
-        # returns a typed receipt; never infer success from a missing receipt
-        # there, because its adapter is responsible for provider correlation.
-        if receipt is not None and receipt.state is not DeliveryState.SENT:
+        if receipt.state is not DeliveryState.SENT:
             raise OutboundError(
                 "transport delivery was not acknowledged",
                 delivery_unknown=receipt.state is DeliveryState.UNKNOWN,
@@ -389,6 +386,10 @@ async def process_reply(
         if risk_ledger is not None and reservation_id is not None:
             outcome = "unknown" if exc.delivery_unknown else "failed"
             await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome=outcome)
+        return ReplyPlan(ReplyDecision.SEND_FAILED, text)
+    except TransportUnavailable:
+        if risk_ledger is not None and reservation_id is not None:
+            await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="failed")
         return ReplyPlan(ReplyDecision.SEND_FAILED, text)
     if risk_ledger is not None and reservation_id is not None:
         await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="sent")
