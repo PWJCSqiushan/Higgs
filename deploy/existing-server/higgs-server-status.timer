@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh the bounded Higgs host status snapshot
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+RandomizedDelaySec=10s
+Persistent=true
+Unit=higgs-server-status.service
+
+[Install]
+WantedBy=timers.target

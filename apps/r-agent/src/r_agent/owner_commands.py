@@ -24,6 +24,7 @@ from r_agent.operator_control import (
 from r_agent.recall import RecallLedger
 from r_agent.reminders import ReminderError, ReminderStore, format_job
 from r_agent.risk_ledger import RiskLedger
+from r_agent.server_status import ServerStatusCommand
 from r_agent.transport_state import TransportStateStore
 from r_agent.vector_memory import MemoryVectorStore
 
@@ -59,6 +60,7 @@ class OwnerCommandRouter:
         risk_ledger: RiskLedger | None = None,
         recall_ledger: RecallLedger | None = None,
         transport_state: TransportStateStore | None = None,
+        server_status: ServerStatusCommand | None = None,
     ) -> None:
         self.context = context
         self.vectors = vectors
@@ -72,6 +74,7 @@ class OwnerCommandRouter:
         self.risk_ledger = risk_ledger
         self.recall_ledger = recall_ledger
         self.transport_state = transport_state
+        self.server_status = server_status
 
     def handle(self, text: str, *, actor: Principal) -> str | None:
         clean = text.strip()
@@ -89,6 +92,8 @@ class OwnerCommandRouter:
                 return self._help()
             if command in {"status", "状态"}:
                 return self._status()
+            if command in {"server", "服务器"}:
+                return self._server(arguments, actor=actor)
             if command in {"enable", "启用"}:
                 return self._set_enabled(True)
             if command in {"disable", "停用"}:
@@ -120,6 +125,7 @@ class OwnerCommandRouter:
         return (
             "Higgs主人命令：\n"
             "/higgs status\n"
+            "/higgs server status\n"
             "/higgs enable | disable\n"
             "/higgs whitelist\n"
             "/higgs whitelist private add|remove QQ号\n"
@@ -142,6 +148,13 @@ class OwnerCommandRouter:
             "/higgs backup [now]\n"
             "永久删除记忆仍需在本机CLI双重确认。"
         )
+
+    def _server(self, arguments: list[str], *, actor: Principal) -> str:
+        if len(arguments) != 1 or arguments[0].casefold() != "status":
+            raise OperatorControlError("用法：/higgs server status")
+        if self.server_status is None:
+            raise OperatorControlError("服务器状态工具未启用。")
+        return self.server_status.handle(actor=actor)
 
     def _snapshot(self) -> ControlSnapshot | None:
         return self.control.snapshot() if self.control is not None else None
