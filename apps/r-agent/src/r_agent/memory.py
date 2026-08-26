@@ -240,6 +240,30 @@ class MemoryStore:
                 """,
                 (int(time.time() * 1000),),
             )
+            applied_versions = {
+                int(row[0]) for row in conn.execute("SELECT version FROM memory_schema_versions")
+            }
+            if 3 not in applied_versions:
+                # Older SQLite builds can retain pre-ALTER records without materializing
+                # newly added NOT NULL defaults.  Reads still expose the defaults, but
+                # PRAGMA integrity_check reports the underlying fields as NULL.  Rewrite
+                # each row once so verified backups cannot inherit that legacy encoding.
+                conn.execute(
+                    """
+                    UPDATE memory_items
+                    SET importance = COALESCE(importance, 0.5),
+                        source_trust = COALESCE(source_trust, 0.5),
+                        valid_from_ms = COALESCE(valid_from_ms, 0),
+                        source_principal_role = COALESCE(source_principal_role, 'user')
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO memory_schema_versions(version, applied_at_ms)
+                    VALUES (3, ?)
+                    """,
+                    (int(time.time() * 1000),),
+                )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_memory_scope_status

@@ -80,7 +80,61 @@ def test_schema_migration_is_idempotent(tmp_path: Path) -> None:
         "supersedes_item_id",
         "source_principal_role",
     } <= columns
-    assert versions == [(2,)]
+    assert versions == [(2,), (3,)]
+
+
+def test_schema_v3_materializes_nullable_legacy_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "memory.sqlite"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE memory_items (
+                item_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL UNIQUE,
+                scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, kind TEXT NOT NULL,
+                text TEXT NOT NULL, source_channel TEXT NOT NULL,
+                source_account_id TEXT NOT NULL, source_message_id TEXT NOT NULL,
+                source_principal_id TEXT NOT NULL, created_by TEXT NOT NULL,
+                risk TEXT NOT NULL, confidence REAL NOT NULL, status TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL, reviewed_at_ms INTEGER,
+                reviewed_by TEXT, invalidated_reason TEXT, embedding BLOB,
+                embedding_dim INTEGER, importance REAL, source_trust REAL,
+                valid_from_ms INTEGER, source_principal_role TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO memory_items (
+                item_id, fingerprint, scope_type, scope_id, kind, text,
+                source_channel, source_account_id, source_message_id,
+                source_principal_id, created_by, risk, confidence, status,
+                created_at_ms, importance, source_trust, valid_from_ms,
+                source_principal_role
+            ) VALUES (
+                'legacy-item', 'legacy-fingerprint', 'principal', 'owner',
+                'preference', 'legacy text', 'qq', 'bot', 'message', 'owner',
+                'legacy', 'low', 0.9, 'candidate', 1, NULL, NULL, NULL, NULL
+            )
+            """
+        )
+
+    memory = MemoryStore(path)
+    memory.initialize()
+    memory.initialize()
+
+    with sqlite3.connect(path) as conn:
+        values = conn.execute(
+            """
+            SELECT importance, source_trust, valid_from_ms, source_principal_role
+            FROM memory_items WHERE item_id = 'legacy-item'
+            """
+        ).fetchone()
+        versions = conn.execute("SELECT version FROM memory_schema_versions").fetchall()
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()
+
+    assert values == (0.5, 0.5, 0, "user")
+    assert versions == [(2,), (3,)]
+    assert integrity == ("ok",)
 
 
 def test_non_owner_can_never_use_auto_activation_lane(tmp_path: Path) -> None:
