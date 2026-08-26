@@ -36,7 +36,7 @@ def test_opencloudos_build_prefetches_locked_dependencies_before_offline_sync() 
     export = "uv export --frozen --no-dev --no-emit-project --no-hashes"
     install = "uv pip install"
     dependency_sync = "uv sync --frozen --no-dev --no-install-project --offline"
-    project_sync = "uv sync --frozen --no-dev --offline"
+    project_sync = "uv sync --frozen --no-dev --offline --no-editable"
 
     assert 'requires = ["hatchling==1.27.0"]' in pyproject
     assert "UV_DEFAULT_INDEX=${PYPI_INDEX_URL}" in text
