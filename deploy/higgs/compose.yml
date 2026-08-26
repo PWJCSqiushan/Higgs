@@ -3,7 +3,9 @@ name: higgs
 services:
   napcat:
     image: ${NAPCAT_IMAGE:?Set NAPCAT_IMAGE to a pinned v4.18.13 digest}
-    restart: unless-stopped
+    # Bound crash loops.  The enabled server/higgs-stack.service brings the
+    # stack back after a host reboot; five consecutive failures stop retries.
+    restart: "on-failure:5"
     environment:
       NAPCAT_UID: ${HOST_UID:-1000}
       NAPCAT_GID: ${HOST_GID:-1000}
@@ -13,6 +15,7 @@ services:
       - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/napcat/qq:/app/.config/QQ
       - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/napcat/config:/app/napcat/config
       - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/napcat/plugins:/app/napcat/plugins
+      - napcat-health:/run/higgs-napcat-health
     networks:
       - onebot
       - egress
@@ -20,7 +23,11 @@ services:
     cpus: 1.25
     pids_limit: 512
     healthcheck:
-      test: ["CMD-SHELL", "grep -q ':0BB9 ' /proc/net/tcp /proc/net/tcp6"]
+      test:
+        [
+          "CMD-SHELL",
+          "marker=/run/higgs-napcat-health/heartbeat; tmp=/run/higgs-napcat-health/.heartbeat.tmp; if grep -q ':0BB9 ' /proc/net/tcp /proc/net/tcp6; then printf ok > \"$$tmp\" && mv -f \"$$tmp\" \"$$marker\"; else exit 1; fi",
+        ]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -50,11 +57,13 @@ services:
       R_AGENT_ONEBOT_WS_URL: ws://napcat:3001
       R_AGENT_DATA_DIR: /var/lib/higgs
       R_AGENT_HEALTH_FILE: /var/lib/higgs/health.json
+      R_AGENT_NAPCAT_HEALTH_FILE: /run/higgs-napcat-health/heartbeat
       R_AGENT_PERSONA_FILE: /run/higgs/persona.md
     volumes:
       - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/agent:/var/lib/higgs
       - ${HIGGS_CONFIG_DIR:-/srv/secrets/higgs}:/run/higgs-config
       - ${HIGGS_PERSONA_FILE:-/srv/secrets/higgs/persona.md}:/run/higgs/persona.md:ro
+      - napcat-health:/run/higgs-napcat-health:ro
     networks:
       - onebot
       - egress
@@ -79,3 +88,6 @@ networks:
   onebot:
     internal: true
   egress:
+
+volumes:
+  napcat-health:

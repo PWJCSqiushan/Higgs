@@ -134,6 +134,7 @@ def test_online_state_persists_wrong_account_kick_and_recovery_without_restart(
     tmp_path: Path,
 ) -> None:
     health = HealthReporter(tmp_path / "health.json", interval_seconds=5)
+    health.set_container_alive(True)
     notifier = FakeNotifier()
     store = TransportStateStore(tmp_path / "transport.sqlite")
     online = OnlineState(health, notifier, transport_state=store)  # type: ignore[arg-type]
@@ -163,6 +164,7 @@ def test_online_state_persists_wrong_account_kick_and_recovery_without_restart(
 
 def test_online_state_marks_wrong_account_as_not_matching(tmp_path: Path) -> None:
     health = HealthReporter(tmp_path / "health.json", interval_seconds=5)
+    health.set_container_alive(True)
     store = TransportStateStore(tmp_path / "transport.sqlite")
     online = OnlineState(health, FakeNotifier(), transport_state=store)  # type: ignore[arg-type]
 
@@ -185,15 +187,89 @@ def test_online_state_marks_wrong_account_as_not_matching(tmp_path: Path) -> Non
     )
 
 
+def test_online_state_alerts_wrong_account_seen_before_first_login(tmp_path: Path) -> None:
+    health = HealthReporter(tmp_path / "health.json", interval_seconds=5)
+    health.set_container_alive(True)
+    notifier = FakeNotifier()
+    store = TransportStateStore(tmp_path / "transport.sqlite")
+    online = OnlineState(health, notifier, transport_state=store)  # type: ignore[arg-type]
+
+    async def run() -> None:
+        await online.set_transport(True)
+        await online.set_qq_online(False, reason="wrong_qq_account")
+        await online.set_qq_online(False, reason="wrong_qq_account")
+        await online.set_qq_online(True, reason="get_status_ok")
+
+    asyncio.run(run())
+    assert [title for title, _content in notifier.messages] == [
+        "Higgs QQ 已离线",
+        "Higgs QQ 已恢复",
+    ]
+    snapshot = store.snapshot()
+    assert snapshot.incident_id == 1
+    assert snapshot.account_match is True
+    assert snapshot.napcat_container_alive is True
+
+
+def test_online_state_persists_shared_napcat_marker_state(tmp_path: Path) -> None:
+    health_path = tmp_path / "health.json"
+    marker_path = tmp_path / "napcat" / "heartbeat"
+    health = HealthReporter(
+        health_path,
+        interval_seconds=5,
+        napcat_health_path=marker_path,
+    )
+    store = TransportStateStore(tmp_path / "transport.sqlite")
+    online = OnlineState(health, FakeNotifier(), transport_state=store)  # type: ignore[arg-type]
+
+    async def run() -> None:
+        await online.set_transport(True)
+        assert store.snapshot().napcat_container_alive is False
+        marker_path.parent.mkdir()
+        marker_path.write_text("ok", encoding="ascii")
+        await online.set_qq_online(True, reason="get_status_ok")
+
+    asyncio.run(run())
+    assert store.snapshot().napcat_container_alive is True
+    payload = json.loads(health_path.read_text(encoding="utf-8"))
+    assert payload["napcat_container_alive"] is True
+    assert payload["container_alive"] is True
+
+
+def test_onebot_disconnect_alert_is_independent_of_stale_napcat_marker(
+    tmp_path: Path,
+) -> None:
+    health = HealthReporter(
+        tmp_path / "health.json",
+        interval_seconds=5,
+        napcat_health_path=tmp_path / "napcat" / "heartbeat",
+    )
+    notifier = FakeNotifier()
+    store = TransportStateStore(tmp_path / "transport.sqlite")
+    online = OnlineState(health, notifier, transport_state=store)  # type: ignore[arg-type]
+
+    async def run() -> None:
+        await online.set_transport(True)
+        await online.set_qq_online(True, reason="get_status_ok")
+        await online.set_transport(False)
+
+    asyncio.run(run())
+    assert [title for title, _content in notifier.messages] == ["Higgs QQ 已离线"]
+    snapshot = store.snapshot()
+    assert snapshot.onebot_reachable is False
+    assert snapshot.napcat_container_alive is False
+
+
 def test_health_dimensions_fail_closed_for_unreachable_or_dead_container(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "health.json"
     health = HealthReporter(path, interval_seconds=5)
+    health.set_container_alive(True)
     health.set_transport_connected(True)
     assert check_health(path) == (True, "ok")
     health.set_container_alive(False)
-    assert check_health(path) == (False, "container_not_alive")
+    assert check_health(path) == (False, "napcat_container_not_alive")
     health.set_container_alive(True)
     health.set_transport_connected(False)
     assert check_health(path) == (False, "onebot_disconnected")

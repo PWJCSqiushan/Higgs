@@ -20,6 +20,7 @@ from pathlib import Path
 _SAFE_CODE = re.compile(r"[^A-Za-z0-9_.:-]+")
 _STATES = {"pending", "verified", "rejected"}
 _RECEIPT_STATES = {"ok", "failed", "unknown"}
+_UNSET = object()
 
 
 class TransportStateError(RuntimeError):
@@ -56,7 +57,7 @@ class TransportSnapshot:
     incident_id: int
     state_started_at_ms: int
     duration_ms: int
-    container_alive: bool | None
+    napcat_container_alive: bool | None
     onebot_reachable: bool
     qq_online: bool
     account_match: bool | None
@@ -70,6 +71,12 @@ class TransportSnapshot:
     recovery_result: str | None
     recovery_at_ms: int | None
     updated_at_ms: int
+
+    @property
+    def container_alive(self) -> bool | None:
+        """Backward-compatible alias for the NapCat container signal."""
+
+        return self.napcat_container_alive
 
     @property
     def fault_duration_ms(self) -> int:
@@ -88,7 +95,8 @@ class TransportSnapshot:
             "incident_id": self.incident_id,
             "state_started_at_ms": self.state_started_at_ms,
             "duration_ms": duration,
-            "container_alive": self.container_alive,
+            "container_alive": self.napcat_container_alive,
+            "napcat_container_alive": self.napcat_container_alive,
             "onebot_reachable": self.onebot_reachable,
             "qq_online": self.qq_online,
             "account_match": self.account_match,
@@ -124,7 +132,7 @@ class TransportStateStore:
     """SQLite-backed transport state with redacted transition history."""
 
     DEFAULT_CHANNEL = "onebot"
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, path: Path, *, channel: str = DEFAULT_CHANNEL) -> None:
         clean_channel = _code(channel, default=self.DEFAULT_CHANNEL, maximum=40).casefold()
@@ -148,7 +156,10 @@ class TransportStateStore:
                     state TEXT NOT NULL CHECK(state IN ('pending', 'verified', 'rejected')),
                     incident_id INTEGER NOT NULL DEFAULT 0,
                     state_started_at_ms INTEGER NOT NULL,
+                    -- Retained for old readers; the canonical field below is
+                    -- explicitly named to prevent confusing it with Agent liveness.
                     container_alive INTEGER,
+                    napcat_container_alive INTEGER,
                     onebot_reachable INTEGER NOT NULL DEFAULT 0,
                     qq_online INTEGER NOT NULL DEFAULT 0,
                     account_match INTEGER,
@@ -180,6 +191,20 @@ class TransportStateStore:
                     ON transport_transitions(channel, started_at_ms DESC);
                 """
             )
+            columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(transport_state)").fetchall()
+            }
+            if "napcat_container_alive" not in columns:
+                conn.execute(
+                    "ALTER TABLE transport_state ADD COLUMN napcat_container_alive INTEGER"
+                )
+                # Rows written by schema v1 used ``container_alive`` for the
+                # Agent reporter process.  Do not reinterpret those values as
+                # NapCat health; the next real marker/probe will populate both.
+                conn.execute(
+                    "UPDATE transport_state SET container_alive = NULL, "
+                    "napcat_container_alive = NULL"
+                )
             conn.execute(
                 """
                 INSERT OR IGNORE INTO transport_state(
@@ -219,7 +244,11 @@ class TransportStateStore:
             incident_id=int(row["incident_id"]),
             state_started_at_ms=int(row["state_started_at_ms"]),
             duration_ms=max(0, now - int(row["state_started_at_ms"])),
-            container_alive=_optional_bool(row["container_alive"]),
+            napcat_container_alive=_optional_bool(
+                row["napcat_container_alive"]
+                if "napcat_container_alive" in row
+                else row["container_alive"]
+            ),
             onebot_reachable=bool(row["onebot_reachable"]),
             qq_online=bool(row["qq_online"]),
             account_match=_optional_bool(row["account_match"]),
@@ -257,7 +286,8 @@ class TransportStateStore:
         *,
         reason: str,
         now_ms: int | None = None,
-        container_alive: bool | None = None,
+        container_alive: bool | None | object = _UNSET,
+        napcat_container_alive: bool | None | object = _UNSET,
         onebot_reachable: bool | None = None,
         qq_online: bool | None = None,
         account_match: bool | None = None,
@@ -309,7 +339,8 @@ class TransportStateStore:
                     """,
                     (now, duration, self.channel),
                 )
-                if previous_online and not bool(qq_online):
+                entered_rejected = state == "rejected" and previous_state != "rejected"
+                if (previous_online and not bool(qq_online)) or entered_rejected:
                     incident_id += 1
                 conn.execute(
                     """
@@ -337,8 +368,19 @@ class TransportStateStore:
                 "state_started_at_ms": state_started,
                 "updated_at_ms": now,
             }
-            if container_alive is not None:
-                values["container_alive"] = int(container_alive)
+            if (
+                container_alive is not _UNSET
+                and napcat_container_alive is not _UNSET
+                and container_alive != napcat_container_alive
+            ):
+                raise TransportStateError("NapCat container signals disagree")
+            signal = (
+                napcat_container_alive if napcat_container_alive is not _UNSET else container_alive
+            )
+            if signal is not _UNSET:
+                normalized_signal = None if signal is None else int(bool(signal))
+                values["container_alive"] = normalized_signal
+                values["napcat_container_alive"] = normalized_signal
             if onebot_reachable is not None:
                 values["onebot_reachable"] = int(onebot_reachable)
             if qq_online is not None:

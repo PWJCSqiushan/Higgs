@@ -214,7 +214,7 @@ class OwnerCommandRouter:
         duration_seconds = max(0, snapshot.duration_ms // 1000)
         return (
             f"\nQQ通道：{state_name}\n"
-            f"容器存活：{flag(snapshot.container_alive)}\n"
+            f"NapCat容器存活：{flag(snapshot.napcat_container_alive)}\n"
             f"OneBot可达：{flag(snapshot.onebot_reachable)}\n"
             f"QQ在线：{flag(snapshot.qq_online)}\n"
             f"账号匹配：{flag(snapshot.account_match)}\n"

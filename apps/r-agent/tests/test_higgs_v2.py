@@ -161,6 +161,7 @@ async def test_online_state_alerts_once_per_incident_and_health_is_two_layered(
 ) -> None:
     health_path = tmp_path / "health.json"
     health = HealthReporter(health_path, interval_seconds=5)
+    health.set_container_alive(True)
     notifier = FakeNotifier()
     online = OnlineState(health, notifier)  # type: ignore[arg-type]
 

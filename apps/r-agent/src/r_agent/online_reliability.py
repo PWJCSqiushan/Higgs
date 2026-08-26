@@ -119,7 +119,7 @@ class OnlineState:
             self.transport_state.record_transition(
                 state,
                 reason="onebot_connected" if connected else "transport_disconnected",
-                container_alive=True,
+                napcat_container_alive=self.health.napcat_container_alive,
                 onebot_reachable=connected,
                 qq_online=online,
                 account_match=None if not connected else self._account_match(online, self._reason),
@@ -155,18 +155,21 @@ class OnlineState:
         account_match = self._account_match(online, reason)
         with self._lock:
             previous = self._online
+            previous_state = self._state
             self._online = online
             self._reason = reason[:120]
             self._state = state
-            if previous != online:
+            entered_rejected = state == "rejected" and previous_state != "rejected"
+            if not online and (previous or entered_rejected):
                 self._changed_at_ms = now_ms
-                if not online:
-                    self._incident_id += 1
-                    alert = (
-                        "Higgs QQ 已离线",
-                        f"事故 #{self._incident_id}。普通回复与提醒发送已暂停；后台与备份仍运行。",
-                    )
-                elif self._incident_id > 0:
+                self._incident_id += 1
+                alert = (
+                    "Higgs QQ 已离线",
+                    f"事故 #{self._incident_id}。普通回复与提醒发送已暂停；后台与备份仍运行。",
+                )
+            elif previous != online:
+                self._changed_at_ms = now_ms
+                if self._incident_id > 0:
                     alert = (
                         "Higgs QQ 已恢复",
                         f"事故 #{self._incident_id} 已恢复，待发送提醒将按规则补发。",
@@ -187,7 +190,7 @@ class OnlineState:
                     state,
                     reason=reason,
                     now_ms=now_ms,
-                    container_alive=True,
+                    napcat_container_alive=self.health.napcat_container_alive,
                     onebot_reachable=self._transport,
                     qq_online=online,
                     account_match=account_match,
