@@ -5,13 +5,13 @@
 ## 1. 当前权威边界
 
 - 本地权威集成工作树：`D:\丘山\R_Higgs-takeover-20260826`，分支 `codex/higgs-integration-20260826`。
-- PR 阶段栈工作树：`D:\丘山\Higgs-wt-pr-stack`；合并后交接分支为 `codex/higgs-postmerge-handoff-20260826`。
-- 记录的生产代码基线：`d7aa96d171cf0ea3d637ae27f8e3415088687f12`
-- GitHub `origin/main` 已按批准顺序合并 PR #7–#11；运行代码的功能合并点为 `c45c4ef4fc09c67ab4510ab6fddbb296d539cf2f`，随后 PR #12 只更新交接文档。没有直接向 `main` 推送；继续工作时应重新 fetch 获取当前主线指针。
-- 本轮未连接生产服务器，未重启 NapCat，未更改 QQ 登录态，未创建官方 QQ Bot 应用，也未切换 live。
-- 生产部署、开放官方主人沙箱、加入测试群或改变 live 状态都必须获得单独确认。
+- PR/生产验收工作树：`D:\丘山\Higgs-wt-pr-stack`；当前验收分支为 `codex/higgs-production-live-acceptance-20260826`。
+- 当前 GitHub `origin/main` 与生产源码/Agent 镜像提交均为 `b7d0beceed3f5bd057ad15490cb5b0f2ac0a01d3`。
+- GitHub 已按批准顺序合并 PR #7–#17；所有功能、迁移和 OpenCloudOS 离线构建修复均通过分支、PR 与合并后主线 CI，没有直接向 `main` 推送。
+- 已按主人确认完成本阶段生产部署，并保持既有 `live` 回复模式；官方 QQ 和模型记忆候选仍显式关闭。
+- 开放官方主人沙箱、加入测试群、启用模型候选或改变 live 状态仍必须获得单独确认。
 
-上述生产基线来自已有发布记录，并非本轮实时探测；开始生产操作前必须重新核对服务器实际 commit、镜像 digest、容器与 QQ 在线状态。
+上述生产提交与健康结论来自 2026-08-26 的实时发布验收；后续继续操作仍须重新核对主线、镜像和匿名 transport 状态，不能把本次结果当作永久在线保证。
 
 ## 2. 已完成代码阶段
 
@@ -38,7 +38,7 @@
 
 五个 PR 的 push 与 pull request 两组 Ubuntu CI 均通过，Shell 语法检查和 Linux 零跳过门已通过。PR #7–#11 已按顺序合并；这些证据仍不代表官方主人沙箱、NapCat 48 小时观测、官方 72 小时在线、生产部署或真实消息验收。
 
-## 4. 生产只读预检（部署前）
+## 4. 生产预检、部署与实时验收
 
 - 已使用本机既有密钥与已知主机指纹完成 SSH 只读连接；没有输出或记录服务器地址、凭据和账号标识。
 - 服务器实际运行版本仍为记录中的 `d7aa96d`；Docker 与现有 Higgs systemd 服务 active，NapCat 容器 healthy，但 QQ 已离线，agent 因权威在线探针失败而 unhealthy。
@@ -52,6 +52,12 @@
 - OpenCloudOS Dockerfile 已改为先从腾讯镜像按锁定版本预热实际 venv，再强制两次 offline frozen sync；新增顺序测试后本地为 `251 passed, 4 skipped`，必须先经 PR/CI 才继续构建。
 - 上述运行依赖预热已在生产构建中成功，但最终离线安装发现 build-system 的 hatchling 不在运行依赖导出中。已固定 `hatchling==1.27.0` 并增加独立构建后端预热；服务器隔离探针验证该版本及五个构建依赖可从腾讯镜像取得，本地仍为 `251 passed, 4 skipped`。
 - 后续生产构建进一步证明 editable 项目安装会额外索取仅开发态需要的 `editables`。最终项目同步现明确使用 `--no-editable`，保持生产安装为普通 wheel 语义，并继续要求全程离线。
+- PR #16 固定并预热 `hatchling==1.27.0`；PR #17 将最终项目安装固定为非 editable。两者的分支、PR 和合并后主线 CI 均通过，最终不可变发布与镜像提交为 `b7d0beceed3f5bd057ad15490cb5b0f2ac0a01d3`。
+- 最终镜像在生产宿主完成断网、只读 smoke test，`r-agent==0.2.0` 与 `qqbot-agent-sdk==1.2.2` 版本断言通过；Agent 已只重建到该不可变镜像。
+- schema v3 物化迁移后，十二个运行数据库全部 `integrity_check=ok`；旧记忆仍为六条。最新 startup 一致性备份包含十二库、`quick_check=ok` 且 manifest 明确不含秘密。
+- 宿主只读状态 service/timer 已安装并 active，允许字段 JSON、原子写入、权限和新 Agent 只读挂载均已验证。
+- NapCat 已重建并应用固定 digest、`on-failure:5` 与共享健康标记；WebUI 管理 Token 只在受控本地页面中使用，未进入聊天、文档或磁盘临时文件。
+- 2026-08-26 21:17（Asia/Shanghai）实时匿名验收为：NapCat healthy、OneBot 可达、QQ 权威在线、账号匹配、最近健康/action 回执均成功，Agent healthy，恢复结果已写入 `transport.sqlite`。此时起进入至少 48 小时观察，不把初始恢复视为稳定性结论。
 
 ## 5. 上游固定与借鉴边界
 
@@ -62,17 +68,16 @@
 
 ## 6. 下一步顺序
 
-1. 先让 OpenCloudOS 构建后端预热修复通过 PR/Ubuntu CI，再从新的主线提交生成并校验不可变发布包。
-2. 构建新 agent 镜像，原子更新私有镜像指针并显式关闭官方 QQ/模型候选提取；只重建 agent，完成 schema v3 后复核十二库完整性。
-3. 安装宿主只读状态 timer；确认安全恢复策略后再处理 NapCat Compose 变更，随后请主人扫码恢复登录并启动 48 小时匿名观测。
-4. 需要真实官方联调时，请主人登录 QQ 机器人开放平台创建沙箱应用；AppID/AppSecret 只写入服务器 mode `0600` 私有配置，不在聊天中传递。
-5. 官方灰度固定为：假 Gateway → 主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大。
+1. 持续观察 `transport.sqlite` 至少 48 小时，核对状态转换、故障原因、持续时间、告警去重和恢复；期间不以自动重启对抗踢线或风控。
+2. 观察窗口结束后生成匿名验收结论；若出现踢线，保留证据并由主人决定是否再次人工登录，不反复尝试。
+3. 需要真实官方联调时，请主人登录 QQ 机器人开放平台创建沙箱应用；AppID/AppSecret 只写入服务器 mode `0600` 私有配置，不在聊天中传递。
+4. 官方灰度固定为：假 Gateway → 主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大。
 
 ## 7. 明确未完成事项
 
-- 尚无生产实时状态、NapCat 48 小时观测或此次 24 小时掉线问题的匿名证据。
+- 已有生产切换时的实时匿名健康基线，但 48 小时观察尚未结束，不能宣称长期在线问题已解决。
 - 尚无官方 QQ Bot 应用、主人 OpenID 私有绑定、真实 Token/Gateway 或 72 小时 Resume 证据。
-- 阶段 3 的 systemd timer 尚未安装；宿主状态 JSON 尚未在生产生成。
+- 阶段 3 的 systemd timer 与宿主状态 JSON 已部署验收；模型仅允许 shadow 建议，真实工具调用仍受 owner、显式命令和治理边界限制。
 - Memory V2.1 仅有确定性/模拟模型评测；尚未使用真实模型配置运行聚合评测，因此不得启用生产候选提取。
 - 搜索、文件下载、MCP 与跨通道普通用户合并仍延期，不得从当前工具框架自行扩大权限。
 - 官方提醒目标迁移到显式 `channel + target_id` 前，提醒继续只由 NapCat 发送。

@@ -58,3 +58,12 @@
 2. 显式保持官方 QQ 与模型候选提取关闭，只重建 agent；复核 schema v3 与十二库后安装宿主状态 timer。
 3. 谨慎应用 NapCat 有限重启策略，到扫码环节请主人恢复登录，随后开始 48 小时匿名观测。
 4. 官方开放平台登录和沙箱应用创建到真实联调阶段再请主人配合；真实模型评测同样需要私有配置后单独执行。
+
+## 节点 6：生产发布与观察起点
+
+- PR #16 固定并预热 `hatchling==1.27.0`，PR #17 将最终项目安装固定为 `--no-editable`；分支、PR 与合并后主线 CI 全部通过。最终不可变源码和 Agent 镜像提交为 `b7d0beceed3f5bd057ad15490cb5b0f2ac0a01d3`。
+- 新镜像在生产宿主完成断网、只读 smoke test，运行包与官方 SDK 精确版本断言通过；官方 QQ 明确保持关闭，模型记忆候选保持 off。
+- Agent 只重建后完成 schema v3 物化迁移。十二个运行数据库全部完整，既有六条记忆未增未减；startup 备份包含十二库、逐库 quick check 通过且不含秘密。
+- 宿主只读状态 service/timer 已部署并 active，白名单 JSON、权限、原子写入和只读挂载验证通过。
+- NapCat 已按固定 digest 重建，应用 `on-failure:5` 和共享健康标记。管理 Token 仅在获准后直接提交到本机安全隧道中的 WebUI，没有写入聊天、项目文件或临时磁盘文件。
+- 2026-08-26 21:17（Asia/Shanghai）匿名实时基线为 NapCat/Agent healthy、OneBot 可达、QQ 权威在线、账号匹配、健康与 action 回执成功，`transport.sqlite` 已记录正常恢复。从该时刻开始至少 48 小时观察；初始恢复不等于长期稳定性验收。
