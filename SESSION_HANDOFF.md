@@ -7,7 +7,7 @@
 - 本地权威集成工作树：`D:\丘山\R_Higgs-takeover-20260826`，分支 `codex/higgs-integration-20260826`。
 - PR 阶段栈工作树：`D:\丘山\Higgs-wt-pr-stack`；合并后交接分支为 `codex/higgs-postmerge-handoff-20260826`。
 - 记录的生产代码基线：`d7aa96d171cf0ea3d637ae27f8e3415088687f12`
-- GitHub `origin/main` 已按批准顺序合并 PR #7–#11，当前为 `c45c4ef4fc09c67ab4510ab6fddbb296d539cf2f`；没有直接向 `main` 推送。
+- GitHub `origin/main` 已按批准顺序合并 PR #7–#11；运行代码的功能合并点为 `c45c4ef4fc09c67ab4510ab6fddbb296d539cf2f`，随后 PR #12 只更新交接文档。没有直接向 `main` 推送；继续工作时应重新 fetch 获取当前主线指针。
 - 本轮未连接生产服务器，未重启 NapCat，未更改 QQ 登录态，未创建官方 QQ Bot 应用，也未切换 live。
 - 生产部署、开放官方主人沙箱、加入测试群或改变 live 状态都必须获得单独确认。
 
