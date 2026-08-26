@@ -5,9 +5,9 @@
 ## 1. 当前权威边界
 
 - 本地权威集成工作树：`D:\丘山\R_Higgs-takeover-20260826`，分支 `codex/higgs-integration-20260826`。
-- PR 阶段栈工作树：`D:\丘山\Higgs-wt-pr-stack`；阶段 4 分支包含与总集成等价的最终代码树及最新交接记录。
+- PR 阶段栈工作树：`D:\丘山\Higgs-wt-pr-stack`；合并后交接分支为 `codex/higgs-postmerge-handoff-20260826`。
 - 记录的生产代码基线：`d7aa96d171cf0ea3d637ae27f8e3415088687f12`
-- GitHub `origin/main` 在五个 PR 创建并通过 CI 后仍为 `1271f50807c655cf6f7e62d3a930f3afe5d469ce`；没有直接推送或合并 `main`。
+- GitHub `origin/main` 已按批准顺序合并 PR #7–#11，当前为 `c45c4ef4fc09c67ab4510ab6fddbb296d539cf2f`；没有直接向 `main` 推送。
 - 本轮未连接生产服务器，未重启 NapCat，未更改 QQ 登录态，未创建官方 QQ Bot 应用，也未切换 live。
 - 生产部署、开放官方主人沙箱、加入测试群或改变 live 状态都必须获得单独确认。
 
@@ -17,11 +17,11 @@
 
 | 阶段 | 总集成提交 | 独立阶段分支/提交 | 状态 |
 | --- | --- | --- | --- |
-| 0 发布基线 | `f134fc9` | `codex/higgs-takeover-20260826` / PR #7 | LF、无固定 deploy 用户、可配置根目录、校验、原子激活与可验证回滚已实现 |
-| 1 NapCat 可观测 | `00f5831` + `9e7ff52` | `codex/higgs-phase1-stability-20260826` / PR #8 | 六维匿名状态、真实只读健康标记、告警/恢复幂等、有限进程恢复与 `transport.sqlite` 已实现 |
-| 2 官方 QQ 双通道 | `945b5b2` + `92df3d2` + `30ca0c5` + `abc4a0c` | `codex/higgs-phase2-official-qq-20260826` / PR #9 | 官方 SDK 1.2.2、Gateway/Resume、有限监督恢复、统一类型回执、身份隔离和被动原路回复已实现；默认关闭 |
-| 3 只读工具 | `80c1c86` + `b083ccf` + `5fa5bc3` | `codex/higgs-phase3-governed-tools-20260826` / PR #10 | `/higgs server status` 仅限主人私聊；审批哈希、默认拒绝、审计、限频、超时、幂等和只读宿主快照已实现 |
-| 4 Memory V2.1 | `d52739b` + `56cdda2` | `codex/higgs-phase4-memory-shadow-20260826` / PR #11 | 严格 JSON 模型候选、敏感隔离、追加式 shadow 队列、36 例中文全提取链路评测与主人只读队列已实现；默认关闭 |
+| 0 发布基线 | `f134fc9` | `codex/higgs-takeover-20260826` / PR #7（已合并） | LF、无固定 deploy 用户、可配置根目录、校验、原子激活与可验证回滚已实现 |
+| 1 NapCat 可观测 | `00f5831` + `9e7ff52` | `codex/higgs-phase1-stability-20260826` / PR #8（已合并） | 六维匿名状态、真实只读健康标记、告警/恢复幂等、有限进程恢复与 `transport.sqlite` 已实现 |
+| 2 官方 QQ 双通道 | `945b5b2` + `92df3d2` + `30ca0c5` + `abc4a0c` | `codex/higgs-phase2-official-qq-20260826` / PR #9（已合并） | 官方 SDK 1.2.2、Gateway/Resume、有限监督恢复、统一类型回执、身份隔离和被动原路回复已实现；默认关闭 |
+| 3 只读工具 | `80c1c86` + `b083ccf` + `5fa5bc3` | `codex/higgs-phase3-governed-tools-20260826` / PR #10（已合并） | `/higgs server status` 仅限主人私聊；审批哈希、默认拒绝、审计、限频、超时、幂等和只读宿主快照已实现 |
+| 4 Memory V2.1 | `d52739b` + `56cdda2` | `codex/higgs-phase4-memory-shadow-20260826` / PR #11（已合并） | 严格 JSON 模型候选、敏感隔离、追加式 shadow 队列、36 例中文全提取链路评测与主人只读队列已实现；默认关闭 |
 
 最终运行时共有 12 个一致性备份数据库：阶段 1 新增 `transport.sqlite` 后为 11 个；阶段 3 再加入 `tool_audit.sqlite` 后为 12 个。秘密、登录态和聊天正文不进入备份清单或项目记忆。
 
@@ -36,7 +36,7 @@
 - `detect-secrets==1.5.0` 扫描全部 Git 跟踪文件：7 个命中均为测试夹具/占位值，人工复核未发现真实凭据。
 - Windows 跳过项必须由 Ubuntu GitHub Actions 覆盖，包括健康标记、目录符号链接激活/回滚和只读状态文件测试。
 
-五个 PR 的 push 与 pull request 两组 Ubuntu CI 均通过，Shell 语法检查和 Linux 零跳过门已通过。PR #7–#11 均保持打开、可干净合并；这些证据仍不代表官方主人沙箱、NapCat 48 小时观测、官方 72 小时在线、生产部署或真实消息验收。
+五个 PR 的 push 与 pull request 两组 Ubuntu CI 均通过，Shell 语法检查和 Linux 零跳过门已通过。PR #7–#11 已按顺序合并；这些证据仍不代表官方主人沙箱、NapCat 48 小时观测、官方 72 小时在线、生产部署或真实消息验收。
 
 ## 4. 上游固定与借鉴边界
 
@@ -47,11 +47,9 @@
 
 ## 5. 下一步顺序
 
-1. 人工审阅 PR #7–#11；未经用户单独确认，不合并任何 PR。
-2. 获得合并授权后按 #7 → #8 → #9 → #10 → #11 顺序处理堆叠分支，并在每次合并后重新确认下一 PR 的基线和 CI。
-3. 获得单独生产部署授权后，先核对服务器实际 commit、镜像 digest、QQ 在线状态和私有配置，再部署阶段 0/1/3 安全基线并启动 NapCat 48 小时匿名观测。
-4. 需要真实官方联调时，请主人登录 QQ 机器人开放平台创建沙箱应用；AppID/AppSecret 只写入服务器 mode `0600` 私有配置，不在聊天中传递。
-5. 官方灰度固定为：假 Gateway → 主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大。
+1. 等待单独生产部署授权；获准后先核对服务器实际 commit、镜像 digest、QQ 在线状态和私有配置，再部署阶段 0/1/3 安全基线并启动 NapCat 48 小时匿名观测。
+2. 需要真实官方联调时，请主人登录 QQ 机器人开放平台创建沙箱应用；AppID/AppSecret 只写入服务器 mode `0600` 私有配置，不在聊天中传递。
+3. 官方灰度固定为：假 Gateway → 主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大。
 
 ## 6. 明确未完成事项
 
