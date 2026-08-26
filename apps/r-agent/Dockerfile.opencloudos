@@ -26,6 +26,10 @@ COPY pyproject.toml uv.lock README.md ./
 # then require both sync steps to run fully offline.
 RUN uv export --frozen --no-dev --no-emit-project --no-hashes \
         > /tmp/requirements.locked.txt \
+    && uv venv /tmp/build-system \
+    && uv pip install \
+        --python /tmp/build-system/bin/python \
+        "hatchling==1.27.0" \
     && uv venv .venv \
     && uv pip install \
         --python .venv/bin/python \

@@ -50,6 +50,7 @@
 - 已安装并激活不可变源码发布 `acb49ed1377d9fe43fa7737e9af4eb3309e67585`，旧 current 链接已移入 `/srv/trash`；运行中的旧 agent/NapCat 容器尚未重建。
 - 两次镜像构建都在 `uv sync --frozen` 访问锁文件中的上游 wheel URL 时停滞，均已有限等待后取消且无残留构建进程。临时容器通过腾讯镜像安装同一 SDK/依赖仅需数秒，确认不是依赖冲突。
 - OpenCloudOS Dockerfile 已改为先从腾讯镜像按锁定版本预热实际 venv，再强制两次 offline frozen sync；新增顺序测试后本地为 `251 passed, 4 skipped`，必须先经 PR/CI 才继续构建。
+- 上述运行依赖预热已在生产构建中成功，但最终离线安装发现 build-system 的 hatchling 不在运行依赖导出中。已固定 `hatchling==1.27.0` 并增加独立构建后端预热；服务器隔离探针验证该版本及五个构建依赖可从腾讯镜像取得，本地仍为 `251 passed, 4 skipped`。
 
 ## 5. 上游固定与借鉴边界
 
@@ -60,7 +61,7 @@
 
 ## 6. 下一步顺序
 
-1. 先让 OpenCloudOS 离线同步构建修复通过 PR/Ubuntu CI，再从新的主线提交生成并校验不可变发布包。
+1. 先让 OpenCloudOS 构建后端预热修复通过 PR/Ubuntu CI，再从新的主线提交生成并校验不可变发布包。
 2. 构建新 agent 镜像，原子更新私有镜像指针并显式关闭官方 QQ/模型候选提取；只重建 agent，完成 schema v3 后复核十二库完整性。
 3. 安装宿主只读状态 timer；确认安全恢复策略后再处理 NapCat Compose 变更，随后请主人扫码恢复登录并启动 48 小时匿名观测。
 4. 需要真实官方联调时，请主人登录 QQ 机器人开放平台创建沙箱应用；AppID/AppSecret 只写入服务器 mode `0600` 私有配置，不在聊天中传递。
