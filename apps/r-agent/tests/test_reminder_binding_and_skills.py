@@ -1,7 +1,9 @@
 import sqlite3
 from pathlib import Path
 
-from r_agent.reminders import ReminderStore
+import pytest
+
+from r_agent.reminders import ReminderError, ReminderStore
 from r_agent.skills import (
     SkillApprovalStore,
     default_skill_registry,
@@ -172,6 +174,22 @@ def test_confirmed_job_parameter_tampering_fails_closed(tmp_path: Path) -> None:
         conn.execute("UPDATE reminder_jobs SET content='changed' WHERE job_id=?", (job.job_id,))
     assert store.prepare_due(now_ms=job.due_at_ms) == []
     assert store.get(job.job_id).status == "failed"
+
+
+def test_official_channel_cannot_create_a_reminder(tmp_path: Path) -> None:
+    store = ReminderStore(tmp_path / "reminders.sqlite")
+    store.initialize()
+    with pytest.raises(ReminderError, match="官方 QQ 通道"):
+        store.create_pending(
+            owner_principal_id="owner",
+            owner_qq="owner-openid",
+            content="do not send",
+            due_at_ms=1_010_000,
+            origin_channel="qq_official",
+            origin_surface="private",
+            origin_conversation_id="qq_official:private:bot:owner-openid",
+            now_ms=1_000_000,
+        )
 
 
 def test_skill_registry_is_fail_closed_and_future_skills_are_disabled() -> None:

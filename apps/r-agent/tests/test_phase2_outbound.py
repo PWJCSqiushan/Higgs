@@ -71,6 +71,7 @@ async def test_outbound_ignores_event_before_matching_ack(
                     "status": "ok",
                     "retcode": 0,
                     "echo": "r-agent-phase2:900001:42",
+                    "data": {"message_id": 1},
                 }
             ),
         ]
@@ -107,6 +108,27 @@ async def test_outbound_rejects_missing_retcode_as_known_failure(
     with pytest.raises(OutboundError) as caught:
         await send_onebot_reply("ws://127.0.0.1:3001", "token", event(), "reply")
     assert caught.value.delivery_unknown is False
+
+
+async def test_outbound_treats_missing_provider_message_id_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket = FakeSocket(
+        [
+            json.dumps(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "echo": "r-agent-phase2:900001:42",
+                    "data": {},
+                }
+            )
+        ]
+    )
+    monkeypatch.setattr("websockets.connect", lambda *args, **kwargs: FakeConnection(socket))
+    with pytest.raises(OutboundError) as caught:
+        await send_onebot_reply("ws://127.0.0.1:3001", "token", event(), "reply")
+    assert caught.value.delivery_unknown is True
 
 
 async def test_get_message_sender_verifies_quoted_author(

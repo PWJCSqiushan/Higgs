@@ -26,7 +26,7 @@ from r_agent.embedding import (
     LocalHashEmbeddingClient,
     OpenAICompatibleEmbeddingClient,
 )
-from r_agent.events import InboundEvent
+from r_agent.events import ConversationKind, InboundEvent
 from r_agent.group_debounce import GroupMessageDebouncer
 from r_agent.health import HealthReporter
 from r_agent.identity import IdentityStore, Principal
@@ -37,6 +37,7 @@ from r_agent.memory_v2 import MemoryObservationStore, MemoryReconciler
 from r_agent.model_client import ModelConfig, ModelError, OpenAICompatibleClient
 from r_agent.official_qq import OfficialQQAdapter, OfficialQQConfig
 from r_agent.onebot import OneBotParseError, parse_message_event
+from r_agent.onebot_adapter import OneBotAdapter
 from r_agent.online_reliability import OnlineState, PushPlusNotifier, onebot_online_hint
 from r_agent.operator_control import LiveOperatorControl
 from r_agent.owner_commands import OwnerCommandContext, OwnerCommandRouter
@@ -45,19 +46,16 @@ from r_agent.phase2_outbound import (
     OutboundError,
     get_onebot_account_status,
     get_onebot_message_sender,
-    send_onebot_group_message,
-    send_onebot_private_message,
-    send_onebot_reply,
 )
 from r_agent.phase2_reply import PersonaBrain, ReplyAudit, ReplyDecision, ReplyPlan, ReplyPolicy
 from r_agent.qq_text import QqTextError, to_qq_plain_text
 from r_agent.recall import RecallLedger
-from r_agent.reminders import ReminderStore
+from r_agent.reminders import DueOccurrence, ReminderStore
 from r_agent.risk_ledger import RiskLedger, RiskLimits
 from r_agent.safety import OutboundSafetyPolicy, SafetyError
 from r_agent.skills import SkillApprovalStore, default_skill_registry
+from r_agent.transport import DeliveryReceipt, DeliveryState, OutboundTarget, TransportUnavailable
 from r_agent.transport_state import TransportStateStore
-from r_agent.transport import DeliveryState, OutboundTarget, TransportUnavailable
 from r_agent.vector_memory import MemoryVectorStore
 
 _log = logging.getLogger(__name__)
@@ -330,7 +328,7 @@ async def process_reply(
     result: IngestResult,
     policy: ReplyPolicy,
     brain: PersonaBrain,
-    sender: Callable[[InboundEvent, str], Awaitable[None]],
+    sender: Callable[[InboundEvent, str], Awaitable[DeliveryReceipt | None]],
     safety: OutboundSafetyPolicy | None = None,
     breaker: ConversationCircuitBreaker | None = None,
     owner_qq: str | None = None,
@@ -378,7 +376,15 @@ async def process_reply(
     if decision is ReplyDecision.DRAFTED:
         return ReplyPlan(ReplyDecision.DRAFTED, text)
     try:
-        await sender(event, text)
+        receipt = await sender(event, text)
+        # Older in-process test senders returned None.  The live runtime always
+        # returns a typed receipt; never infer success from a missing receipt
+        # there, because its adapter is responsible for provider correlation.
+        if receipt is not None and receipt.state is not DeliveryState.SENT:
+            raise OutboundError(
+                "transport delivery was not acknowledged",
+                delivery_unknown=receipt.state is DeliveryState.UNKNOWN,
+            )
     except OutboundError as exc:
         if risk_ledger is not None and reservation_id is not None:
             outcome = "unknown" if exc.delivery_unknown else "failed"
@@ -387,6 +393,27 @@ async def process_reply(
     if risk_ledger is not None and reservation_id is not None:
         await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="sent")
     return ReplyPlan(ReplyDecision.SENT, text)
+
+
+def _onebot_reminder_target(occurrence: DueOccurrence) -> OutboundTarget | None:
+    """Build a NapCat target only from the persisted channel-bound origin."""
+
+    if occurrence.origin_channel.casefold() != "qq":
+        return None
+    if occurrence.origin_surface == "group":
+        kind = ConversationKind.GROUP
+    elif occurrence.origin_surface == "private":
+        kind = ConversationKind.PRIVATE
+    else:
+        return None
+    conversation_id = occurrence.origin_conversation_id.strip()
+    if not conversation_id.casefold().startswith("qq:"):
+        return None
+    return OutboundTarget(
+        channel="qq",
+        conversation_kind=kind,
+        conversation_id=conversation_id,
+    )
 
 
 async def listen() -> None:
@@ -557,6 +584,16 @@ async def listen() -> None:
         if len(expected_values) != 1:
             raise ConfigError("live mode requires one R_AGENT_EXPECTED_BOT_QQ")
         expected_bot_qq = next(iter(expected_values))
+    onebot_adapter = OneBotAdapter(
+        settings.onebot_ws_url,
+        settings.onebot_access_token,
+        expected_account_id=expected_bot_qq or None,
+    )
+    official_transport_state = TransportStateStore(
+        settings.data_dir / "transport.sqlite", channel="qq_official"
+    )
+    if official_config.enabled:
+        official_transport_state.initialize()
     reconciler = MemoryReconciler(
         observations=observations,
         memory=memory,
@@ -631,12 +668,17 @@ async def listen() -> None:
     )
 
     official_adapter: OfficialQQAdapter | None = None
+    official_supervisor_task: asyncio.Task[None] | None = None
 
-    async def sender(event: InboundEvent, text: str) -> None:
+    async def sender(event: InboundEvent, text: str) -> DeliveryReceipt:
         if event.channel == "qq_official":
             if official_adapter is None:
-                raise OutboundError("official QQ adapter is unavailable", delivery_unknown=False)
-            receipt = await official_adapter.send_text(
+                return DeliveryReceipt(
+                    channel=event.channel,
+                    state=DeliveryState.FAILED,
+                    idempotency_key=f"reply:{event.channel}:{event.account_id}:{event.message_id}",
+                )
+            return await official_adapter.send_text(
                 OutboundTarget(
                     channel=event.channel,
                     conversation_kind=event.conversation_kind,
@@ -646,18 +688,7 @@ async def listen() -> None:
                 idempotency_key=(f"reply:{event.channel}:{event.account_id}:{event.message_id}"),
                 reply_message_id=event.message_id,
             )
-            if receipt.state is not DeliveryState.SENT:
-                raise OutboundError(
-                    "official QQ delivery was not acknowledged",
-                    delivery_unknown=receipt.state is DeliveryState.UNKNOWN,
-                )
-            return
-        await send_onebot_reply(
-            settings.onebot_ws_url,
-            settings.onebot_access_token,
-            event,
-            text,
-        )
+        return await onebot_adapter.send_reply(event, text)
 
     async def handle_event(event: InboundEvent, result: IngestResult) -> None:
         """Finish one logical message after the group quiet-window has closed."""
@@ -805,12 +836,17 @@ async def listen() -> None:
         official_config,
         event_handler=route_official_event,
         data_dir=settings.data_dir,
+        transport_state=official_transport_state if official_config.enabled else None,
     )
     if official_config.enabled:
         try:
             await official_adapter.start()
         except TransportUnavailable as exc:
             _log.error("official_qq_start_failed type=%s", type(exc).__name__)
+        official_supervisor_task = asyncio.create_task(official_adapter.supervise())
+        official_supervisor_task.add_done_callback(
+            lambda task: task.exception() if not task.cancelled() else None
+        )
     backup_task = asyncio.create_task(backup.run_periodically())
     backup_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
 
@@ -857,15 +893,23 @@ async def listen() -> None:
                             "\u8bf7\u56de\u590d\u201c\u6536\u5230\u201d\uff0c\u6216\u53d1\u9001 "
                             f"/higgs remind ack {occurrence.job_id[:8]}"
                         )
-                    is_group = (
-                        occurrence.origin_channel == "qq" and occurrence.origin_surface == "group"
-                    )
-                    group_id = occurrence.origin_conversation_id.rsplit(":", 1)[-1]
-                    target_conversation = (
-                        occurrence.origin_conversation_id
-                        if is_group
-                        else f"qq:private:owner:{occurrence.owner_qq}"
-                    )
+                    target = _onebot_reminder_target(occurrence)
+                    if target is None:
+                        # Official QQ reminders are intentionally blocked until
+                        # explicit channel+target binding is implemented.  Never
+                        # reinterpret an OpenID as a NapCat QQ number.
+                        _log.warning(
+                            "reminder_delivery_blocked channel=%s surface=%s",
+                            occurrence.origin_channel,
+                            occurrence.origin_surface,
+                        )
+                        await asyncio.to_thread(
+                            reminders.finish_occurrence,
+                            occurrence.occurrence_key,
+                            state="failed",
+                        )
+                        continue
+                    target_conversation = target.conversation_id
                     budget = await asyncio.to_thread(
                         risk_ledger.reserve_send,
                         event_type="reminder",
@@ -876,22 +920,11 @@ async def listen() -> None:
                     if not budget.allowed or budget.reservation_id is None:
                         continue
                     try:
-                        if is_group:
-                            message_id = await send_onebot_group_message(
-                                settings.onebot_ws_url,
-                                settings.onebot_access_token,
-                                group_id=group_id,
-                                text=text,
-                                idempotency_key=occurrence.occurrence_key,
-                            )
-                        else:
-                            message_id = await send_onebot_private_message(
-                                settings.onebot_ws_url,
-                                settings.onebot_access_token,
-                                user_id=occurrence.owner_qq,
-                                text=text,
-                                idempotency_key=occurrence.occurrence_key,
-                            )
+                        receipt = await onebot_adapter.send_text(
+                            target,
+                            text,
+                            idempotency_key=occurrence.occurrence_key,
+                        )
                     except OutboundError as exc:
                         await asyncio.to_thread(
                             risk_ledger.finish_send,
@@ -904,15 +937,30 @@ async def listen() -> None:
                             state="unknown",
                         )
                     else:
-                        await asyncio.to_thread(
-                            risk_ledger.finish_send, budget.reservation_id, outcome="sent"
-                        )
-                        await asyncio.to_thread(
-                            reminders.finish_occurrence,
-                            occurrence.occurrence_key,
-                            state="sent",
-                            message_id=message_id,
-                        )
+                        if receipt.state is DeliveryState.SENT:
+                            await asyncio.to_thread(
+                                risk_ledger.finish_send, budget.reservation_id, outcome="sent"
+                            )
+                            await asyncio.to_thread(
+                                reminders.finish_occurrence,
+                                occurrence.occurrence_key,
+                                state="sent",
+                                message_id=receipt.provider_message_id,
+                            )
+                        else:
+                            outcome = (
+                                "unknown" if receipt.state is DeliveryState.UNKNOWN else "failed"
+                            )
+                            await asyncio.to_thread(
+                                risk_ledger.finish_send,
+                                budget.reservation_id,
+                                outcome=outcome,
+                            )
+                            await asyncio.to_thread(
+                                reminders.finish_occurrence,
+                                occurrence.occurrence_key,
+                                state=outcome,
+                            )
             await asyncio.sleep(5)
 
     async def candidate_review_notification_loop() -> None:
@@ -934,11 +982,13 @@ async def listen() -> None:
                     )
                     if budget.allowed and budget.reservation_id is not None:
                         try:
-                            await send_onebot_private_message(
-                                settings.onebot_ws_url,
-                                settings.onebot_access_token,
-                                user_id=settings.owner_qq,
-                                text=(
+                            receipt = await onebot_adapter.send_text(
+                                OutboundTarget(
+                                    channel="qq",
+                                    conversation_kind=ConversationKind.PRIVATE,
+                                    conversation_id=f"qq:private:owner:{settings.owner_qq}",
+                                ),
+                                (
                                     f"Higgs 有 {total} 条候选记忆等待审核。\n"
                                     "发送 /higgs memory list candidate 1 查看。"
                                 ),
@@ -951,19 +1001,37 @@ async def listen() -> None:
                                 budget.reservation_id,
                                 outcome=outcome,
                             )
-                            if exc.delivery_unknown:
-                                await asyncio.to_thread(observations.mark_candidate_notified, total)
                         else:
-                            await asyncio.to_thread(
-                                risk_ledger.finish_send, budget.reservation_id, outcome="sent"
-                            )
-                            await asyncio.to_thread(observations.mark_candidate_notified, total)
+                            if receipt.state is DeliveryState.SENT:
+                                await asyncio.to_thread(
+                                    risk_ledger.finish_send,
+                                    budget.reservation_id,
+                                    outcome="sent",
+                                )
+                                await asyncio.to_thread(observations.mark_candidate_notified, total)
+                            else:
+                                outcome = (
+                                    "unknown"
+                                    if receipt.state is DeliveryState.UNKNOWN
+                                    else "failed"
+                                )
+                                await asyncio.to_thread(
+                                    risk_ledger.finish_send,
+                                    budget.reservation_id,
+                                    outcome=outcome,
+                                )
             await asyncio.sleep(900)
 
     online_probe_task = asyncio.create_task(online_probe_loop())
     reminder_task = asyncio.create_task(reminder_loop())
     candidate_notification_task = asyncio.create_task(candidate_review_notification_loop())
-    for background_task in (online_probe_task, reminder_task, candidate_notification_task):
+    background_tasks: tuple[asyncio.Task[object], ...] = (
+        online_probe_task,
+        reminder_task,
+        candidate_notification_task,
+        *((official_supervisor_task,) if official_supervisor_task is not None else ()),
+    )
+    for background_task in background_tasks:
         background_task.add_done_callback(
             lambda task: task.exception() if not task.cancelled() else None
         )
@@ -1030,6 +1098,9 @@ async def listen() -> None:
                 await online.set_transport(False)
         except asyncio.CancelledError:
             await online.set_transport(False)
+            for background_task in background_tasks:
+                background_task.cancel()
+            await asyncio.gather(*background_tasks, return_exceptions=True)
             if official_adapter is not None:
                 await official_adapter.stop()
             raise

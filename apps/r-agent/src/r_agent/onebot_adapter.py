@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from r_agent.events import ConversationKind
+from r_agent.events import ConversationKind, InboundEvent
 from r_agent.phase2_outbound import (
     OutboundError,
     get_onebot_account_status,
     send_onebot_group_message,
     send_onebot_private_message,
+    send_onebot_reply,
 )
 from r_agent.transport import (
     DeliveryReceipt,
@@ -80,6 +81,27 @@ class OneBotAdapter:
                     text=text,
                     idempotency_key=idempotency_key,
                 )
+        except OutboundError as exc:
+            return DeliveryReceipt(
+                channel=self.channel,
+                state=(DeliveryState.UNKNOWN if exc.delivery_unknown else DeliveryState.FAILED),
+                idempotency_key=idempotency_key,
+            )
+        return DeliveryReceipt(
+            channel=self.channel,
+            state=DeliveryState.SENT if provider_id else DeliveryState.UNKNOWN,
+            idempotency_key=idempotency_key,
+            provider_message_id=provider_id,
+        )
+
+    async def send_reply(self, event: InboundEvent, text: str) -> DeliveryReceipt:
+        """Send a passive reply through the shared adapter boundary."""
+
+        if event.channel.casefold() != self.channel:
+            raise TransportUnavailable("OneBot event channel mismatch")
+        idempotency_key = f"reply:{event.channel}:{event.account_id}:{event.message_id}"
+        try:
+            provider_id = await send_onebot_reply(self.ws_url, self.token, event, text)
         except OutboundError as exc:
             return DeliveryReceipt(
                 channel=self.channel,

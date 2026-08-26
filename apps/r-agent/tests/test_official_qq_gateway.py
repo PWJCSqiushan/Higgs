@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -302,4 +303,68 @@ async def test_heartbeat_ack_timeout_fails_closed(tmp_path: Path) -> None:
     status = await adapter.status()
     assert status.connected is False
     assert status.reason == "heartbeat_ack_timeout"
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_does_not_restart_after_fatal_error(tmp_path: Path) -> None:
+    starts = 0
+    gateway: FakeGateway | None = None
+
+    def gateway_factory(callbacks: Any) -> FakeGateway:
+        nonlocal starts, gateway
+        starts += 1
+        gateway = FakeGateway(callbacks)
+        return gateway
+
+    adapter = OfficialQQAdapter(
+        config(),
+        data_dir=tmp_path,
+        api_client=FakeApi(),
+        gateway_factory=gateway_factory,
+        session_store=FakeSessionStore(),
+        parser=lambda _event_type, _raw: None,
+    )
+    await adapter.start()
+    assert gateway is not None
+    gateway.callbacks.on_fatal_error("4013", "invalid intents")
+    await adapter.supervise(
+        poll_interval_seconds=0.1,
+        base_delay_seconds=0.1,
+        max_consecutive_restarts=3,
+    )
+    assert starts == 1
+    assert (await adapter.status()).reason == "fatal:4013"
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_caps_ordinary_restart_backoff(tmp_path: Path) -> None:
+    starts = 0
+
+    def gateway_factory(callbacks: Any) -> FakeGateway:
+        nonlocal starts
+        starts += 1
+        return FakeGateway(callbacks)
+
+    adapter = OfficialQQAdapter(
+        config(),
+        data_dir=tmp_path,
+        api_client=FakeApi(),
+        gateway_factory=gateway_factory,
+        session_store=FakeSessionStore(),
+        parser=lambda _event_type, _raw: None,
+    )
+    await adapter.start()
+    await asyncio.wait_for(
+        adapter.supervise(
+            poll_interval_seconds=0.1,
+            base_delay_seconds=0.1,
+            max_delay_seconds=0.2,
+            max_consecutive_restarts=2,
+        ),
+        timeout=2.0,
+    )
+    assert starts == 3  # initial start plus two bounded ordinary retries
+    assert (await adapter.status()).reason == "restart_budget_exhausted"
     await adapter.stop()

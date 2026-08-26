@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -18,6 +19,9 @@ from r_agent.transport import (
     TransportStatus,
     TransportUnavailable,
 )
+from r_agent.transport_state import TransportStateStore
+
+_log = logging.getLogger(__name__)
 
 
 class ApiClient(Protocol):
@@ -97,6 +101,7 @@ class OfficialQQAdapter:
         session_store: SessionStore | None = None,
         parser: Parser | None = None,
         clock_ms: Callable[[], int] | None = None,
+        transport_state: TransportStateStore | None = None,
     ) -> None:
         self.config = config
         self._event_handler = event_handler
@@ -106,6 +111,7 @@ class OfficialQQAdapter:
         self._session_store = session_store
         self._parser = parser
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+        self._transport_state = transport_state
         self._gateway: Gateway | None = None
         self._http_client: Any = None
         self._lock = threading.RLock()
@@ -118,6 +124,8 @@ class OfficialQQAdapter:
         self._heartbeat_interval_seconds = 30.0
         self._connected_at_ms: int | None = None
         self._receipts: dict[str, DeliveryReceipt] = {}
+        self._stop_requested = False
+        self._terminal_failure = False
 
     def _ensure_dependencies(self) -> None:
         from qqbot_agent_sdk import EventParser, QQApiClient, QQWebSocket, WSSessionStore
@@ -142,12 +150,74 @@ class OfficialQQAdapter:
         if self._parser is None:
             self._parser = EventParser().parse
 
+    @staticmethod
+    def _is_auth_failure(exc: BaseException) -> bool:
+        """Classify only explicit credential/auth failures as terminal."""
+
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if status_code in {401, 403}:
+            return True
+        detail = str(exc).casefold()
+        return any(
+            marker in detail
+            for marker in (
+                "401",
+                "403",
+                "unauthorized",
+                "forbidden",
+                "invalid token",
+                "invalid client",
+                "client secret",
+                "authentication",
+            )
+        )
+
+    def _set_failure(self, reason: str, *, terminal: bool = False) -> None:
+        with self._lock:
+            self._connected = False
+            self._authenticated = False
+            self._connected_at_ms = None
+            self._reason = reason
+            if terminal:
+                self._terminal_failure = True
+
+    def _persist_status(self, status: TransportStatus) -> None:
+        """Persist only redacted status dimensions when a state store is configured."""
+
+        if self._transport_state is None:
+            return
+        healthy = status.connected and status.authenticated
+        with self._lock:
+            terminal = self._terminal_failure
+        try:
+            self._transport_state.record_transition(
+                "verified" if healthy else "rejected" if terminal else "pending",
+                reason=status.reason or "official_status",
+                onebot_reachable=status.connected,
+                qq_online=status.authenticated,
+                account_match=True if status.account_id else None,
+                health_receipt=("ok" if healthy else "failed", status.reason or "official_status"),
+            )
+        except Exception as exc:  # pragma: no cover - observability must not stop the adapter
+            _log.warning("official_transport_state_failed type=%s", type(exc).__name__)
+
     async def start(self) -> None:
+        with self._lock:
+            if self._terminal_failure:
+                raise TransportUnavailable("official QQ is in terminal failure state")
+            self._stop_requested = False
         if not self.config.enabled:
+            self._set_failure("disabled", terminal=True)
             raise TransportUnavailable("official QQ is disabled")
         if not self.config.app_id or not self.config.client_secret or not self.config.owner_openid:
+            self._set_failure("configuration_incomplete", terminal=True)
             raise TransportUnavailable("official QQ configuration is incomplete")
-        self._ensure_dependencies()
+        try:
+            self._ensure_dependencies()
+        except Exception as exc:
+            self._set_failure("dependency_unavailable", terminal=True)
+            raise TransportUnavailable("official QQ dependencies are unavailable") from exc
         assert self._api is not None
         assert self._gateway_factory is not None
         if self._http_client is None:
@@ -159,44 +229,64 @@ class OfficialQQAdapter:
             await asyncio.to_thread(self._api.ensure_token_sync)
             gateway_url = await asyncio.to_thread(self._api.get_gateway_url_sync)
         except Exception as exc:
-            with self._lock:
-                self._authenticated = False
-                self._connected = False
-                self._reason = f"startup_failed:{type(exc).__name__}"
+            terminal = self._is_auth_failure(exc)
+            self._set_failure(
+                "startup_auth_failed" if terminal else f"startup_failed:{type(exc).__name__}",
+                terminal=terminal,
+            )
             raise TransportUnavailable("official QQ authentication failed") from exc
 
-        from qqbot_agent_sdk import WSCallbacks
+        try:
+            from qqbot_agent_sdk import WSCallbacks
 
-        callbacks = WSCallbacks(
-            on_message_event=self._on_message_event,
-            on_connected=self._on_connected,
-            on_disconnected=self._on_disconnected,
-            on_fatal_error=self._on_fatal_error,
-            get_token=self._api.ensure_token_sync,
-            get_session=self._get_session,
-            set_session=self._set_session,
-            set_heartbeat_interval=self._set_heartbeat_interval,
-            clear_token=self._api.clear_token,
-            fail_pending=lambda _reason: None,
-            get_gateway_url=self._api.get_gateway_url_sync,
-            on_heartbeat_ack=self._on_heartbeat_ack,
-            on_ready=self._on_ready,
-        )
-        self._gateway = self._gateway_factory(callbacks)
+            callbacks = WSCallbacks(
+                on_message_event=self._on_message_event,
+                on_connected=self._on_connected,
+                on_disconnected=self._on_disconnected,
+                on_fatal_error=self._on_fatal_error,
+                get_token=self._api.ensure_token_sync,
+                get_session=self._get_session,
+                set_session=self._set_session,
+                set_heartbeat_interval=self._set_heartbeat_interval,
+                clear_token=self._api.clear_token,
+                fail_pending=lambda _reason: None,
+                get_gateway_url=self._api.get_gateway_url_sync,
+                on_heartbeat_ack=self._on_heartbeat_ack,
+                on_ready=self._on_ready,
+            )
+            gateway = self._gateway_factory(callbacks)
+        except Exception as exc:
+            self._set_failure("gateway_setup_failed", terminal=True)
+            raise TransportUnavailable("official QQ gateway setup failed") from exc
+        self._gateway = gateway
         with self._lock:
             self._authenticated = True
             self._reason = "connecting"
-        self._gateway.start(gateway_url, asyncio.get_running_loop())
+        try:
+            gateway.start(gateway_url, asyncio.get_running_loop())
+        except Exception as exc:
+            with self._lock:
+                self._gateway = None
+            self._set_failure(f"gateway_start_failed:{type(exc).__name__}")
+            raise TransportUnavailable("official QQ gateway failed to start") from exc
 
     async def stop(self) -> None:
-        if self._gateway is not None:
-            await self._gateway.async_stop()
+        with self._lock:
+            self._stop_requested = True
+            gateway = self._gateway
+            self._gateway = None
+        if gateway is not None:
+            try:
+                await gateway.async_stop()
+            except Exception as exc:
+                _log.warning("official_qq_gateway_stop_failed type=%s", type(exc).__name__)
         if self._http_client is not None:
             await self._http_client.aclose()
             self._http_client = None
         with self._lock:
             self._connected = False
             self._authenticated = False
+            self._connected_at_ms = None
             self._reason = "stopped"
 
     async def status(self) -> TransportStatus:
@@ -212,6 +302,93 @@ class OfficialQQAdapter:
                 last_heartbeat_ack_at_ms=self._last_heartbeat_ack_at_ms,
                 last_event_at_ms=self._last_event_at_ms,
             )
+
+    async def _restart_gateway(self) -> None:
+        """Replace a disconnected gateway while keeping the cached token client."""
+
+        with self._lock:
+            if self._stop_requested or self._terminal_failure:
+                return
+            gateway = self._gateway
+            self._gateway = None
+            self._connected = False
+            self._authenticated = False
+            self._connected_at_ms = None
+            self._reason = "restarting"
+        if gateway is not None:
+            try:
+                await gateway.async_stop()
+            except Exception as exc:
+                _log.warning("official_qq_gateway_restart_stop_failed type=%s", type(exc).__name__)
+        await self.start()
+
+    async def supervise(
+        self,
+        *,
+        poll_interval_seconds: float = 30.0,
+        base_delay_seconds: float = 1.0,
+        max_delay_seconds: float = 30.0,
+        max_consecutive_restarts: int = 5,
+    ) -> None:
+        """Poll health and apply bounded recovery for ordinary gateway faults.
+
+        Authentication/configuration failures and SDK fatal callbacks mark the
+        adapter terminal.  They return from this loop without attempting a
+        login storm; an operator or process restart must clear that state.
+        """
+
+        if not 0.1 <= poll_interval_seconds <= 300.0:
+            raise ValueError("poll interval must be between 0.1 and 300 seconds")
+        if not 0.1 <= base_delay_seconds <= 60.0:
+            raise ValueError("base restart delay must be between 0.1 and 60 seconds")
+        if not base_delay_seconds <= max_delay_seconds <= 300.0:
+            raise ValueError("restart delay bounds are invalid")
+        if not 1 <= max_consecutive_restarts <= 10:
+            raise ValueError("restart budget must be between 1 and 10")
+
+        delay = base_delay_seconds
+        consecutive_restarts = 0
+        while True:
+            with self._lock:
+                if self._stop_requested or self._terminal_failure:
+                    return
+            current = await self.status()
+            self._persist_status(current)
+            if current.connected and current.authenticated:
+                consecutive_restarts = 0
+                delay = base_delay_seconds
+                await asyncio.sleep(poll_interval_seconds)
+                continue
+            with self._lock:
+                if self._stop_requested or self._terminal_failure:
+                    return
+            if consecutive_restarts >= max_consecutive_restarts:
+                with self._lock:
+                    self._reason = "restart_budget_exhausted"
+                self._persist_status(await self.status())
+                return
+            await asyncio.sleep(delay)
+            with self._lock:
+                if self._stop_requested or self._terminal_failure:
+                    return
+            try:
+                await self._restart_gateway()
+            except TransportUnavailable:
+                with self._lock:
+                    terminal = self._terminal_failure
+                    if not terminal:
+                        self._reason = "restart_failed"
+                consecutive_restarts += 1
+                if terminal:
+                    self._persist_status(await self.status())
+                    return
+            except Exception as exc:  # pragma: no cover - defensive boundary
+                with self._lock:
+                    self._reason = f"restart_failed:{type(exc).__name__}"
+                consecutive_restarts += 1
+            else:
+                consecutive_restarts += 1
+            delay = min(max_delay_seconds, max(base_delay_seconds, delay * 2))
 
     def _get_session(self) -> tuple[str | None, int | None]:
         assert self._session_store is not None
@@ -247,7 +424,12 @@ class OfficialQQAdapter:
         with self._lock:
             self._connected = False
             self._authenticated = False
-            self._reason = f"fatal:{code}"
+            self._connected_at_ms = None
+            self._terminal_failure = True
+            safe_code = "".join(char for char in str(code) if char.isascii() and char.isalnum())[
+                :40
+            ]
+            self._reason = f"fatal:{safe_code or 'unknown'}"
 
     def _set_heartbeat_interval(self, interval: float) -> None:
         if 0 < interval <= 300:

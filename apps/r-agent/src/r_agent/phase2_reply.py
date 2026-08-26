@@ -284,6 +284,8 @@ class PersonaBrain:
                         )
                     parsed = parse_reminder_intent(clean)
                     if parsed is not None:
+                        if event.channel.casefold() == "qq_official":
+                            return "官方 QQ 通道暂不支持主动提醒，请在 NapCat 私聊中创建提醒。"
                         due_at_ms, content = parsed
                         pending = await asyncio.to_thread(
                             self.reminders.create_pending,
