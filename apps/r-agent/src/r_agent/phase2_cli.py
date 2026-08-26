@@ -53,7 +53,9 @@ from r_agent.recall import RecallLedger
 from r_agent.reminders import DueOccurrence, ReminderStore
 from r_agent.risk_ledger import RiskLedger, RiskLimits
 from r_agent.safety import OutboundSafetyPolicy, SafetyError
+from r_agent.server_status import ServerStatusCommand, ServerStatusReader
 from r_agent.skills import SkillApprovalStore, default_skill_registry
+from r_agent.tool_governance import ToolGovernance
 from r_agent.transport import DeliveryReceipt, DeliveryState, OutboundTarget, TransportUnavailable
 from r_agent.transport_state import TransportStateStore
 from r_agent.vector_memory import MemoryVectorStore
@@ -501,6 +503,8 @@ async def listen() -> None:
     )
     transport_state = TransportStateStore(settings.data_dir / "transport.sqlite")
     transport_state.initialize()
+    tool_governance = ToolGovernance(audit_path=settings.data_dir / "tool_audit.sqlite")
+    server_status = ServerStatusCommand(tool_governance, ServerStatusReader())
     policy = ReplyPolicy(
         mode=phase.mode,
         private_users=phase.private_users.union(
@@ -626,6 +630,7 @@ async def listen() -> None:
         risk_ledger=risk_ledger,
         recall_ledger=recall,
         transport_state=transport_state,
+        server_status=server_status,
     )
     amap_key = _value("R_AGENT_AMAP_WEB_KEY")
     daily_plans = DailyPlanService(
