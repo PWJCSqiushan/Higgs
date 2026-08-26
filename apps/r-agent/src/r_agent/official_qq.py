@@ -13,12 +13,6 @@ import os
 from dataclasses import dataclass
 
 from r_agent.config import ConfigError
-from r_agent.transport import (
-    DeliveryReceipt,
-    OutboundTarget,
-    TransportStatus,
-    TransportUnavailable,
-)
 
 
 def _bool_value(value: str | None, *, default: bool) -> bool:
@@ -38,13 +32,17 @@ class OfficialQQConfig:
     app_id: str | None
     client_secret: str | None
     sandbox: bool = True
+    owner_openid: str | None = None
+    allowed_group_openids: frozenset[str] = frozenset()
 
     def __repr__(self) -> str:
         return (
             "OfficialQQConfig("
             f"enabled={self.enabled!r}, app_id={self.app_id!r}, "
             f"client_secret={'<configured>' if self.client_secret else None!r}, "
-            f"sandbox={self.sandbox!r})"
+            f"sandbox={self.sandbox!r}, "
+            f"owner_openid={'<configured>' if self.owner_openid else None!r}, "
+            f"allowed_group_count={len(self.allowed_group_openids)!r})"
         )
 
     @classmethod
@@ -53,42 +51,32 @@ class OfficialQQConfig:
         app_id = os.environ.get("R_AGENT_OFFICIAL_QQ_APP_ID", "").strip() or None
         secret = os.environ.get("R_AGENT_OFFICIAL_QQ_CLIENT_SECRET", "").strip() or None
         sandbox = _bool_value(os.environ.get("R_AGENT_OFFICIAL_QQ_SANDBOX"), default=True)
+        owner_openid = os.environ.get("R_AGENT_OFFICIAL_QQ_OWNER_OPENID", "").strip() or None
+        groups = frozenset(
+            item.strip()
+            for item in os.environ.get("R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS", "").split(",")
+            if item.strip()
+        )
         if app_id is not None and (
             not app_id.isascii() or not app_id.isdigit() or not 5 <= len(app_id) <= 32
         ):
             raise ConfigError("R_AGENT_OFFICIAL_QQ_APP_ID must be 5-32 ASCII digits")
         if secret is not None and len(secret) < 16:
             raise ConfigError("R_AGENT_OFFICIAL_QQ_CLIENT_SECRET is too short")
-        if enabled and (app_id is None or secret is None):
-            raise ConfigError("enabled official QQ requires AppID and ClientSecret")
-        return cls(enabled=enabled, app_id=app_id, client_secret=secret, sandbox=sandbox)
-
-
-class OfficialQQAdapter:
-    """Reserved adapter boundary; network activation is intentionally blocked."""
-
-    channel = "qq_official"
-
-    def __init__(self, config: OfficialQQConfig) -> None:
-        self.config = config
-
-    async def status(self) -> TransportStatus:
-        configured = bool(self.config.app_id and self.config.client_secret)
-        reason = "adapter_not_activated" if self.config.enabled else "disabled"
-        return TransportStatus(
-            channel=self.channel,
-            configured=configured,
-            connected=False,
-            account_id=None,
-            reason=reason,
+        if enabled and (app_id is None or secret is None or owner_openid is None):
+            raise ConfigError(
+                "enabled official QQ requires AppID, ClientSecret, and explicit owner OpenID"
+            )
+        return cls(
+            enabled=enabled,
+            app_id=app_id,
+            client_secret=secret,
+            sandbox=sandbox,
+            owner_openid=owner_openid,
+            allowed_group_openids=groups,
         )
 
-    async def send_text(
-        self,
-        target: OutboundTarget,
-        text: str,
-        *,
-        idempotency_key: str,
-    ) -> DeliveryReceipt:
-        del target, text, idempotency_key
-        raise TransportUnavailable("official QQ network adapter is not activated")
+
+from r_agent.official_qq_gateway import OfficialQQAdapter  # noqa: E402
+
+__all__ = ["OfficialQQAdapter", "OfficialQQConfig"]

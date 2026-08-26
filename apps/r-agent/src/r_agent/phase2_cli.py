@@ -35,6 +35,7 @@ from r_agent.journal import Journal
 from r_agent.memory import MemoryError, MemoryStore
 from r_agent.memory_v2 import MemoryObservationStore, MemoryReconciler
 from r_agent.model_client import ModelConfig, ModelError, OpenAICompatibleClient
+from r_agent.official_qq import OfficialQQAdapter, OfficialQQConfig
 from r_agent.onebot import OneBotParseError, parse_message_event
 from r_agent.online_reliability import OnlineState, PushPlusNotifier, onebot_online_hint
 from r_agent.operator_control import LiveOperatorControl
@@ -56,6 +57,7 @@ from r_agent.risk_ledger import RiskLedger, RiskLimits
 from r_agent.safety import OutboundSafetyPolicy, SafetyError
 from r_agent.skills import SkillApprovalStore, default_skill_registry
 from r_agent.transport_state import TransportStateStore
+from r_agent.transport import DeliveryState, OutboundTarget, TransportUnavailable
 from r_agent.vector_memory import MemoryVectorStore
 
 _log = logging.getLogger(__name__)
@@ -393,6 +395,7 @@ async def listen() -> None:
     env_path = _env_path()
     settings = Settings.from_env(env_file=env_path, require_shadow=False)
     phase = _phase2_settings(settings)
+    official_config = OfficialQQConfig.from_env()
     embeddings = _embedding_client(enabled=phase.embedding_enabled, phase=phase)
     safety = _safety_policy(phase)
     client = _model_client(required=phase.mode in {"draft", "live"})
@@ -403,10 +406,26 @@ async def listen() -> None:
             owner_qq=settings.owner_qq,
             allowed_private_qqs=settings.allowed_private_qqs,
             allowed_groups=settings.allowed_groups,
+            owner_ids=frozenset(
+                value
+                for value in (settings.owner_qq, official_config.owner_openid)
+                if value is not None
+            ),
+            additional_private_ids=(
+                frozenset({official_config.owner_openid})
+                if official_config.owner_openid
+                else frozenset()
+            ),
+            additional_group_ids=official_config.allowed_group_openids,
         ),
         identities=IdentityStore(
             settings.data_dir / "identity.sqlite",
             owner_qq=settings.owner_qq,
+            owner_identities=(
+                (("qq_official", official_config.owner_openid),)
+                if official_config.owner_openid
+                else ()
+            ),
         ),
         journal=Journal(settings.data_dir / "journal.sqlite"),
     )
@@ -456,13 +475,21 @@ async def listen() -> None:
     transport_state.initialize()
     policy = ReplyPolicy(
         mode=phase.mode,
-        private_users=phase.private_users.union({settings.owner_qq} if settings.owner_qq else ()),
-        groups=phase.groups,
+        private_users=phase.private_users.union(
+            {settings.owner_qq} if settings.owner_qq else (),
+            {official_config.owner_openid} if official_config.owner_openid else (),
+        ),
+        groups=phase.groups.union(official_config.allowed_group_openids),
         natural_trigger_groups=phase.natural_trigger_groups,
         natural_trigger_terms=phase.natural_trigger_terms,
         global_max_per_minute=phase.global_max_per_minute,
         owner_max_per_minute=phase.owner_conversation_per_minute,
         owner_qq=settings.owner_qq,
+        owner_ids=frozenset(
+            value
+            for value in (settings.owner_qq, official_config.owner_openid)
+            if value is not None
+        ),
         runtime_enabled=phase.runtime_enabled,
         require_mention=phase.require_mention,
         max_per_minute=phase.max_per_minute,
@@ -603,7 +630,28 @@ async def listen() -> None:
         else None
     )
 
+    official_adapter: OfficialQQAdapter | None = None
+
     async def sender(event: InboundEvent, text: str) -> None:
+        if event.channel == "qq_official":
+            if official_adapter is None:
+                raise OutboundError("official QQ adapter is unavailable", delivery_unknown=False)
+            receipt = await official_adapter.send_text(
+                OutboundTarget(
+                    channel=event.channel,
+                    conversation_kind=event.conversation_kind,
+                    conversation_id=event.conversation_id,
+                ),
+                text,
+                idempotency_key=(f"reply:{event.channel}:{event.account_id}:{event.message_id}"),
+                reply_message_id=event.message_id,
+            )
+            if receipt.state is not DeliveryState.SENT:
+                raise OutboundError(
+                    "official QQ delivery was not acknowledged",
+                    delivery_unknown=receipt.state is DeliveryState.UNKNOWN,
+                )
+            return
         await send_onebot_reply(
             settings.onebot_ws_url,
             settings.onebot_access_token,
@@ -614,6 +662,16 @@ async def listen() -> None:
     async def handle_event(event: InboundEvent, result: IngestResult) -> None:
         """Finish one logical message after the group quiet-window has closed."""
         try:
+            if event.channel == "qq_official" and official_adapter is not None:
+                official_status = await official_adapter.status()
+                channel_online = official_status.connected and official_status.authenticated
+            else:
+                channel_online = online.snapshot().qq_online
+            owner_sender_id = (
+                official_config.owner_openid
+                if event.channel == "qq_official"
+                else settings.owner_qq
+            )
             plan = await process_reply(
                 event=event,
                 result=result,
@@ -622,8 +680,8 @@ async def listen() -> None:
                 sender=sender,
                 safety=safety,
                 breaker=breaker,
-                owner_qq=settings.owner_qq,
-                qq_online=online.snapshot().qq_online,
+                owner_qq=owner_sender_id,
+                qq_online=channel_online,
                 risk_ledger=risk_ledger,
             )
             await asyncio.to_thread(audit.record, event, plan)
@@ -695,6 +753,64 @@ async def listen() -> None:
         handler=handle_event,
     )
     operator_control.attach_debouncer(debouncer)
+
+    async def route_inbound_event(
+        event: InboundEvent,
+        *,
+        resolve_onebot_reply: bool,
+    ) -> None:
+        owner_ids = {settings.owner_qq, official_config.owner_openid}
+        learning_allowed = await asyncio.to_thread(
+            risk_ledger.note_inbound,
+            event.conversation_id,
+            actor_class="owner" if event.sender_id in owner_ids else "non_owner",
+            account_id=event.account_id,
+            now_ms=event.occurred_at_ms,
+        )
+        if (
+            resolve_onebot_reply
+            and event.group_id in phase.natural_trigger_groups
+            and event.reply_message_id is not None
+        ):
+            try:
+                replied_sender = await get_onebot_message_sender(
+                    settings.onebot_ws_url,
+                    settings.onebot_access_token,
+                    event.reply_message_id,
+                )
+            except OutboundError:
+                _log.warning("phase2_reply_reference_lookup_failed")
+            else:
+                if replied_sender == event.account_id:
+                    event = replace(event, replied_to_account=True)
+        result = await asyncio.to_thread(service.ingest, event)
+        if result.stored and learning_allowed:
+            principal = await asyncio.to_thread(
+                service.identities.resolve,
+                event.channel,
+                event.sender_id,
+            )
+            await asyncio.to_thread(
+                observations.enqueue,
+                event,
+                principal_id=principal.principal_id,
+                principal_role=principal.role,
+            )
+        await debouncer.submit(event, result)
+
+    async def route_official_event(event: InboundEvent) -> None:
+        await route_inbound_event(event, resolve_onebot_reply=False)
+
+    official_adapter = OfficialQQAdapter(
+        official_config,
+        event_handler=route_official_event,
+        data_dir=settings.data_dir,
+    )
+    if official_config.enabled:
+        try:
+            await official_adapter.start()
+        except TransportUnavailable as exc:
+            _log.error("official_qq_start_failed type=%s", type(exc).__name__)
     backup_task = asyncio.create_task(backup.run_periodically())
     backup_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
 
@@ -906,44 +1022,7 @@ async def listen() -> None:
                         if not isinstance(raw, dict) or raw.get("post_type") != "message":
                             continue
                         event = parse_message_event(raw)
-                        learning_allowed = await asyncio.to_thread(
-                            risk_ledger.note_inbound,
-                            event.conversation_id,
-                            actor_class=(
-                                "owner" if event.sender_id == settings.owner_qq else "non_owner"
-                            ),
-                            account_id=event.account_id,
-                            now_ms=event.occurred_at_ms,
-                        )
-                        if (
-                            event.group_id in phase.natural_trigger_groups
-                            and event.reply_message_id is not None
-                        ):
-                            try:
-                                replied_sender = await get_onebot_message_sender(
-                                    settings.onebot_ws_url,
-                                    settings.onebot_access_token,
-                                    event.reply_message_id,
-                                )
-                            except OutboundError:
-                                _log.warning("phase2_reply_reference_lookup_failed")
-                            else:
-                                if replied_sender == event.account_id:
-                                    event = replace(event, replied_to_account=True)
-                        result = await asyncio.to_thread(service.ingest, event)
-                        if result.stored and learning_allowed:
-                            principal = await asyncio.to_thread(
-                                service.identities.resolve,
-                                event.channel,
-                                event.sender_id,
-                            )
-                            await asyncio.to_thread(
-                                observations.enqueue,
-                                event,
-                                principal_id=principal.principal_id,
-                                principal_role=principal.role,
-                            )
-                        await debouncer.submit(event, result)
+                        await route_inbound_event(event, resolve_onebot_reply=True)
                     except (json.JSONDecodeError, OneBotParseError) as exc:
                         _log.warning("phase2_event_rejected type=%s", type(exc).__name__)
                     except Exception as exc:
@@ -951,6 +1030,8 @@ async def listen() -> None:
                 await online.set_transport(False)
         except asyncio.CancelledError:
             await online.set_transport(False)
+            if official_adapter is not None:
+                await official_adapter.stop()
             raise
         except Exception as exc:
             await online.set_transport(False)

@@ -23,6 +23,9 @@ class IngressPolicy:
     owner_qq: str | None
     allowed_private_qqs: frozenset[str]
     allowed_groups: frozenset[str]
+    owner_ids: frozenset[str] = frozenset()
+    additional_private_ids: frozenset[str] = frozenset()
+    additional_group_ids: frozenset[str] = frozenset()
 
     def decide(self, event: InboundEvent) -> IngressDecision:
         if not self.enabled:
@@ -30,11 +33,13 @@ class IngressPolicy:
         if event.sender_id == event.account_id:
             return IngressDecision.SELF_MESSAGE
         if event.conversation_kind is ConversationKind.PRIVATE:
-            if self.owner_qq is None:
+            owners = self.owner_ids.union({self.owner_qq} if self.owner_qq else ())
+            if not owners:
                 return IngressDecision.OWNER_UNCONFIGURED
-            if event.sender_id != self.owner_qq and event.sender_id not in self.allowed_private_qqs:
+            allowed_private = self.allowed_private_qqs.union(self.additional_private_ids)
+            if event.sender_id not in owners and event.sender_id not in allowed_private:
                 return IngressDecision.PRIVATE_NOT_ALLOWED
             return IngressDecision.ACCEPT
-        if event.group_id not in self.allowed_groups:
+        if event.group_id not in self.allowed_groups.union(self.additional_group_ids):
             return IngressDecision.GROUP_NOT_ALLOWED
         return IngressDecision.ACCEPT
