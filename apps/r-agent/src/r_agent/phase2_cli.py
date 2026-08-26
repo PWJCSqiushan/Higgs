@@ -35,6 +35,7 @@ from r_agent.journal import Journal
 from r_agent.memory import MemoryError, MemoryStore
 from r_agent.memory_v2 import MemoryObservationStore, MemoryReconciler
 from r_agent.model_client import ModelConfig, ModelError, OpenAICompatibleClient
+from r_agent.model_memory_candidates import ModelCandidateExtractor, ModelCandidateShadowStore
 from r_agent.official_qq import OfficialQQAdapter, OfficialQQConfig
 from r_agent.onebot import OneBotParseError, parse_message_event
 from r_agent.onebot_adapter import OneBotAdapter
@@ -472,6 +473,18 @@ async def listen() -> None:
     audit.initialize()
     observations = MemoryObservationStore(settings.data_dir / "memory.sqlite")
     observations.initialize()
+    model_candidate_mode = _value("R_AGENT_MEMORY_MODEL_CANDIDATES", "off").casefold()
+    if model_candidate_mode not in {"off", "shadow"}:
+        raise ConfigError("R_AGENT_MEMORY_MODEL_CANDIDATES must be off or shadow")
+    if model_candidate_mode == "shadow" and client is None:
+        raise ConfigError("model memory candidate shadow requires a configured model")
+    model_candidate_store = ModelCandidateShadowStore(settings.data_dir / "memory.sqlite")
+    model_candidate_store.initialize()
+    model_candidate_extractor = (
+        ModelCandidateExtractor(client)
+        if model_candidate_mode == "shadow" and client is not None
+        else None
+    )
     reminders = ReminderStore(settings.data_dir / "reminders.sqlite")
     reminders.initialize()
     agenda = AgendaStore(settings.data_dir / "agenda.sqlite")
@@ -607,6 +620,10 @@ async def listen() -> None:
         auto_review_enabled=lambda: operator_control.snapshot().memory_auto_review_enabled,
         auto_review_confidence=(lambda: operator_control.snapshot().memory_auto_review_confidence),
         auto_review_evidence=(lambda: operator_control.snapshot().memory_auto_review_evidence),
+        model_candidate_extractor=model_candidate_extractor,
+        model_candidate_shadow_store=(
+            model_candidate_store if model_candidate_extractor is not None else None
+        ),
     )
 
     owner_commands = OwnerCommandRouter(
