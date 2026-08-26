@@ -221,10 +221,14 @@ class OfficialQQAdapter:
         assert self._api is not None
         assert self._gateway_factory is not None
         if self._http_client is None:
-            import httpx
+            try:
+                import httpx
 
-            self._http_client = httpx.AsyncClient(timeout=30.0)
-            self._api.setup(self._http_client)
+                self._http_client = httpx.AsyncClient(timeout=30.0)
+                self._api.setup(self._http_client)
+            except Exception as exc:
+                self._set_failure("http_client_setup_failed", terminal=True)
+                raise TransportUnavailable("official QQ HTTP client setup failed") from exc
         try:
             await asyncio.to_thread(self._api.ensure_token_sync)
             gateway_url = await asyncio.to_thread(self._api.get_gateway_url_sync)
@@ -254,10 +258,17 @@ class OfficialQQAdapter:
                 on_heartbeat_ack=self._on_heartbeat_ack,
                 on_ready=self._on_ready,
             )
-            gateway = self._gateway_factory(callbacks)
+        except ImportError as exc:
+            self._set_failure("sdk_unavailable", terminal=True)
+            raise TransportUnavailable("official QQ SDK is unavailable") from exc
         except Exception as exc:
             self._set_failure("gateway_setup_failed", terminal=True)
             raise TransportUnavailable("official QQ gateway setup failed") from exc
+        try:
+            gateway = self._gateway_factory(callbacks)
+        except Exception as exc:
+            self._set_failure(f"gateway_factory_failed:{type(exc).__name__}")
+            raise TransportUnavailable("official QQ gateway factory failed") from exc
         self._gateway = gateway
         with self._lock:
             self._authenticated = True
@@ -350,8 +361,13 @@ class OfficialQQAdapter:
         consecutive_restarts = 0
         while True:
             with self._lock:
-                if self._stop_requested or self._terminal_failure:
+                stop_requested = self._stop_requested
+                terminal_failure = self._terminal_failure
+                if stop_requested:
                     return
+            if terminal_failure:
+                self._persist_status(await self.status())
+                return
             current = await self.status()
             self._persist_status(current)
             if current.connected and current.authenticated:
