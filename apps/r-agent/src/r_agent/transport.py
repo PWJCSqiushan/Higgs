@@ -47,8 +47,11 @@ class TransportStatus:
     channel: str
     configured: bool
     connected: bool
+    authenticated: bool = False
     account_id: str | None = None
     reason: str = ""
+    last_heartbeat_ack_at_ms: int | None = None
+    last_event_at_ms: int | None = None
 
 
 class TransportAdapter(Protocol):
@@ -65,6 +68,7 @@ class TransportAdapter(Protocol):
         text: str,
         *,
         idempotency_key: str,
+        reply_message_id: str | None = None,
     ) -> DeliveryReceipt: ...
 
 

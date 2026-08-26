@@ -29,6 +29,21 @@ class OneBotAccountStatus:
     nickname: str
 
 
+def _message_id_from_response(response: Mapping[str, object]) -> str:
+    """Require a provider message id before considering a send acknowledged."""
+
+    data = response.get("data")
+    if not isinstance(data, Mapping):
+        raise OutboundError("OneBot send acknowledgement omitted data")
+    message_id = data.get("message_id")
+    if isinstance(message_id, bool) or message_id is None:
+        raise OutboundError("OneBot send acknowledgement omitted message_id")
+    normalized = str(message_id).strip()
+    if not normalized or len(normalized) > 64:
+        raise OutboundError("OneBot send acknowledgement contained an invalid message_id")
+    return normalized
+
+
 async def _wait_for_action_response(socket: Any, *, echo: str) -> Mapping[str, object]:
     """Ignore unrelated events until the response carrying our echo arrives."""
     loop = asyncio.get_running_loop()
@@ -54,18 +69,27 @@ async def send_onebot_reply(
     token: str | None,
     event: InboundEvent,
     text: str,
-) -> None:
+) -> str:
     import websockets
 
     if not 1 <= len(text) <= 2000:
         raise OutboundError("reply length outside safe bound")
     if event.conversation_kind is ConversationKind.PRIVATE:
+        if (
+            not event.sender_id.isascii()
+            or not event.sender_id.isdigit()
+            or len(event.sender_id) > 20
+        ):
+            raise OutboundError("private target is invalid", delivery_unknown=False)
         action, params = "send_private_msg", {"user_id": int(event.sender_id), "message": text}
     else:
+        group_id = event.group_id or ""
+        if not group_id.isascii() or not group_id.isdigit() or len(group_id) > 20:
+            raise OutboundError("group target is invalid", delivery_unknown=False)
         action, params = (
             "send_group_msg",
             {
-                "group_id": int(event.group_id or ""),
+                "group_id": int(group_id),
                 "message": text,
             },
         )
@@ -88,6 +112,7 @@ async def send_onebot_reply(
         raise OutboundError("OneBot action failed") from exc
     if response.get("status") != "ok" or response.get("retcode") != 0:
         raise OutboundError("OneBot action rejected", delivery_unknown=False)
+    return _message_id_from_response(response)
 
 
 async def get_onebot_message_sender(
@@ -246,11 +271,12 @@ async def send_onebot_private_message(
         params={"user_id": int(user_id), "message": text},
         echo=f"r-agent:private:{safe_key}",
     )
-    data = response.get("data")
-    if not isinstance(data, Mapping) or data.get("message_id") is None:
+    try:
+        return _message_id_from_response(response)
+    except OutboundError:
+        # The action was accepted but delivery cannot be correlated without the
+        # provider id.  Callers must surface this as UNKNOWN rather than SENT.
         return None
-    message_id = str(data["message_id"])
-    return message_id[:64]
 
 
 async def send_onebot_group_message(
@@ -276,7 +302,8 @@ async def send_onebot_group_message(
         params={"group_id": int(group_id), "message": text},
         echo=f"r-agent:group:{safe_key}",
     )
-    data = response.get("data")
-    if not isinstance(data, Mapping) or data.get("message_id") is None:
+    try:
+        return _message_id_from_response(response)
+    except OutboundError:
+        # See the private helper: an accepted action without an id is unknown.
         return None
-    return str(data["message_id"])[:64]

@@ -169,6 +169,8 @@ class DailyPlanService:
     async def handle_event(self, event: InboundEvent, principal: Principal) -> str | None:
         if self.config.mode == "off" or not looks_like_daily_plan(event.text):
             return None
+        if event.channel.casefold() == "qq_official":
+            return "官方 QQ 通道暂不支持今日计划及主动提醒，请在 NapCat 私聊中使用。"
         if event.conversation_kind is not ConversationKind.PRIVATE:
             return "为保护位置和个人日程，今日计划第一版只在私聊中使用。"
         if principal.role not in {"owner", "user"}:

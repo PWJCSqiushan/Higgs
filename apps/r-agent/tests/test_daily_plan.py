@@ -14,15 +14,24 @@ from r_agent.reminders import ReminderStore
 from r_agent.skills import SkillApprovalStore, default_skill_registry
 
 
-def event(text: str, *, group: bool = False) -> InboundEvent:
+def event(text: str, *, group: bool = False, channel: str = "qq") -> InboundEvent:
+    conversation_id = (
+        "qq_official:group:1"
+        if channel == "qq_official" and group
+        else "qq_official:private:bot:owner-openid"
+        if channel == "qq_official"
+        else "qq:group:1"
+        if group
+        else "qq:private:owner:owner-qq"
+    )
     return InboundEvent(
-        channel="qq",
+        channel=channel,
         account_id="bot-qq",
-        sender_id="owner-qq",
+        sender_id="owner-openid" if channel == "qq_official" else "owner-qq",
         message_id=f"message-{abs(hash(text))}",
         occurred_at_ms=int(datetime.now(SHANGHAI).timestamp() * 1000),
         conversation_kind=ConversationKind.GROUP if group else ConversationKind.PRIVATE,
-        conversation_id="qq:group:1" if group else "qq:private:owner:owner-qq",
+        conversation_id=conversation_id,
         group_id="1" if group else None,
         text=text,
         mentioned=group,
@@ -163,6 +172,18 @@ async def test_group_and_untrusted_identity_cannot_create_plan(tmp_path: Path) -
         Principal("pending", "pending"),
     )
     assert denied is not None and "不能使用" in denied
+
+
+@pytest.mark.asyncio
+async def test_official_channel_cannot_create_plan_or_reminders(tmp_path: Path) -> None:
+    planner = service(tmp_path, mode="live")
+    response = await planner.handle_event(
+        event("今天的待办：背单词、写代码，帮我安排", channel="qq_official"),
+        Principal("owner", "owner"),
+    )
+    assert response is not None and "官方 QQ 通道" in response
+    assert planner.store.list_for_principal("owner") == []
+    assert planner.reminders.list() == []
 
 
 @pytest.mark.asyncio

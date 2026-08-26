@@ -30,9 +30,9 @@ from r_agent.reminders import (
 )
 
 
-def _owner_reminder_message(event: InboundEvent, owner_qq: str | None) -> bool:
+def _owner_reminder_message(event: InboundEvent, owner_ids: frozenset[str]) -> bool:
     """Allow only the configured owner to pass a group trigger for reminders."""
-    if owner_qq is None or event.sender_id != owner_qq:
+    if event.sender_id not in owner_ids:
         return False
     clean = event.text.strip()
     if clean in {"确认", "确认提醒", "收到", "知道了", "完成了"}:
@@ -82,6 +82,7 @@ class ReplyPolicy:
         global_max_per_minute: int = 20,
         owner_max_per_minute: int | None = None,
         owner_qq: str | None = None,
+        owner_ids: frozenset[str] = frozenset(),
         runtime_enabled: bool = True,
     ):
         self.mode = mode
@@ -96,6 +97,7 @@ class ReplyPolicy:
         self.global_max_per_minute = global_max_per_minute
         self.owner_max_per_minute = owner_max_per_minute or max_per_minute
         self.owner_qq = owner_qq
+        self.owner_ids = owner_ids.union({owner_qq} if owner_qq else ())
         self.runtime_enabled = runtime_enabled
         self._sent: dict[str, deque[float]] = {}
         self._global_sent: deque[float] = deque()
@@ -109,9 +111,8 @@ class ReplyPolicy:
             return ReplyDecision.NOT_STORED
         if not event.text and not event.replied_to_account:
             return ReplyDecision.EMPTY_MESSAGE
-        owner_command = (
-            event.sender_id == self.owner_qq and event.text.strip().casefold().startswith("/higgs")
-        )
+        is_owner = event.sender_id in self.owner_ids
+        owner_command = is_owner and event.text.strip().casefold().startswith("/higgs")
         if not self.runtime_enabled and not owner_command:
             return ReplyDecision.RUNTIME_PAUSED
         if event.conversation_kind is ConversationKind.PRIVATE:
@@ -120,7 +121,7 @@ class ReplyPolicy:
         else:
             if event.group_id not in self.groups:
                 return ReplyDecision.GROUP_NOT_ENABLED
-            owner_reminder = _owner_reminder_message(event, self.owner_qq)
+            owner_reminder = _owner_reminder_message(event, self.owner_ids)
             if event.group_id in self.natural_trigger_groups:
                 natural_triggered = (
                     event.mentioned
@@ -138,9 +139,7 @@ class ReplyPolicy:
         history = self._sent.setdefault(event.conversation_id, deque())
         while history and current - history[0] >= 60:
             history.popleft()
-        conversation_limit = (
-            self.owner_max_per_minute if event.sender_id == self.owner_qq else self.max_per_minute
-        )
+        conversation_limit = self.owner_max_per_minute if is_owner else self.max_per_minute
         if len(history) >= conversation_limit:
             return ReplyDecision.RATE_LIMITED
         while self._global_sent and current - self._global_sent[0] >= 60:
@@ -285,6 +284,8 @@ class PersonaBrain:
                         )
                     parsed = parse_reminder_intent(clean)
                     if parsed is not None:
+                        if event.channel.casefold() == "qq_official":
+                            return "官方 QQ 通道暂不支持主动提醒，请在 NapCat 私聊中创建提醒。"
                         due_at_ms, content = parsed
                         pending = await asyncio.to_thread(
                             self.reminders.create_pending,

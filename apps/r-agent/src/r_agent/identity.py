@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,10 +15,25 @@ class Principal:
     role: str
 
 
+class IdentityBindingError(RuntimeError):
+    """An explicit cross-channel identity binding conflicts with stored state."""
+
+
 class IdentityStore:
-    def __init__(self, path: Path, *, owner_qq: str | None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        owner_qq: str | None,
+        owner_identities: Iterable[tuple[str, str]] = (),
+    ) -> None:
         self.path = path
         self.owner_qq = owner_qq
+        self.owner_identities = tuple(
+            (channel.strip().casefold(), external_id.strip())
+            for channel, external_id in owner_identities
+            if channel.strip() and external_id.strip()
+        )
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,6 +87,49 @@ class IdentityStore:
                     """,
                     (self.owner_qq,),
                 )
+        for channel, external_id in self.owner_identities:
+            self.bind_owner_identity(channel, external_id)
+
+    def bind_owner_identity(self, channel: str, external_id: str) -> Principal:
+        """Bind one configured external identity to the existing owner principal.
+
+        This method is only for deployment configuration.  It never guesses a
+        relationship and refuses to overwrite a pre-existing user mapping.
+        """
+        normalized_channel = channel.strip().casefold()
+        normalized_id = external_id.strip()
+        if not normalized_channel or not normalized_id:
+            raise ValueError("owner identity channel and external id are required")
+        if self.owner_qq is None:
+            raise IdentityBindingError("owner QQ must be configured before cross-channel binding")
+
+        owner = self.resolve("qq", self.owner_qq)
+        with sqlite3.connect(self.path) as conn:
+            row = conn.execute(
+                """
+                SELECT principal_id
+                FROM external_identities
+                WHERE channel = ? AND external_id = ?
+                """,
+                (normalized_channel, normalized_id),
+            ).fetchone()
+            if row is not None and str(row[0]) != owner.principal_id:
+                raise IdentityBindingError(
+                    "configured owner identity is already bound to another principal"
+                )
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO external_identities(channel, external_id, principal_id)
+                    VALUES (?, ?, ?)
+                    """,
+                    (normalized_channel, normalized_id, owner.principal_id),
+                )
+            conn.execute(
+                "UPDATE principals SET role = 'owner' WHERE principal_id = ?",
+                (owner.principal_id,),
+            )
+        return Principal(owner.principal_id, "owner")
 
     def resolve(self, channel: str, external_id: str) -> Principal:
         desired_role = "owner" if channel == "qq" and external_id == self.owner_qq else "user"

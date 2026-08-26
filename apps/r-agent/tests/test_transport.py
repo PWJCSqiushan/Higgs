@@ -13,6 +13,8 @@ def test_official_qq_defaults_to_disabled(monkeypatch: pytest.MonkeyPatch) -> No
         "R_AGENT_OFFICIAL_QQ_APP_ID",
         "R_AGENT_OFFICIAL_QQ_CLIENT_SECRET",
         "R_AGENT_OFFICIAL_QQ_SANDBOX",
+        "R_AGENT_OFFICIAL_QQ_OWNER_OPENID",
+        "R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -30,7 +32,7 @@ def test_enabled_official_qq_requires_both_credentials(
     monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_APP_ID", "123456")
     monkeypatch.delenv("R_AGENT_OFFICIAL_QQ_CLIENT_SECRET", raising=False)
 
-    with pytest.raises(ConfigError, match="AppID and ClientSecret"):
+    with pytest.raises(ConfigError, match="AppID, ClientSecret"):
         OfficialQQConfig.from_env()
 
 
@@ -39,6 +41,7 @@ def test_official_qq_repr_never_contains_secret(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ENABLED", "true")
     monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_APP_ID", "123456")
     monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_CLIENT_SECRET", secret)
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_OWNER_OPENID", "owner-openid")
 
     config = OfficialQQConfig.from_env()
 
@@ -46,19 +49,20 @@ def test_official_qq_repr_never_contains_secret(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
-async def test_scaffold_is_fail_closed_even_when_configured(
+async def test_adapter_is_not_connected_before_explicit_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ENABLED", "true")
     monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_APP_ID", "123456")
     monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_CLIENT_SECRET", "a-secure-client-secret")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_OWNER_OPENID", "owner-openid")
     adapter = OfficialQQAdapter(OfficialQQConfig.from_env())
 
     status = await adapter.status()
 
     assert status.configured is True
     assert status.connected is False
-    assert status.reason == "adapter_not_activated"
+    assert status.reason == "not_started"
 
 
 def test_registry_rejects_unknown_and_duplicate_channels() -> None:

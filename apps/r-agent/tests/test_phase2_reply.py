@@ -5,6 +5,7 @@ from r_agent.model_client import ModelError
 from r_agent.phase2_cli import process_reply
 from r_agent.phase2_outbound import OutboundError
 from r_agent.phase2_reply import PersonaBrain, ReplyDecision, ReplyPolicy
+from r_agent.transport import DeliveryReceipt, DeliveryState
 
 
 def event(
@@ -180,6 +181,26 @@ async def test_send_failure_becomes_auditable_decision() -> None:
     assert plan.text is not None
 
 
+async def test_unknown_delivery_receipt_is_not_reported_as_sent() -> None:
+    async def unknown_sender(item: InboundEvent, text: str) -> DeliveryReceipt:
+        return DeliveryReceipt("qq", DeliveryState.UNKNOWN, "unknown-send")
+
+    plan = await process_reply(
+        event=event(),
+        result=accepted(),
+        policy=ReplyPolicy(
+            mode="live",
+            private_users=frozenset({"800001"}),
+            groups=frozenset(),
+            require_mention=True,
+            max_per_minute=1,
+        ),
+        brain=PersonaBrain(None, "test"),
+        sender=unknown_sender,
+    )
+    assert plan.decision is ReplyDecision.SEND_FAILED
+
+
 def test_private_reply_requires_explicit_user_permission() -> None:
     policy = ReplyPolicy(
         mode="live",
@@ -198,8 +219,9 @@ async def test_markdown_is_removed_before_send_and_audit() -> None:
 
     sent: list[str] = []
 
-    async def sender(item: InboundEvent, text: str) -> None:
+    async def sender(item: InboundEvent, text: str) -> DeliveryReceipt:
         sent.append(text)
+        return DeliveryReceipt("qq", DeliveryState.SENT, "test-send", "provider-1")
 
     plan = await process_reply(
         event=event(),

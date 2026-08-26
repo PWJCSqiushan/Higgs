@@ -385,9 +385,12 @@ class ReminderStore:
             raise ReminderError("提醒内容长度必须为1到500字")
         if not now + 5_000 <= due_at_ms <= now + 366 * 86_400_000:
             raise ReminderError("提醒时间必须在5秒后到366天内")
+        normalized_origin_channel = origin_channel.strip()
+        if normalized_origin_channel.casefold() == "qq_official":
+            raise ReminderError("官方 QQ 通道暂不支持主动提醒，请在 NapCat 私聊中创建提醒")
         if origin_surface not in {"private", "group"}:
             raise ReminderError("invalid reminder origin surface")
-        if not origin_channel.strip() or not origin_conversation_id.strip():
+        if not normalized_origin_channel or not origin_conversation_id.strip():
             raise ReminderError("invalid reminder origin conversation")
         if delivery_policy not in {"persistent_ack", "agenda_once"}:
             raise ReminderError("invalid reminder delivery policy")
@@ -414,7 +417,7 @@ class ReminderStore:
                     due_at_ms,
                     now,
                     now,
-                    origin_channel.strip(),
+                    normalized_origin_channel,
                     origin_surface,
                     origin_conversation_id.strip(),
                     source_message_id,
