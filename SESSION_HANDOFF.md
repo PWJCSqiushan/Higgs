@@ -27,7 +27,7 @@
 
 ## 3. 离线验证证据
 
-- `uv run pytest -q -rs`（目录 `apps/r-agent`）：`249 passed, 4 skipped`。
+- `uv run pytest -q -rs`（目录 `apps/r-agent`）：`250 passed, 4 skipped`。
 - `uv run ruff check .`：通过。
 - `uv run ruff format --check .`：106 files formatted。
 - `python tools/release_gate.py`：通过，206 个跟踪文件、226 个归档成员；秘密模式、Shell LF 与归档路径均通过。
@@ -38,20 +38,30 @@
 
 五个 PR 的 push 与 pull request 两组 Ubuntu CI 均通过，Shell 语法检查和 Linux 零跳过门已通过。PR #7–#11 已按顺序合并；这些证据仍不代表官方主人沙箱、NapCat 48 小时观测、官方 72 小时在线、生产部署或真实消息验收。
 
-## 4. 上游固定与借鉴边界
+## 4. 生产只读预检（部署前）
+
+- 已使用本机既有密钥与已知主机指纹完成 SSH 只读连接；没有输出或记录服务器地址、凭据和账号标识。
+- 服务器实际运行版本仍为记录中的 `d7aa96d`；Docker 与现有 Higgs systemd 服务 active，NapCat 容器 healthy，但 QQ 已离线，agent 因权威在线探针失败而 unhealthy。
+- NapCat 最近日志存在两次踢线信号，没有发现网络风暴或发送超时信号；不自动重启或尝试登录。
+- 现有十个数据库中九个 `integrity_check=ok`。`memory.sqlite` 的五条旧记录仍使用 ALTER TABLE 之前的物理行编码，旧版 SQLite 对新增的 `importance/source_trust` 默认值报告 NOT NULL 完整性错误；逻辑读取值正常。
+- 已增加一次性的 schema v3 物化迁移：只把缺失的默认字段写成既定默认值，并用新测试固定；修复分支本地为 `250 passed, 4 skipped`。
+- 私有环境文件权限保持 root-only/agent-only；OneBot 未发布宿主端口。官方 QQ 与模型候选提取在部署时必须显式保持关闭。
+
+## 5. 上游固定与借鉴边界
 
 - 官方 `qqbot-agent-sdk==1.2.2`，调研提交 `6163b5dc979a2f12379b1916805009075008c3c3`，MIT，Beta；SDK 类型被 fail-closed 适配层隔离。
 - corlinman `v1.56.5` / `27bdf9c8f7a8f103aff82fde8fc822d8695e0906`，MIT；只借鉴治理、窄 IPC、真实发送回执与安全下载设计，没有复制源码。
 - NapCat 当前生产记录为 `v4.18.13`，上游为 Limited Redistribution License；作为独立部署依赖，不复制内部代码。完整镜像 digest 与实际 QQNT build 必须在发布前从私有配置重新核对。
 - LLBot/Lagrange 仅隔离调研，不进入生产，也不视为个人 QQ 风控的根治方案。
 
-## 5. 下一步顺序
+## 6. 下一步顺序
 
-1. 等待单独生产部署授权；获准后先核对服务器实际 commit、镜像 digest、QQ 在线状态和私有配置，再部署阶段 0/1/3 安全基线并启动 NapCat 48 小时匿名观测。
-2. 需要真实官方联调时，请主人登录 QQ 机器人开放平台创建沙箱应用；AppID/AppSecret 只写入服务器 mode `0600` 私有配置，不在聊天中传递。
-3. 官方灰度固定为：假 Gateway → 主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大。
+1. 先让 schema v3 修复通过 PR/Ubuntu CI；部署前创建可回滚的一致性快照，再由新版本启动时物化旧默认字段并复核十二库完整性。
+2. 部署阶段 0/1/3 安全基线，保持官方 QQ 与模型候选提取关闭，随后请主人扫码恢复 NapCat 登录并启动 48 小时匿名观测。
+3. 需要真实官方联调时，请主人登录 QQ 机器人开放平台创建沙箱应用；AppID/AppSecret 只写入服务器 mode `0600` 私有配置，不在聊天中传递。
+4. 官方灰度固定为：假 Gateway → 主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大。
 
-## 6. 明确未完成事项
+## 7. 明确未完成事项
 
 - 尚无生产实时状态、NapCat 48 小时观测或此次 24 小时掉线问题的匿名证据。
 - 尚无官方 QQ Bot 应用、主人 OpenID 私有绑定、真实 Token/Gateway 或 72 小时 Resume 证据。
