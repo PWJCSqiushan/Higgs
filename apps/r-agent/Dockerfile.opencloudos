@@ -20,9 +20,19 @@ RUN python -m pip install --no-cache-dir \
 WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-dev --no-install-project
+# The existing OpenCloudOS host can reach the Tencent index reliably, while
+# direct wheel URLs retained in uv.lock may stall.  Export the exact locked
+# versions without their source URLs, install them through UV_DEFAULT_INDEX,
+# then require both sync steps to run fully offline.
+RUN uv export --frozen --no-dev --no-emit-project --no-hashes \
+        > /tmp/requirements.locked.txt \
+    && uv venv .venv \
+    && uv pip install \
+        --python .venv/bin/python \
+        --requirements /tmp/requirements.locked.txt \
+    && uv sync --frozen --no-dev --no-install-project --offline
 COPY src ./src
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --offline
 
 RUN groupadd --gid 10001 higgs \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin higgs \

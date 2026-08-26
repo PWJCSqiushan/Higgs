@@ -28,3 +28,19 @@ def test_systemd_stack_unit_restores_bounded_compose_after_host_boot() -> None:
         assert "WantedBy=multi-user.target" in text
         assert "docker compose" in text
         assert "up -d" in text
+
+
+def test_opencloudos_build_prefetches_locked_dependencies_before_offline_sync() -> None:
+    text = (ROOT / "apps/r-agent/Dockerfile.opencloudos").read_text(encoding="utf-8")
+    export = "uv export --frozen --no-dev --no-emit-project --no-hashes"
+    install = "uv pip install"
+    dependency_sync = "uv sync --frozen --no-dev --no-install-project --offline"
+    project_sync = "uv sync --frozen --no-dev --offline"
+
+    assert "UV_DEFAULT_INDEX=${PYPI_INDEX_URL}" in text
+    assert export in text
+    assert "--requirements /tmp/requirements.locked.txt" in text
+    assert dependency_sync in text
+    assert project_sync in text
+    assert text.index(export) < text.index(install) < text.index(dependency_sync)
+    assert text.index(dependency_sync) < text.index(project_sync)

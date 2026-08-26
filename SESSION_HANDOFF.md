@@ -27,7 +27,7 @@
 
 ## 3. 离线验证证据
 
-- `uv run pytest -q -rs`（目录 `apps/r-agent`）：`250 passed, 4 skipped`。
+- `uv run pytest -q -rs`（目录 `apps/r-agent`）：`251 passed, 4 skipped`。
 - `uv run ruff check .`：通过。
 - `uv run ruff format --check .`：106 files formatted。
 - `python tools/release_gate.py`：通过，206 个跟踪文件、226 个归档成员；秘密模式、Shell LF 与归档路径均通过。
@@ -44,8 +44,12 @@
 - 服务器实际运行版本仍为记录中的 `d7aa96d`；Docker 与现有 Higgs systemd 服务 active，NapCat 容器 healthy，但 QQ 已离线，agent 因权威在线探针失败而 unhealthy。
 - NapCat 最近日志存在两次踢线信号，没有发现网络风暴或发送超时信号；不自动重启或尝试登录。
 - 现有十个数据库中九个 `integrity_check=ok`。`memory.sqlite` 的五条旧记录仍使用 ALTER TABLE 之前的物理行编码，旧版 SQLite 对新增的 `importance/source_trust` 默认值报告 NOT NULL 完整性错误；逻辑读取值正常。
-- 已增加一次性的 schema v3 物化迁移：只把缺失的默认字段写成既定默认值，并用新测试固定；修复分支本地为 `250 passed, 4 skipped`。
+- 已增加一次性的 schema v3 物化迁移：只把缺失的默认字段写成既定默认值，并用新测试固定；PR #14 与合并后主线 CI 已通过。
 - 私有环境文件权限保持 root-only/agent-only；OneBot 未发布宿主端口。官方 QQ 与模型候选提取在部署时必须显式保持关闭。
+- 已创建 root-only 部署前原始恢复快照，十库与两份私有配置均有可回滚副本；九库验证通过，旧 memory 告警按原样保留。
+- 已安装并激活不可变源码发布 `acb49ed1377d9fe43fa7737e9af4eb3309e67585`，旧 current 链接已移入 `/srv/trash`；运行中的旧 agent/NapCat 容器尚未重建。
+- 两次镜像构建都在 `uv sync --frozen` 访问锁文件中的上游 wheel URL 时停滞，均已有限等待后取消且无残留构建进程。临时容器通过腾讯镜像安装同一 SDK/依赖仅需数秒，确认不是依赖冲突。
+- OpenCloudOS Dockerfile 已改为先从腾讯镜像按锁定版本预热实际 venv，再强制两次 offline frozen sync；新增顺序测试后本地为 `251 passed, 4 skipped`，必须先经 PR/CI 才继续构建。
 
 ## 5. 上游固定与借鉴边界
 
@@ -56,10 +60,11 @@
 
 ## 6. 下一步顺序
 
-1. 先让 schema v3 修复通过 PR/Ubuntu CI；部署前创建可回滚的一致性快照，再由新版本启动时物化旧默认字段并复核十二库完整性。
-2. 部署阶段 0/1/3 安全基线，保持官方 QQ 与模型候选提取关闭，随后请主人扫码恢复 NapCat 登录并启动 48 小时匿名观测。
-3. 需要真实官方联调时，请主人登录 QQ 机器人开放平台创建沙箱应用；AppID/AppSecret 只写入服务器 mode `0600` 私有配置，不在聊天中传递。
-4. 官方灰度固定为：假 Gateway → 主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大。
+1. 先让 OpenCloudOS 离线同步构建修复通过 PR/Ubuntu CI，再从新的主线提交生成并校验不可变发布包。
+2. 构建新 agent 镜像，原子更新私有镜像指针并显式关闭官方 QQ/模型候选提取；只重建 agent，完成 schema v3 后复核十二库完整性。
+3. 安装宿主只读状态 timer；确认安全恢复策略后再处理 NapCat Compose 变更，随后请主人扫码恢复登录并启动 48 小时匿名观测。
+4. 需要真实官方联调时，请主人登录 QQ 机器人开放平台创建沙箱应用；AppID/AppSecret 只写入服务器 mode `0600` 私有配置，不在聊天中传递。
+5. 官方灰度固定为：假 Gateway → 主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大。
 
 ## 7. 明确未完成事项
 
