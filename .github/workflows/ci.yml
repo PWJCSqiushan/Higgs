@@ -26,9 +26,28 @@ jobs:
         run: uv python install 3.12
       - name: Install dependencies
         run: uv sync --locked --extra dev
+      - name: Validate release archive and secret boundaries
+        working-directory: .
+        run: python tools/release_gate.py
+      - name: Validate release shell syntax
+        working-directory: .
+        run: |
+          bash -n deploy/server/activate_release.sh
+          bash -n deploy/server/rollback_release.sh
       - name: Check formatting
         run: uv run ruff format --check .
       - name: Lint
         run: uv run ruff check .
       - name: Test
-        run: uv run pytest -q
+        run: uv run pytest -q --junitxml=pytest-report.xml
+      - name: Require zero skipped tests on Linux
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse("pytest-report.xml").getroot()
+          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in root.iter("testsuite"))
+          if skipped:
+              raise SystemExit(f"Linux CI unexpectedly skipped {skipped} tests")
+          print("linux-skips=0")
+          PY
