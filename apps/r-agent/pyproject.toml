@@ -25,6 +25,7 @@ dev = [
 
 [project.scripts]
 r-agent = "r_agent.cli:main"
+r-agent-memory-eval = "r_agent.model_memory_eval_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/r_agent"]

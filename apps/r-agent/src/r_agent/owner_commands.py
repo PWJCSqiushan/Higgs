@@ -16,6 +16,11 @@ from r_agent.memory_v2 import (
     backfill_candidates,
     backfill_preview,
 )
+from r_agent.model_memory_candidates import (
+    CandidateDecision,
+    ModelCandidateShadowStore,
+    ModelCandidateStoreError,
+)
 from r_agent.operator_control import (
     ControlSnapshot,
     LiveOperatorControl,
@@ -61,6 +66,7 @@ class OwnerCommandRouter:
         recall_ledger: RecallLedger | None = None,
         transport_state: TransportStateStore | None = None,
         server_status: ServerStatusCommand | None = None,
+        model_candidate_shadow_store: ModelCandidateShadowStore | None = None,
     ) -> None:
         self.context = context
         self.vectors = vectors
@@ -75,6 +81,7 @@ class OwnerCommandRouter:
         self.recall_ledger = recall_ledger
         self.transport_state = transport_state
         self.server_status = server_status
+        self.model_candidate_shadow_store = model_candidate_shadow_store
 
     def handle(self, text: str, *, actor: Principal, surface: str = "private") -> str | None:
         clean = text.strip()
@@ -116,7 +123,12 @@ class OwnerCommandRouter:
                 return self._risk(arguments)
             if command in {"backup", "备份"}:
                 return self._backup(arguments)
-        except (OperatorControlError, MemoryError, ReminderError) as exc:
+        except (
+            OperatorControlError,
+            MemoryError,
+            ModelCandidateStoreError,
+            ReminderError,
+        ) as exc:
             return f"操作未执行：{exc}"
         return "未知主人命令。发送 /higgs help 查看可用命令。"
 
@@ -136,6 +148,8 @@ class OwnerCommandRouter:
             "/higgs debounce 秒数\n"
             "/higgs memory list [candidate|quarantined|active|invalidated] [页码]\n"
             "/higgs memory show 记忆ID或短ID\n"
+            "/higgs memory model list [shadow|quarantined|rejected] [页码]\n"
+            "/higgs memory model show 候选ID或短ID\n"
             "/higgs memory audit 记忆ID或短ID\n"
             "/higgs memory auto [on|off|threshold 数值|evidence 次数]\n"
             "/higgs memory stats | observations [failed [limit]|retry ID]\n"
@@ -457,6 +471,8 @@ class OwnerCommandRouter:
                 return base + "\nobservation_sources=0"
             lines = [f"{item['source']}:{item['status']}={item['count']}" for item in quality[:20]]
             return base + "\nobservation_sources=" + " ".join(lines)
+        if action in {"model", "model-candidate", "model_candidates", "candidates"}:
+            return self._model_candidates(arguments[1:])
         if action == "list":
             status_filter = None
             page = 1
@@ -564,6 +580,78 @@ class OwnerCommandRouter:
                     )
             return f"记忆 {item.item_id} 已变更为 {item.status.value}。"
         raise OperatorControlError("未知记忆操作。发送 /higgs help 查看用法。")
+
+    def _model_candidates(self, arguments: list[str]) -> str:
+        """List/show the append-only model queue; there are no mutation branches."""
+        if self.model_candidate_shadow_store is None:
+            raise OperatorControlError("模型记忆候选队列未启用。")
+        if not arguments:
+            raise OperatorControlError(
+                "用法：/higgs memory model list [shadow|quarantined|rejected] [页码]"
+            )
+        action = arguments[0].casefold()
+        if action == "list":
+            status: CandidateDecision | None = None
+            page = 1
+            remaining = arguments[1:]
+            if remaining:
+                try:
+                    page = int(remaining[0])
+                    remaining = remaining[1:]
+                except ValueError:
+                    try:
+                        status = CandidateDecision(remaining[0].casefold())
+                    except ValueError as exc:
+                        raise OperatorControlError("未知模型候选状态。") from exc
+                    remaining = remaining[1:]
+                    if remaining:
+                        try:
+                            page = int(remaining[0])
+                        except ValueError as exc:
+                            raise OperatorControlError("页码必须是正整数。") from exc
+                        remaining = remaining[1:]
+            if remaining or not 1 <= page <= 999:
+                raise OperatorControlError(
+                    "用法：/higgs memory model list [shadow|quarantined|rejected] [页码]"
+                )
+            page_size = 8
+            records = self.model_candidate_shadow_store.list_candidates(
+                decision=status,
+                limit=page_size,
+                offset=(page - 1) * page_size,
+            )
+            if not records:
+                return f"模型候选队列第{page}页没有记录。"
+            lines = []
+            for item in records:
+                confidence = f"{item.confidence:.2f}" if item.confidence is not None else "-"
+                detail = item.normalized_content or item.reason
+                lines.append(
+                    f"{item.proposal_id[:8]} | {item.decision.value} | "
+                    f"{item.kind or '-'} | 置信度={confidence} | {self._short(detail)}"
+                )
+            return f"模型候选队列第{page}页(每页{page_size}条，短ID可直接用于show)：\n" + "\n".join(
+                lines
+            )
+        if action == "show":
+            if len(arguments) != 2:
+                raise OperatorControlError("用法：/higgs memory model show 候选ID或短ID")
+            item = self.model_candidate_shadow_store.get_for_review(arguments[1])
+            confidence = f"{item.confidence:.2f}" if item.confidence is not None else "无"
+            return (
+                f"候选ID：{item.proposal_id}\n"
+                f"决定：{item.decision.value}\n"
+                f"原因：{item.reason}\n"
+                f"类型：{item.kind or '无'}\n"
+                f"作用域：{item.scope or '无'}\n"
+                f"置信度：{confidence}\n"
+                f"敏感等级：{item.sensitive_level.value if item.sensitive_level else '无'}\n"
+                f"证据消息ID：{item.evidence_message_id}\n"
+                f"内容：{item.normalized_content or '无'}"
+            )
+        raise OperatorControlError(
+            "模型候选仅支持只读 list/show，不提供 activate、overwrite 或 delete。"
+        )
 
     def _remind(self, arguments: list[str]) -> str:
         if self.reminders is None:

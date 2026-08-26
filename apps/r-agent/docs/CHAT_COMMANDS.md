@@ -82,6 +82,17 @@ Higgs 每页返回 8 条，每行开头的 8 个字符就是短 ID：
 
 后续命令可以直接使用 `7f3a91c2`，不必输入完整 UUID。短 ID 至少输入 6 位；若前缀不唯一，Higgs 会要求增加字符，不会误操作另一条记忆。
 
+模型辅助候选使用独立的只读审核队列，不属于上面的长期记忆状态机：
+
+```text
+/higgs memory model list
+/higgs memory model list quarantined 1
+/higgs memory model show 7f3a91c2
+```
+
+该队列只允许已绑定的主人 `list/show`。模型候选没有聊天激活、覆盖或删除接口；
+真实模型评测达到门槛前，`R_AGENT_MEMORY_MODEL_CANDIDATES` 必须保持 `off`。
+
 ## 人工审核记忆
 
 先查看完整内容和元数据：

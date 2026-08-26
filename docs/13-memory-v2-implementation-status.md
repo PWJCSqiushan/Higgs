@@ -11,12 +11,23 @@
 - Lexical retrieval uses SQLite FTS5 trigram when available. FTS and vector ranks are fused with reciprocal-rank fusion inside the exact principal scope.
 - The default embedding backend is a local deterministic trigram hash vectorizer. It keeps QQ text on the server. A remote OpenAI-compatible backend is opt-in with R_AGENT_EMBEDDING_BACKEND=remote.
 - GitHub Actions runs uv, Ruff and the complete pytest suite on every push and pull request.
+- Model-assisted extraction is implemented behind `R_AGENT_MEMORY_MODEL_CANDIDATES=shadow`.
+  It accepts only exact `memory-candidate-v1` JSON tied to the current evidence message;
+  credentials, owner/permission claims and prompt injection are rejected or quarantined locally.
+- Model proposals enter the separate `model_memory_candidate_shadow` review table. That component
+  deliberately has no activation, replacement or deletion operation, and any model failure leaves
+  deterministic reconciliation unchanged.
+- The Chinese evaluation suite contains 30 cases and compares deterministic versus model-assisted
+  recall, false extraction and admitted-pollution rates. Passing the offline suite authorizes only
+  shadow evaluation, not production activation.
 
 ## Deliberately external/manual gates
 
 - PushPlus incident notifications require the owner to place the token in /srv/secrets/higgs/higgs.env; the token is never committed or printed.
 - A real non-empty memory recall requires two owner messages that match a safe preference pattern, then a recall-triggering message. The historical chat set did not contain enough safe atomic facts, so it was correctly excluded.
 - Reminder delivery and offline replay still require one real owner-only QQ acceptance test after login recovery.
+- Model candidate shadow remains off by default. It may be enabled only after reviewing the local
+  30-case report; production candidates still require owner review and cannot auto-activate.
 
 ## Acceptance commands
 

@@ -438,6 +438,8 @@ class MemoryReconciler:
         auto_review_enabled: Callable[[], bool],
         auto_review_confidence: Callable[[], float],
         auto_review_evidence: Callable[[], int],
+        model_candidate_extractor: object | None = None,
+        model_candidate_shadow_store: object | None = None,
     ) -> None:
         self.observations = observations
         self.memory = memory
@@ -446,8 +448,24 @@ class MemoryReconciler:
         self.auto_review_enabled = auto_review_enabled
         self.auto_review_confidence = auto_review_confidence
         self.auto_review_evidence = auto_review_evidence
+        self.model_candidate_extractor = model_candidate_extractor
+        self.model_candidate_shadow_store = model_candidate_shadow_store
 
     async def _process_one(self, observation: Observation, counts: dict[str, int]) -> None:
+        if (
+            self.model_candidate_extractor is not None
+            and self.model_candidate_shadow_store is not None
+        ):
+            try:
+                results = await self.model_candidate_extractor.extract(observation)
+                await asyncio.to_thread(
+                    self.model_candidate_shadow_store.record,
+                    observation,
+                    results,
+                )
+            except Exception:
+                # Shadow proposals never affect the deterministic memory path.
+                pass
         extracted = _extract(observation)
         if extracted is None:
             await asyncio.to_thread(
