@@ -1,0 +1,20 @@
+[Unit]
+Description=Generate the bounded Higgs host status snapshot
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0022
+ExecStart=/usr/bin/python3 /srv/apps/higgs/current/deploy/existing-server/collect_server_status.py
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadOnlyPaths=/proc
+ReadWritePaths=/srv/data/higgs/server-status

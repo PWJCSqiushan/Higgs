@@ -76,6 +76,7 @@ services:
       R_AGENT_BACKUP_DIR: /var/lib/higgs/backups
       R_AGENT_HEALTH_FILE: /var/lib/higgs/health.json
       R_AGENT_NAPCAT_HEALTH_FILE: /run/higgs-napcat-health/heartbeat
+      R_AGENT_SERVER_STATUS_FILE: /run/higgs-server-status/status.json
       R_AGENT_PERSONA_FILE: /run/higgs/persona.md
     volumes:
       # The config directory stays writable because authenticated owner
@@ -84,6 +85,9 @@ services:
       - ${HIGGS_PERSONA_FILE:-/srv/secrets/higgs/persona.md}:/run/higgs/persona.md:ro
       - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/agent:/var/lib/higgs
       - napcat-health:/run/higgs-napcat-health:ro
+      # The host timer writes one allowlisted JSON snapshot.  This directory
+      # is read-only and contains no Docker socket or arbitrary host paths.
+      - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/server-status:/run/higgs-server-status:ro
     networks:
       - onebot
       - egress

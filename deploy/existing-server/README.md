@@ -49,9 +49,10 @@ to the planned 4-core / 8-GB server instead of removing the limit.
 
 ## Daily-plan rollout
 
-The agent now keeps ten consistent SQLite stores. `agenda.sqlite` contains
-principal-isolated daily plans and `skills.sqlite` contains exact-parameter
-approvals; both are included in startup and periodic recovery snapshots. Start
+The agent now keeps twelve consistent SQLite stores. In addition to the ten
+planner-era stores, `transport.sqlite` contains anonymous channel state and
+`tool_audit.sqlite` contains hashed tool decisions/receipts. All twelve are
+included in startup and periodic recovery snapshots. Start
 the planner in `shadow` mode on this 2-GB host:
 
 ```dotenv
@@ -65,6 +66,30 @@ The key belongs only in `/srv/secrets/higgs/higgs.env`.
 Use `configure_daily_plan.py --image higgs-agent:<40-character-commit> --mode shadow`
 to back up both private env files to `/srv/trash` and update them atomically without
 printing any existing secret.
+
+## Read-only host status tool
+
+Stage 3 adds one deliberately narrow owner command:
+
+```text
+/higgs server status
+```
+
+Install the host-side timer once from the active release:
+
+```bash
+install -m 0644 higgs-server-status.service /etc/systemd/system/
+install -m 0644 higgs-server-status.timer /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now higgs-server-status.timer
+systemctl start higgs-server-status.service
+```
+
+The timer writes only `/srv/data/higgs/server-status/status.json`. The agent
+bind-mounts that directory read-only at `/run/higgs-server-status`; it has no
+Docker socket, host shell, or general path reader. A missing, malformed, linked,
+or older-than-180-seconds snapshot is reported as unavailable. The command is
+owner-only and model shadow requests cannot execute it.
 
 ## Operator commands
 
