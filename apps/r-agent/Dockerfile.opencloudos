@@ -36,7 +36,7 @@ RUN uv export --frozen --no-dev --no-emit-project --no-hashes \
         --requirements /tmp/requirements.locked.txt \
     && uv sync --frozen --no-dev --no-install-project --offline
 COPY src ./src
-RUN uv sync --frozen --no-dev --offline
+RUN uv sync --frozen --no-dev --offline --no-editable
 
 RUN groupadd --gid 10001 higgs \
     && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin higgs \
