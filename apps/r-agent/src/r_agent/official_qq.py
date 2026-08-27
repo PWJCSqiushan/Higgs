@@ -35,6 +35,14 @@ class OfficialQQConfig:
     owner_openid: str | None = None
     allowed_group_openids: frozenset[str] = frozenset()
 
+    @property
+    def active_owner_openid(self) -> str | None:
+        return self.owner_openid if self.enabled else None
+
+    @property
+    def active_group_openids(self) -> frozenset[str]:
+        return self.allowed_group_openids if self.enabled else frozenset()
+
     def __repr__(self) -> str:
         return (
             "OfficialQQConfig("

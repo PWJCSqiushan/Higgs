@@ -76,3 +76,14 @@
 - 本地文件统一归拢到 `D:\丘山\R\_Higgs`：`source` 为主仓库，`worktrees` 为阶段工作树，`archives` 为私有归档，`artifacts` 为发布包。八个链接工作树使用 `git worktree move`，主仓库移动后执行 repair；九个 D 盘工作树逐一验证干净、路径和提交保持不变。
 - 九份旧 `.venv` 因内部启动脚本保留旧绝对路径而不可直接复用，已完整移动到 `archives/replaced-venvs/20260827-114344`，没有删除。当前 PR 工作树按锁文件重建后，Ruff、格式和完整 pytest（`251 passed, 4 skipped`）再次通过。
 - 四个既有 C 盘工作树未移动；其中旧 Memory V2.1 工作树存在八项未提交内容，必须保留并等待单独审计。
+
+## 节点 8：第二次快速踢线与官方 QQ fail-closed 硬化
+
+- 上午扫码恢复只维持约 1 小时 54 分；2026-08-27 13:28 再次捕获明确 `KickedOffLine`。NapCat 容器与 OneBot 仍可达，但 QQ 权威状态离线、Agent unhealthy。主人再次明确授权后只执行一次受控重启并人工扫码，没有自动或循环登录；16:00 匿名复核重新在线并关闭临时 WebUI 隧道。两次快速失效已使本轮 48 小时稳定性验收确定失败。
+- 新建独立工作树 `Higgs-wt-official-qq` 和分支 `codex/higgs-official-qq-mvp-20260827`，严格基于 GitHub `main` 的 `d255f41`；唯一既有 dirty 的 Memory V2.1 工作树保持未触碰。
+- 官方 Gateway Resume 不再使用 SDK 默认 JSON 存储，改用 Higgs 自有的原子私有存储：限制大小与结构、拒绝符号链接、POSIX 强制 `0600`、异常内容不回显；持久化 READY bot 身份，使进程重启 Resume 不以 AppID 冒充 bot account。
+- 官方通道只有在 READY/RESUMED 且 bot 身份可信后才报告认证在线；断线、心跳超时、Invalid Session 清理和停止都会 fail-closed。过期或不完整的 Resume 会清理旧 bot 身份，fresh Identify 必须等待新的 READY；异常非布尔 Invalid Session 会终止 SDK 读取循环并主动关闭 WebSocket。`transport.sqlite` 的 `qq_online` 只在 connected 且 authenticated 时为真，离线不再残留账号匹配。
+- 官方事件只放行主人 C2C 与白名单 `GROUP_AT_MESSAGE_CREATE`；未知类型、scope 不匹配和 READY 前事件直接丢弃。官方关闭时，已保留在私有配置中的主人/群身份不会进入 OneBot 权限、风险或回复策略。
+- 针对固定 SDK 1.2.2，运行时重新断言精确版本；Identify intents 收窄为群/C2C 公共消息，SDK 内部重连预算由近似无限限制为 5 次，异常非布尔 Invalid Session 被终止；SDK 自身可能包含会话 ID、OpenID 或 API path 的日志被整体压制，只保留 Higgs 的匿名状态与错误类型。
+- 官方被动发送增加同进程串行幂等：并发相同请求只发送一次；相同 key 但目标、正文或回复 ID 不同会拒绝；conversation target 必须匹配 `channel + kind + READY account + target` 的规范形式。跨进程回执持久化仍留给后续独立切片。
+- 本地完整 pytest 为 `267 passed, 4 skipped`，Ruff、格式检查、发布包校验、秘密扫描和 Shell LF 门禁通过。真实官方应用仍不存在，官方通道仍关闭；必须先完成 PR/CI，再由主人在开放平台创建沙箱应用，凭据只进入服务器 `0600` 私有配置。

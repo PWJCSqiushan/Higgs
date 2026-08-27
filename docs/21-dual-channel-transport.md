@@ -46,6 +46,12 @@ R_AGENT_OFFICIAL_QQ_SANDBOX=true
 官方 SDK 当前标记为 Beta，因此 SDK 对外类型不会进入人格、记忆、提醒或技能层。
 Higgs 只向这些层传递自己的 `InboundEvent`、`TransportStatus` 和 `DeliveryReceipt`。
 
+Higgs 不使用 SDK 默认的 Gateway 会话 JSON：Resume 状态和 READY bot 身份由 Higgs 自有
+存储原子写入，并在 POSIX 强制 `0600`。固定 SDK 的 Identify intents 被收窄为群/C2C
+公共消息，内部重连预算限制为 5 次；SDK 原生日志可能包含会话 ID、OpenID 或 API path，
+因此在适配器启用前被压制，只保留 Higgs 的匿名状态与错误类型。真实 READY/RESUMED
+且 bot 身份可信前，`authenticated` 和 `qq_online` 均不得为真。
+
 ## NapCat / QQNT 兼容矩阵
 
 | 状态 | NapCat | QQNT | 镜像 digest | 处理规则 |

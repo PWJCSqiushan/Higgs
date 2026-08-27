@@ -48,6 +48,19 @@ def test_official_qq_repr_never_contains_secret(monkeypatch: pytest.MonkeyPatch)
     assert secret not in repr(config)
 
 
+def test_disabled_official_config_has_no_active_policy_identities() -> None:
+    config = OfficialQQConfig(
+        enabled=False,
+        app_id="123456",
+        client_secret="a-secure-client-secret",
+        owner_openid="owner-openid",
+        allowed_group_openids=frozenset({"group-openid"}),
+    )
+
+    assert config.active_owner_openid is None
+    assert config.active_group_openids == frozenset()
+
+
 @pytest.mark.asyncio
 async def test_adapter_is_not_connected_before_explicit_start(
     monkeypatch: pytest.MonkeyPatch,
