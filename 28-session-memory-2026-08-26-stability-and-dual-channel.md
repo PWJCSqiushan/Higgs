@@ -86,4 +86,4 @@
 - 官方事件只放行主人 C2C 与白名单 `GROUP_AT_MESSAGE_CREATE`；未知类型、scope 不匹配和 READY 前事件直接丢弃。官方关闭时，已保留在私有配置中的主人/群身份不会进入 OneBot 权限、风险或回复策略。
 - 针对固定 SDK 1.2.2，运行时重新断言精确版本；Identify intents 收窄为群/C2C 公共消息，SDK 内部重连预算由近似无限限制为 5 次，异常非布尔 Invalid Session 被终止；SDK 自身可能包含会话 ID、OpenID 或 API path 的日志被整体压制，只保留 Higgs 的匿名状态与错误类型。
 - 官方被动发送增加同进程串行幂等：并发相同请求只发送一次；相同 key 但目标、正文或回复 ID 不同会拒绝；conversation target 必须匹配 `channel + kind + READY account + target` 的规范形式。跨进程回执持久化仍留给后续独立切片。
-- 本地完整 pytest 为 `267 passed, 4 skipped`，Ruff、格式检查、发布包校验、秘密扫描和 Shell LF 门禁通过。真实官方应用仍不存在，官方通道仍关闭；必须先完成 PR/CI，再由主人在开放平台创建沙箱应用，凭据只进入服务器 `0600` 私有配置。
+- 本地完整 pytest 为 `267 passed, 4 skipped`，Ruff、格式检查、发布包校验、秘密扫描和 Shell LF 门禁通过。PR #21 的 push、pull request 与合并后 `main` 三组 Ubuntu CI 均通过，合并提交为 `aa877df`；没有进行生产部署或凭据处理。真实官方应用仍不存在，官方通道仍关闭；下一步由主人在开放平台创建沙箱应用，凭据只进入服务器 `0600` 私有配置。
