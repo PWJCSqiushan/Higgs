@@ -67,3 +67,11 @@
 - 宿主只读状态 service/timer 已部署并 active，白名单 JSON、权限、原子写入和只读挂载验证通过。
 - NapCat 已按固定 digest 重建，应用 `on-failure:5` 和共享健康标记。管理 Token 仅在获准后直接提交到本机安全隧道中的 WebUI，没有写入聊天、项目文件或临时磁盘文件。
 - 2026-08-26 21:17（Asia/Shanghai）匿名实时基线为 NapCat/Agent healthy、OneBot 可达、QQ 权威在线、账号匹配、健康与 action 回执成功，`transport.sqlite` 已记录正常恢复。从该时刻开始至少 48 小时观察；初始恢复不等于长期稳定性验收。
+
+## 节点 7：KickedOffLine、人工恢复与本地归拢
+
+- 观察在 2026-08-26 23:38 捕获明确 `KickedOffLine`；初次恢复后约 2 小时 21 分即失效。NapCat 容器和 OneBot 端口仍可达，但 QQ 权威状态离线、Agent unhealthy，证明个人 QQ 长期在线问题没有因可观测性部署而消失。
+- 失效会话持续约 11 小时 54 分，WebUI 同时报告登录态失效与无法重复登录，属于 QQ 进程残留的假登录状态。Agent 没有读取、保存或使用主人在页面中尝试的密码。
+- 主人要求继续处理登录后，只执行一次受控 NapCat 重启清除残留进程，没有自动或循环重启；随后由主人扫码。2026-08-27 11:34 匿名复核重新满足 QQ 在线、账号匹配、OneBot/action/health 成功以及 NapCat/Agent healthy，恢复事件已持久化。
+- 本地文件统一归拢到 `D:\丘山\R\_Higgs`：`source` 为主仓库，`worktrees` 为阶段工作树，`archives` 为私有归档，`artifacts` 为发布包。八个链接工作树使用 `git worktree move`，主仓库移动后执行 repair；九个 D 盘工作树逐一验证干净、路径和提交保持不变。
+- 四个既有 C 盘工作树未移动；其中旧 Memory V2.1 工作树存在八项未提交内容，必须保留并等待单独审计。

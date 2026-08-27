@@ -4,9 +4,10 @@
 
 ## 1. 当前权威边界
 
-- 本地权威集成工作树：`D:\丘山\R_Higgs-takeover-20260826`，分支 `codex/higgs-integration-20260826`。
-- PR/生产验收工作树：`D:\丘山\Higgs-wt-pr-stack`；当前验收分支为 `codex/higgs-production-live-acceptance-20260826`。
-- 当前 GitHub `origin/main` 与生产源码/Agent 镜像提交均为 `b7d0beceed3f5bd057ad15490cb5b0f2ac0a01d3`。
+- 本地统一项目根：`D:\丘山\R\_Higgs`；主仓库在 `source`，阶段工作树在 `worktrees`，私有归档和发布包分别在 `archives`、`artifacts`。
+- 本地权威集成工作树：`D:\丘山\R\_Higgs\worktrees\R_Higgs-takeover-20260826`，分支 `codex/higgs-integration-20260826`。
+- PR/生产验收工作树：`D:\丘山\R\_Higgs\worktrees\Higgs-wt-pr-stack`；当前记录分支为 `codex/higgs-recovery-and-local-consolidation-20260827`。
+- 生产源码/Agent 镜像仍为 `b7d0beceed3f5bd057ad15490cb5b0f2ac0a01d3`；GitHub 主线随后已合并确定性测试和生产交接记录，生产运行提交与文档主线必须继续明确区分。
 - GitHub 已按批准顺序合并 PR #7–#17；所有功能、迁移和 OpenCloudOS 离线构建修复均通过分支、PR 与合并后主线 CI，没有直接向 `main` 推送。
 - 已按主人确认完成本阶段生产部署，并保持既有 `live` 回复模式；官方 QQ 和模型记忆候选仍显式关闭。
 - 开放官方主人沙箱、加入测试群、启用模型候选或改变 live 状态仍必须获得单独确认。
@@ -58,6 +59,9 @@
 - 宿主只读状态 service/timer 已安装并 active，允许字段 JSON、原子写入、权限和新 Agent 只读挂载均已验证。
 - NapCat 已重建并应用固定 digest、`on-failure:5` 与共享健康标记；WebUI 管理 Token 只在受控本地页面中使用，未进入聊天、文档或磁盘临时文件。
 - 2026-08-26 21:17（Asia/Shanghai）实时匿名验收为：NapCat healthy、OneBot 可达、QQ 权威在线、账号匹配、最近健康/action 回执均成功，Agent healthy，恢复结果已写入 `transport.sqlite`。此时起进入至少 48 小时观察，不把初始恢复视为稳定性结论。
+- 观察在 2026-08-26 23:38 记录到明确 `KickedOffLine`，初次恢复后约 2 小时 21 分即再次失效；OneBot 端口和 NapCat 容器仍健康，但 QQ 权威状态离线、Agent unhealthy。该结果证明原有长期在线问题尚未解决。
+- 失效会话持续约 11 小时 54 分。WebUI 同时出现“登录态失效”和“账号已登录、无法重复登录”，确认是 QQ 进程残留的假登录状态；密码路径未被 Agent 读取、保存或继续使用。
+- 经主人明确要求处理登录后，只执行一次受控 NapCat 重启以清除旧进程，未形成自动重启循环；随后由主人扫码。2026-08-27 11:34 实时复核重新满足 QQ 在线、账号匹配、OneBot/action/health 成功及 NapCat/Agent healthy，恢复事件写入 `transport.sqlite`。
 
 ## 5. 上游固定与借鉴边界
 
@@ -73,9 +77,16 @@
 3. 需要真实官方联调时，请主人登录 QQ 机器人开放平台创建沙箱应用；AppID/AppSecret 只写入服务器 mode `0600` 私有配置，不在聊天中传递。
 4. 官方灰度固定为：假 Gateway → 主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大。
 
-## 7. 明确未完成事项
+## 7. 本地目录结构（2026-08-27）
 
-- 已有生产切换时的实时匿名健康基线，但 48 小时观察尚未结束，不能宣称长期在线问题已解决。
+- 已将散落在 `D:\丘山` 根目录的主仓库、八个 D 盘阶段/交接工作树、私有归档和发布包统一移动到 `D:\丘山\R\_Higgs`；没有删除文件。
+- 结构固定为：`source`（主仓库）、`worktrees`（Git 工作树）、`archives`（私有归档）、`artifacts`（发布包）。
+- 所有移动前 D 盘工作树均为干净状态；移动使用 `git worktree move`，主仓库移动后执行 `git worktree repair`。九个 D 盘工作树逐一验证路径、分支、提交和 `git status` 正常。
+- 四个早期工作树仍位于 `C:\Users\32516`，不属于本次 D 盘根目录清理；其中 Memory V2.1 旧工作树存在八项未提交内容，严禁在未单独审计前移动、清理或覆盖。
+
+## 8. 明确未完成事项
+
+- 48 小时观察尚未结束，且已捕获一次明确 `KickedOffLine`；不能宣称长期在线问题已解决。人工恢复后的连续在线时长需重新累计，同时保留原观察窗口的失败证据。
 - 尚无官方 QQ Bot 应用、主人 OpenID 私有绑定、真实 Token/Gateway 或 72 小时 Resume 证据。
 - 阶段 3 的 systemd timer 与宿主状态 JSON 已部署验收；模型仅允许 shadow 建议，真实工具调用仍受 owner、显式命令和治理边界限制。
 - Memory V2.1 仅有确定性/模拟模型评测；尚未使用真实模型配置运行聚合评测，因此不得启用生产候选提取。
