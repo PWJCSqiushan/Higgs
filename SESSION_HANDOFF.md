@@ -44,6 +44,7 @@
 - Windows 跳过项必须由 Ubuntu GitHub Actions 覆盖，包括健康标记、目录符号链接激活/回滚和只读状态文件测试。
 - 2026-08-27 群聊风控修复本地完整 pytest 为 `271 passed, 4 skipped`；Ruff 与格式检查通过。新增旧 `risk_events` 在线迁移、群成员来源隔离、熔断隔离、运行管线 sender scope 透传和明文身份不落风控库测试。
 - PR #23 的分支与 pull request 两组 Ubuntu CI 均通过；合并提交 `38a5ddc` 的主线 CI 同样通过。该证据只代表源码合并，不代表生产部署。
+- 后续交接 PR #24 在晚间暴露两个 `today` 计划测试依赖真实墙钟；测试现固定上海上午时间及对应 epoch。针对文件 10 项、Ruff、格式检查和本地完整 pytest（`271 passed, 4 skipped`）通过，等待 PR #24 重跑 Ubuntu CI。
 
 五个 PR 的 push 与 pull request 两组 Ubuntu CI 均通过，Shell 语法检查和 Linux 零跳过门已通过。PR #7–#11 已按顺序合并；这些证据仍不代表官方主人沙箱、NapCat 48 小时观测、官方 72 小时在线、生产部署或真实消息验收。
 

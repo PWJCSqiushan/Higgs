@@ -55,6 +55,20 @@ def service(tmp_path: Path, *, mode: str) -> DailyPlanService:
     )
 
 
+def freeze_morning(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep today-plan tests independent from the CI runner's wall clock."""
+
+    fixed = datetime(2026, 8, 9, 9, 0, tzinfo=SHANGHAI)
+
+    class MorningDateTime(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            return fixed if tz is None else fixed.astimezone(tz)
+
+    monkeypatch.setattr(daily_plan, "datetime", MorningDateTime)
+    monkeypatch.setattr(daily_plan.time, "time", fixed.timestamp)
+
+
 def test_parser_orders_soft_preferences_and_keeps_deadline() -> None:
     now = datetime(2026, 8, 9, 14, 0, tzinfo=SHANGHAI)
     day, tasks = parse_simple_plan(
@@ -111,7 +125,10 @@ def test_agenda_store_isolates_principals_and_binds_confirmation(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_shadow_plan_never_creates_real_reminders(tmp_path: Path) -> None:
+async def test_shadow_plan_never_creates_real_reminders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freeze_morning(monkeypatch)
     planner = service(tmp_path, mode="shadow")
     principal = Principal("owner", "owner")
     response = await planner.handle_event(event("今天的待办：背单词、写代码，帮我安排"), principal)
@@ -130,13 +147,7 @@ async def test_shadow_plan_never_creates_real_reminders(tmp_path: Path) -> None:
 async def test_plan_add_creates_a_new_versioned_draft(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class MorningDateTime(datetime):
-        @classmethod
-        def now(cls, tz: tzinfo | None = None) -> datetime:
-            fixed = datetime(2026, 8, 9, 9, 0, tzinfo=SHANGHAI)
-            return fixed if tz is None else fixed.astimezone(tz)
-
-    monkeypatch.setattr(daily_plan, "datetime", MorningDateTime)
+    freeze_morning(monkeypatch)
     planner = service(tmp_path, mode="shadow")
     principal = Principal("owner", "owner")
     await planner.handle_event(event("今天的待办：背单词、写代码，帮我安排"), principal)
@@ -152,7 +163,10 @@ async def test_plan_add_creates_a_new_versioned_draft(
 
 
 @pytest.mark.asyncio
-async def test_live_plan_confirmation_creates_one_shot_nodes(tmp_path: Path) -> None:
+async def test_live_plan_confirmation_creates_one_shot_nodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freeze_morning(monkeypatch)
     planner = service(tmp_path, mode="live")
     principal = Principal("owner", "owner")
     response = await planner.handle_event(event("今天的待办：背单词、写代码，帮我安排"), principal)
