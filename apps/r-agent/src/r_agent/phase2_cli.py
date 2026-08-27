@@ -348,11 +348,13 @@ async def process_reply(
         return ReplyPlan(decision)
     if not qq_online:
         return ReplyPlan(ReplyDecision.QQ_OFFLINE)
+    source_id = event.sender_id if event.conversation_kind is ConversationKind.GROUP else None
     if breaker is not None:
         guard = await asyncio.to_thread(
             breaker.check_and_reserve,
             event.conversation_id,
             is_owner=event.sender_id == owner_qq,
+            source_id=source_id,
         )
         if not guard.allowed:
             return ReplyPlan(ReplyDecision.CIRCUIT_BREAKER)
@@ -364,6 +366,7 @@ async def process_reply(
             actor_class="owner" if event.sender_id == owner_qq else "non_owner",
             account_id=event.account_id,
             conversation_id=event.conversation_id,
+            source_id=source_id,
         )
         if not budget.allowed:
             return ReplyPlan(ReplyDecision.GLOBAL_RATE_LIMITED)
@@ -818,6 +821,9 @@ async def listen() -> None:
             event.conversation_id,
             actor_class="owner" if event.sender_id in owner_ids else "non_owner",
             account_id=event.account_id,
+            source_id=(
+                event.sender_id if event.conversation_kind is ConversationKind.GROUP else None
+            ),
             now_ms=event.occurred_at_ms,
         )
         if (

@@ -87,3 +87,10 @@
 - 针对固定 SDK 1.2.2，运行时重新断言精确版本；Identify intents 收窄为群/C2C 公共消息，SDK 内部重连预算由近似无限限制为 5 次，异常非布尔 Invalid Session 被终止；SDK 自身可能包含会话 ID、OpenID 或 API path 的日志被整体压制，只保留 Higgs 的匿名状态与错误类型。
 - 官方被动发送增加同进程串行幂等：并发相同请求只发送一次；相同 key 但目标、正文或回复 ID 不同会拒绝；conversation target 必须匹配 `channel + kind + READY account + target` 的规范形式。跨进程回执持久化仍留给后续独立切片。
 - 本地完整 pytest 为 `267 passed, 4 skipped`，Ruff、格式检查、发布包校验、秘密扫描和 Shell LF 门禁通过。PR #21 的 push、pull request 与合并后 `main` 三组 Ubuntu CI 均通过，合并提交为 `aa877df`；没有进行生产部署或凭据处理。真实官方应用仍不存在，官方通道仍关闭；下一步由主人在开放平台创建沙箱应用，凭据只进入服务器 `0600` 私有配置。
+
+## 节点 9：群聊非主人风控误判与成员级隔离
+
+- 匿名只读审计确认某获准自然触发群的配置已正确热更新；普通成员曾有成功回复，但随后多个成员的入站被旧实现共用群 conversation key，集体达到高频来源阈值与会话熔断阈值。主人绕过非主人风控，因而呈现只回答主人的假象；没有记录群号、成员身份或聊天正文。
+- 经主人明确授权，先对 `risk_ledger.sqlite` 与 `conversation_guard.sqlite` 创建私有一致性备份，再仅清除目标群的一条误判来源冷却、一条熔断状态和八条临时熔断计数。验证三类状态均归零；没有发送测试消息、修改白名单、重启容器或重新登录。
+- 新分支 `codex/higgs-group-sender-guard-20260827` 将群聊来源检测与非主人熔断绑定到盐化的 `conversation + sender` 作用域；成员身份不以明文进入风控库。原有群级每分钟预算、全局分钟/小时/每日预算、单成员高频冷却和主人权限均保持不变。
+- `risk_events` 通过可重复的在线加列迁移新增 `source_hash`；旧私聊作用域保持兼容，旧群级误判状态不会继续套用到成员级 key。本地完整 pytest 为 `271 passed, 4 skipped`，Ruff、格式与发布门禁通过；尚需 PR/CI 和单独生产部署确认。
