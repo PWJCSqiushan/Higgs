@@ -7,7 +7,7 @@
 - 本地统一项目根：`D:\丘山\R\_Higgs`；主仓库在 `source`，阶段工作树在 `worktrees`，私有归档和发布包分别在 `archives`、`artifacts`。
 - 本地权威集成工作树：`D:\丘山\R\_Higgs\worktrees\R_Higgs-takeover-20260826`，分支 `codex/higgs-integration-20260826`。
 - PR/生产验收工作树：`D:\丘山\R\_Higgs\worktrees\Higgs-wt-pr-stack`；当前记录分支为 `codex/higgs-recovery-and-local-consolidation-20260827`。
-- 官方 QQ 当前硬化工作树：`D:\丘山\R\_Higgs\worktrees\Higgs-wt-official-qq`，分支 `codex/higgs-official-qq-mvp-20260827`，基于 GitHub `main` 的 `d255f41`；合并前不得用于生产。
+- 官方 QQ 硬化已由 PR #21 合并到 GitHub `main` 的 `aa877df`；当前同一工作树转入仅更新交接记录的 `codex/higgs-official-qq-handoff-20260827`。代码尚未生产部署，官方通道继续关闭。
 - 生产源码/Agent 镜像仍为 `b7d0beceed3f5bd057ad15490cb5b0f2ac0a01d3`；GitHub 主线随后已合并确定性测试和生产交接记录，生产运行提交与文档主线必须继续明确区分。
 - GitHub 已按批准顺序合并 PR #7–#17；所有功能、迁移和 OpenCloudOS 离线构建修复均通过分支、PR 与合并后主线 CI，没有直接向 `main` 推送。
 - 已按主人确认完成本阶段生产部署，并保持既有 `live` 回复模式；官方 QQ 和模型记忆候选仍显式关闭。
@@ -22,6 +22,7 @@
 | 0 发布基线 | `f134fc9` | `codex/higgs-takeover-20260826` / PR #7（已合并） | LF、无固定 deploy 用户、可配置根目录、校验、原子激活与可验证回滚已实现 |
 | 1 NapCat 可观测 | `00f5831` + `9e7ff52` | `codex/higgs-phase1-stability-20260826` / PR #8（已合并） | 六维匿名状态、真实只读健康标记、告警/恢复幂等、有限进程恢复与 `transport.sqlite` 已实现 |
 | 2 官方 QQ 双通道 | `945b5b2` + `92df3d2` + `30ca0c5` + `abc4a0c` | `codex/higgs-phase2-official-qq-20260826` / PR #9（已合并） | 官方 SDK 1.2.2、Gateway/Resume、有限监督恢复、统一类型回执、身份隔离和被动原路回复已实现；默认关闭 |
+| 2A 官方 QQ fail-closed 硬化 | `aa877df` | `codex/higgs-official-qq-mvp-20260827` / PR #21（已合并） | 私有 Resume/READY 身份、真实鉴权状态、精确 intents、有限 SDK 重连、异常会话断链和发送幂等已完成；仍默认关闭 |
 | 3 只读工具 | `80c1c86` + `b083ccf` + `5fa5bc3` | `codex/higgs-phase3-governed-tools-20260826` / PR #10（已合并） | `/higgs server status` 仅限主人私聊；审批哈希、默认拒绝、审计、限频、超时、幂等和只读宿主快照已实现 |
 | 4 Memory V2.1 | `d52739b` + `56cdda2` | `codex/higgs-phase4-memory-shadow-20260826` / PR #11（已合并） | 严格 JSON 模型候选、敏感隔离、追加式 shadow 队列、36 例中文全提取链路评测与主人只读队列已实现；默认关闭 |
 
@@ -76,10 +77,9 @@
 
 ## 6. 下一步顺序
 
-1. 完成 `codex/higgs-official-qq-mvp-20260827` 的 PR、Ubuntu CI 与合并后主线 CI；当前本地门禁为 `267 passed, 4 skipped`，Ruff、格式和发布门禁通过，仍需 Linux 零跳过。
-2. 观察任务保留到原定截止时间并生成匿名结论；已经捕获两次快速 `KickedOffLine`，结论必须为失败，不以再次人工恢复重置证据。
-3. 代码合并后，请主人登录 QQ 机器人开放平台创建沙箱应用；AppID/AppSecret 不经聊天，只在操作时写入服务器 mode `0600` 私有配置。生产模式在当前适配器中显式拒绝。
-4. 官方灰度固定为：假 Gateway → 主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大；提醒仍只走 NapCat。
+1. 请主人登录 QQ 机器人开放平台创建沙箱应用；AppID/AppSecret 不经聊天，只在操作时写入服务器 mode `0600` 私有配置。生产模式在当前适配器中显式拒绝。
+2. 官方灰度固定为：假 Gateway → 主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大；提醒仍只走 NapCat。
+3. 观察任务保留到原定截止时间并生成匿名结论；已经捕获两次快速 `KickedOffLine`，结论必须为失败，不以再次人工恢复重置证据。
 
 ## 7. 本地目录结构（2026-08-27）
 
@@ -93,7 +93,7 @@
 
 - 48 小时观察尚未结束，且已捕获一次明确 `KickedOffLine`；不能宣称长期在线问题已解决。人工恢复后的连续在线时长需重新累计，同时保留原观察窗口的失败证据。
 - 尚无官方 QQ Bot 应用、主人 OpenID 私有绑定、真实 Token/Gateway 或 72 小时 Resume 证据。
-- 官方硬化分支尚未合并或部署；`TransportRegistry` 仍未成为运行时统一编排入口，主人状态命令也尚未汇总官方通道。官方发送的同进程并发幂等已封闭，但跨进程回执持久化和已知失败/未知回执细分仍待后续独立切片。
+- 官方硬化已经 PR #21 合并但尚未部署；`TransportRegistry` 仍未成为运行时统一编排入口，主人状态命令也尚未汇总官方通道。官方发送的同进程并发幂等已封闭，但跨进程回执持久化和已知失败/未知回执细分仍待后续独立切片。
 - 阶段 3 的 systemd timer 与宿主状态 JSON 已部署验收；模型仅允许 shadow 建议，真实工具调用仍受 owner、显式命令和治理边界限制。
 - Memory V2.1 仅有确定性/模拟模型评测；尚未使用真实模型配置运行聚合评测，因此不得启用生产候选提取。
 - 搜索、文件下载、MCP 与跨通道普通用户合并仍延期，不得从当前工具框架自行扩大权限。
