@@ -7,6 +7,7 @@
 - 本地统一项目根：`D:\丘山\R\_Higgs`；主仓库在 `source`，阶段工作树在 `worktrees`，私有归档和发布包分别在 `archives`、`artifacts`。
 - 本地权威集成工作树：`D:\丘山\R\_Higgs\worktrees\R_Higgs-takeover-20260826`，分支 `codex/higgs-integration-20260826`。
 - PR/生产验收工作树：`D:\丘山\R\_Higgs\worktrees\Higgs-wt-pr-stack`；当前记录分支为 `codex/higgs-recovery-and-local-consolidation-20260827`。
+- 官方 QQ 当前硬化工作树：`D:\丘山\R\_Higgs\worktrees\Higgs-wt-official-qq`，分支 `codex/higgs-official-qq-mvp-20260827`，基于 GitHub `main` 的 `d255f41`；合并前不得用于生产。
 - 生产源码/Agent 镜像仍为 `b7d0beceed3f5bd057ad15490cb5b0f2ac0a01d3`；GitHub 主线随后已合并确定性测试和生产交接记录，生产运行提交与文档主线必须继续明确区分。
 - GitHub 已按批准顺序合并 PR #7–#17；所有功能、迁移和 OpenCloudOS 离线构建修复均通过分支、PR 与合并后主线 CI，没有直接向 `main` 推送。
 - 已按主人确认完成本阶段生产部署，并保持既有 `live` 回复模式；官方 QQ 和模型记忆候选仍显式关闭。
@@ -23,6 +24,8 @@
 | 2 官方 QQ 双通道 | `945b5b2` + `92df3d2` + `30ca0c5` + `abc4a0c` | `codex/higgs-phase2-official-qq-20260826` / PR #9（已合并） | 官方 SDK 1.2.2、Gateway/Resume、有限监督恢复、统一类型回执、身份隔离和被动原路回复已实现；默认关闭 |
 | 3 只读工具 | `80c1c86` + `b083ccf` + `5fa5bc3` | `codex/higgs-phase3-governed-tools-20260826` / PR #10（已合并） | `/higgs server status` 仅限主人私聊；审批哈希、默认拒绝、审计、限频、超时、幂等和只读宿主快照已实现 |
 | 4 Memory V2.1 | `d52739b` + `56cdda2` | `codex/higgs-phase4-memory-shadow-20260826` / PR #11（已合并） | 严格 JSON 模型候选、敏感隔离、追加式 shadow 队列、36 例中文全提取链路评测与主人只读队列已实现；默认关闭 |
+
+2026-08-27 的官方 QQ 后续硬化在独立分支继续进行：SDK Resume 状态改为 Higgs 自有的原子 `0600` 私有文件；真实 READY/RESUMED 前不再报告认证成功；断线和心跳超时清除在线状态；READY 身份被安全持久化供进程重启 Resume；过期或不完整的 Resume 会清除旧身份并等待新 READY；官方关闭时其身份和群配置不进入 OneBot 权限集合。该分支还把 SDK intents 收窄到群/C2C 公共消息、把内部重连限制为 5 次、对异常 Invalid Session 同时停止读取循环并主动关闭 WebSocket、屏蔽 SDK 中可能包含会话 ID/OpenID 的日志，并关闭同进程并发幂等竞态。所有行为仍默认关闭且尚未生产部署。
 
 最终运行时共有 12 个一致性备份数据库：阶段 1 新增 `transport.sqlite` 后为 11 个；阶段 3 再加入 `tool_audit.sqlite` 后为 12 个。秘密、登录态和聊天正文不进入备份清单或项目记忆。
 
@@ -62,6 +65,7 @@
 - 观察在 2026-08-26 23:38 记录到明确 `KickedOffLine`，初次恢复后约 2 小时 21 分即再次失效；OneBot 端口和 NapCat 容器仍健康，但 QQ 权威状态离线、Agent unhealthy。该结果证明原有长期在线问题尚未解决。
 - 失效会话持续约 11 小时 54 分。WebUI 同时出现“登录态失效”和“账号已登录、无法重复登录”，确认是 QQ 进程残留的假登录状态；密码路径未被 Agent 读取、保存或继续使用。
 - 经主人明确要求处理登录后，只执行一次受控 NapCat 重启以清除旧进程，未形成自动重启循环；随后由主人扫码。2026-08-27 11:34 实时复核重新满足 QQ 在线、账号匹配、OneBot/action/health 成功及 NapCat/Agent healthy，恢复事件写入 `transport.sqlite`。
+- 该人工恢复只维持约 1 小时 54 分：2026-08-27 13:28 再次出现明确 `KickedOffLine`，登录态失效；NapCat 容器和 OneBot 仍可达，QQ 权威离线且 Agent unhealthy。主人再次明确授权临时恢复后，只执行一次受控重启并由主人扫码，没有循环登录。2026-08-27 16:00 匿名权威复核重新满足 QQ 在线、账号匹配、NapCat/Agent healthy，随后关闭本地 WebUI 隧道。第二次快速踢线使 48 小时稳定性结论明确失败，即使当前临时在线也不得宣称问题解决。
 
 ## 5. 上游固定与借鉴边界
 
@@ -72,10 +76,10 @@
 
 ## 6. 下一步顺序
 
-1. 持续观察 `transport.sqlite` 至少 48 小时，核对状态转换、故障原因、持续时间、告警去重和恢复；期间不以自动重启对抗踢线或风控。
-2. 观察窗口结束后生成匿名验收结论；若出现踢线，保留证据并由主人决定是否再次人工登录，不反复尝试。
-3. 需要真实官方联调时，请主人登录 QQ 机器人开放平台创建沙箱应用；AppID/AppSecret 只写入服务器 mode `0600` 私有配置，不在聊天中传递。
-4. 官方灰度固定为：假 Gateway → 主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大。
+1. 完成 `codex/higgs-official-qq-mvp-20260827` 的 PR、Ubuntu CI 与合并后主线 CI；当前本地门禁为 `267 passed, 4 skipped`，Ruff、格式和发布门禁通过，仍需 Linux 零跳过。
+2. 观察任务保留到原定截止时间并生成匿名结论；已经捕获两次快速 `KickedOffLine`，结论必须为失败，不以再次人工恢复重置证据。
+3. 代码合并后，请主人登录 QQ 机器人开放平台创建沙箱应用；AppID/AppSecret 不经聊天，只在操作时写入服务器 mode `0600` 私有配置。生产模式在当前适配器中显式拒绝。
+4. 官方灰度固定为：假 Gateway → 主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大；提醒仍只走 NapCat。
 
 ## 7. 本地目录结构（2026-08-27）
 
@@ -89,6 +93,7 @@
 
 - 48 小时观察尚未结束，且已捕获一次明确 `KickedOffLine`；不能宣称长期在线问题已解决。人工恢复后的连续在线时长需重新累计，同时保留原观察窗口的失败证据。
 - 尚无官方 QQ Bot 应用、主人 OpenID 私有绑定、真实 Token/Gateway 或 72 小时 Resume 证据。
+- 官方硬化分支尚未合并或部署；`TransportRegistry` 仍未成为运行时统一编排入口，主人状态命令也尚未汇总官方通道。官方发送的同进程并发幂等已封闭，但跨进程回执持久化和已知失败/未知回执细分仍待后续独立切片。
 - 阶段 3 的 systemd timer 与宿主状态 JSON 已部署验收；模型仅允许 shadow 建议，真实工具调用仍受 owner、显式命令和治理边界限制。
 - Memory V2.1 仅有确定性/模拟模型评测；尚未使用真实模型配置运行聚合评测，因此不得启用生产候选提取。
 - 搜索、文件下载、MCP 与跨通道普通用户合并仍延期，不得从当前工具框架自行扩大权限。

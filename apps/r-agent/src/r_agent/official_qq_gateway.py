@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import importlib.metadata
 import logging
 import threading
 import time
@@ -12,6 +14,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from r_agent.events import AttachmentRef, ConversationKind, InboundEvent
+from r_agent.official_qq_session import SecureOfficialQQSessionStore
 from r_agent.transport import (
     DeliveryReceipt,
     DeliveryState,
@@ -67,6 +70,10 @@ class SessionStore(Protocol):
 
     def touch(self, app_id: str) -> None: ...
 
+    def get_account_id(self, app_id: str) -> str | None: ...
+
+    def set_account_id(self, app_id: str, account_id: str) -> None: ...
+
 
 EventHandler = Callable[[InboundEvent], Awaitable[None]]
 GatewayFactory = Callable[[Any], Gateway]
@@ -115,6 +122,9 @@ class OfficialQQAdapter:
         self._gateway: Gateway | None = None
         self._http_client: Any = None
         self._lock = threading.RLock()
+        # Official MVP traffic is deliberately low-volume. Serializing sends
+        # closes the check-then-send race for duplicate idempotency keys.
+        self._send_lock = asyncio.Lock()
         self._connected = False
         self._authenticated = False
         self._account_id: str | None = None
@@ -124,11 +134,33 @@ class OfficialQQAdapter:
         self._heartbeat_interval_seconds = 30.0
         self._connected_at_ms: int | None = None
         self._receipts: dict[str, DeliveryReceipt] = {}
+        self._receipt_fingerprints: dict[str, str] = {}
         self._stop_requested = False
         self._terminal_failure = False
 
     def _ensure_dependencies(self) -> None:
-        from qqbot_agent_sdk import EventParser, QQApiClient, QQWebSocket, WSSessionStore
+        # The pinned Beta SDK logs Gateway session IDs and API paths containing
+        # OpenIDs at INFO/ERROR. Higgs records only its own redacted status and
+        # error classes, so upstream records must never reach production logs.
+        for logger_name in (
+            "qqbot_agent_sdk",
+            "qqbot_agent_sdk.api_client",
+            "qqbot_agent_sdk.websocket",
+        ):
+            logging.getLogger(logger_name).setLevel(logging.CRITICAL)
+        if importlib.metadata.version("qqbot-agent-sdk") != "1.2.2":
+            raise RuntimeError("unsupported official QQ SDK version")
+        from qqbot_agent_sdk import EventParser, QQApiClient, QQWebSocket
+        from qqbot_agent_sdk import websocket as sdk_websocket
+        from qqbot_agent_sdk.dto import Intent, OPCode
+
+        # SDK 1.2.2 hard-codes guild, interaction, group and C2C intents and an
+        # almost-unbounded reconnect budget. The official MVP needs only the
+        # combined group/C2C public-message intent and one bounded owner of
+        # reconnect attempts. These pinned-module overrides are contract-tested
+        # and must fail closed on any SDK version drift.
+        sdk_websocket.DEFAULT_INTENTS = Intent.GROUP_MESSAGES
+        sdk_websocket.MAX_RECONNECT_ATTEMPTS = 5
 
         if self._api is None:
             assert self.config.app_id is not None
@@ -139,14 +171,29 @@ class OfficialQQAdapter:
                 log_tag="HiggsOfficialQQ",
             )
         if self._gateway_factory is None:
-            self._gateway_factory = lambda callbacks: QQWebSocket(
-                callbacks=callbacks,
-                log_tag="HiggsOfficialQQ",
+
+            class FailClosedQQWebSocket(QQWebSocket):
+                def _dispatch_payload(self, raw: dict[str, Any]) -> None:
+                    if raw.get("op") == OPCode.INVALID_SESSION and not isinstance(
+                        raw.get("d"), bool
+                    ):
+                        self._stop_requested = True
+                        self._running = False
+                        self._cb.on_fatal_error(  # type: ignore[attr-defined]
+                            "invalid_session_payload",
+                            "Invalid Session payload must be boolean",
+                        )
+                        self._close_ws_async()
+                        return
+                    super()._dispatch_payload(raw)  # type: ignore[attr-defined]
+
+            self._gateway_factory = lambda callbacks: FailClosedQQWebSocket(
+                callbacks=callbacks, log_tag="HiggsOfficialQQ"
             )
         if self._session_store is None:
-            self._session_store = WSSessionStore(
-                base_dir=str(self._data_dir), filename="official_qq_sessions.json"
-            )
+            self._session_store = SecureOfficialQQSessionStore(self._data_dir)
+        assert self.config.app_id is not None
+        self._session_store.get(self.config.app_id)
         if self._parser is None:
             self._parser = EventParser().parse
 
@@ -195,8 +242,8 @@ class OfficialQQAdapter:
                 "verified" if healthy else "rejected" if terminal else "pending",
                 reason=status.reason or "official_status",
                 onebot_reachable=status.connected,
-                qq_online=status.authenticated,
-                account_match=True if status.account_id else None,
+                qq_online=healthy,
+                account_match=True if healthy and status.account_id else None,
                 health_receipt=("ok" if healthy else "failed", status.reason or "official_status"),
             )
         except Exception as exc:  # pragma: no cover - observability must not stop the adapter
@@ -213,6 +260,9 @@ class OfficialQQAdapter:
         if not self.config.app_id or not self.config.client_secret or not self.config.owner_openid:
             self._set_failure("configuration_incomplete", terminal=True)
             raise TransportUnavailable("official QQ configuration is incomplete")
+        if not self.config.sandbox:
+            self._set_failure("production_mode_disabled", terminal=True)
+            raise TransportUnavailable("official QQ production mode is disabled")
         try:
             self._ensure_dependencies()
         except Exception as exc:
@@ -271,7 +321,10 @@ class OfficialQQAdapter:
             raise TransportUnavailable("official QQ gateway factory failed") from exc
         self._gateway = gateway
         with self._lock:
-            self._authenticated = True
+            # A valid access token is not proof that the Gateway session is
+            # READY/RESUMED. Keep the public status offline until the SDK calls
+            # on_connected after one of those authoritative dispatches.
+            self._authenticated = False
             self._reason = "connecting"
         try:
             gateway.start(gateway_url, asyncio.get_running_loop())
@@ -297,6 +350,7 @@ class OfficialQQAdapter:
         with self._lock:
             self._connected = False
             self._authenticated = False
+            self._account_id = None
             self._connected_at_ms = None
             self._reason = "stopped"
 
@@ -411,8 +465,19 @@ class OfficialQQAdapter:
         assert self.config.app_id is not None
         session = self._session_store.get(self.config.app_id)
         fresh = getattr(session, "is_fresh", lambda: False)()
-        if getattr(session, "is_resumable", False) and fresh:
+        account_id = self._session_store.get_account_id(self.config.app_id)
+        if getattr(session, "is_resumable", False) and fresh and account_id:
+            with self._lock:
+                self._account_id = account_id
             return str(session.session_id), int(session.seq)
+        if getattr(session, "is_resumable", False) or account_id:
+            self._session_store.clear(self.config.app_id)
+        with self._lock:
+            # Identify must never inherit the READY identity of an expired or
+            # incomplete Resume record. The next READY callback is the only
+            # authority allowed to authenticate the fresh session.
+            self._account_id = None
+            self._authenticated = False
         return None, None
 
     def _set_session(self, session_id: str | None, seq: int | None) -> None:
@@ -420,19 +485,23 @@ class OfficialQQAdapter:
         assert self.config.app_id is not None
         if session_id is None:
             self._session_store.clear(self.config.app_id)
+            with self._lock:
+                self._account_id = None
+                self._authenticated = False
         else:
             self._session_store.save(self.config.app_id, session_id, seq)
 
     def _on_connected(self) -> None:
         with self._lock:
             self._connected = True
-            self._authenticated = True
+            self._authenticated = self._account_id is not None and not self._terminal_failure
             self._connected_at_ms = self._clock_ms()
-            self._reason = "ready"
+            self._reason = "ready" if self._authenticated else "ready_identity_pending"
 
     def _on_disconnected(self) -> None:
         with self._lock:
             self._connected = False
+            self._authenticated = False
             self._connected_at_ms = None
             self._reason = "gateway_disconnected"
 
@@ -459,14 +528,33 @@ class OfficialQQAdapter:
         timeout_ms = int(max(self._heartbeat_interval_seconds * 3, 15.0) * 1000)
         if self._clock_ms() - latest > timeout_ms:
             self._connected = False
+            self._authenticated = False
+            self._connected_at_ms = None
             self._reason = "heartbeat_ack_timeout"
 
     def _on_ready(self, ready: Any) -> None:
         user = getattr(ready, "user", None)
-        account_id = str(getattr(user, "id", "") or "")
-        if account_id:
-            with self._lock:
-                self._account_id = account_id
+        account_id = str(getattr(user, "id", "") or "").strip()
+        if (
+            not account_id
+            or len(account_id) > 256
+            or not account_id.isascii()
+            or any(char.isspace() or ord(char) < 33 for char in account_id)
+        ):
+            self._set_failure("ready_identity_invalid", terminal=True)
+            return
+        try:
+            assert self._session_store is not None
+            assert self.config.app_id is not None
+            self._session_store.set_account_id(self.config.app_id, account_id)
+        except Exception:
+            self._set_failure("ready_identity_persist_failed", terminal=True)
+            return
+        with self._lock:
+            self._account_id = account_id
+            if self._connected and not self._terminal_failure:
+                self._authenticated = True
+                self._reason = "ready"
 
     def _on_heartbeat_ack(self) -> None:
         with self._lock:
@@ -477,7 +565,9 @@ class OfficialQQAdapter:
     async def _on_message_event(self, event_type: str, raw: dict[str, Any]) -> None:
         if self._parser is None:
             return
-        event = self._normalize_event(self._parser(event_type, raw))
+        if event_type not in {"C2C_MESSAGE_CREATE", "GROUP_AT_MESSAGE_CREATE"}:
+            return
+        event = self._normalize_event(event_type, self._parser(event_type, raw))
         if event is None:
             return
         with self._lock:
@@ -485,7 +575,7 @@ class OfficialQQAdapter:
         if self._event_handler is not None:
             await self._event_handler(event)
 
-    def _normalize_event(self, parsed: Any | None) -> InboundEvent | None:
+    def _normalize_event(self, event_type: str, parsed: Any | None) -> InboundEvent | None:
         if parsed is None:
             return None
         scope = str(getattr(parsed, "chat_scope", ""))
@@ -494,13 +584,17 @@ class OfficialQQAdapter:
         message_id = str(getattr(parsed, "message_id", "") or "")
         if not sender_id or not chat_id or not message_id:
             return None
-        if scope == "c2c":
+        with self._lock:
+            account_id = self._account_id
+        if account_id is None:
+            return None
+        if event_type == "C2C_MESSAGE_CREATE" and scope == "c2c":
             if sender_id != self.config.owner_openid:
                 return None
             kind = ConversationKind.PRIVATE
             group_id = None
             mentioned = False
-        elif scope == "group":
+        elif event_type == "GROUP_AT_MESSAGE_CREATE" and scope == "group":
             if chat_id not in self.config.allowed_group_openids:
                 return None
             kind = ConversationKind.GROUP
@@ -508,7 +602,6 @@ class OfficialQQAdapter:
             mentioned = True
         else:
             return None
-        account_id = self._account_id or self.config.app_id or "unknown"
         attachments = tuple(
             AttachmentRef(
                 kind=str(getattr(item, "content_type", "attachment") or "attachment"),
@@ -538,17 +631,10 @@ class OfficialQQAdapter:
         idempotency_key: str,
         reply_message_id: str | None = None,
     ) -> DeliveryReceipt:
-        with self._lock:
-            prior = self._receipts.get(idempotency_key)
-            self._apply_heartbeat_timeout_locked()
-            ready = self._connected and self._authenticated
-        if prior is not None:
-            return prior
         if target.channel.casefold() != self.channel:
             raise TransportUnavailable("official QQ target channel mismatch")
-        if not ready or self._api is None:
-            raise TransportUnavailable("official QQ is not ready")
-        if not idempotency_key.strip():
+        normalized_key = idempotency_key.strip()
+        if not normalized_key:
             raise ValueError("idempotency key is required")
         content = text.strip()
         if not content or len(content) > 2000:
@@ -556,30 +642,66 @@ class OfficialQQAdapter:
         if not reply_message_id:
             raise TransportUnavailable("official QQ MVP only permits passive replies")
         chat_type = "c2c" if target.conversation_kind is ConversationKind.PRIVATE else "group"
-        chat_id = target.conversation_id.rsplit(":", 1)[-1]
+        parts = target.conversation_id.split(":")
+        with self._lock:
+            account_id = self._account_id
+        if (
+            len(parts) != 4
+            or parts[0] != self.channel
+            or parts[1] != target.conversation_kind.value
+            or account_id is None
+            or parts[2] != account_id
+            or not parts[3]
+        ):
+            raise TransportUnavailable("official QQ target conversation is not canonical")
+        chat_id = parts[3]
         if chat_type == "c2c" and chat_id != self.config.owner_openid:
             raise TransportUnavailable("official QQ private target is not the configured owner")
         if chat_type == "group" and chat_id not in self.config.allowed_group_openids:
             raise TransportUnavailable("official QQ group target is not allowlisted")
-        try:
-            raw = await self._api.send_text(
-                chat_type,
-                chat_id,
-                content,
-                reply_to=reply_message_id,
-                markdown=False,
-                retries=1,
-            )
-        except Exception:
-            receipt = DeliveryReceipt(self.channel, DeliveryState.UNKNOWN, idempotency_key)
-        else:
-            provider_id = str(raw.get("id", "") or "")
-            receipt = DeliveryReceipt(
-                self.channel,
-                DeliveryState.SENT if provider_id else DeliveryState.UNKNOWN,
-                idempotency_key,
-                provider_id or None,
-            )
-        with self._lock:
-            self._receipts[idempotency_key] = receipt
-        return receipt
+        fingerprint = hashlib.sha256(
+            "\0".join(
+                (
+                    self.channel,
+                    target.conversation_kind.value,
+                    target.conversation_id,
+                    content,
+                    reply_message_id,
+                )
+            ).encode("utf-8")
+        ).hexdigest()
+        async with self._send_lock:
+            with self._lock:
+                prior = self._receipts.get(normalized_key)
+                prior_fingerprint = self._receipt_fingerprints.get(normalized_key)
+                self._apply_heartbeat_timeout_locked()
+                ready = self._connected and self._authenticated
+            if prior is not None:
+                if prior_fingerprint != fingerprint:
+                    raise ValueError("idempotency key conflicts with another official QQ request")
+                return prior
+            if not ready or self._api is None:
+                raise TransportUnavailable("official QQ is not ready")
+            try:
+                raw = await self._api.send_text(
+                    chat_type,
+                    chat_id,
+                    content,
+                    reply_to=reply_message_id,
+                    markdown=False,
+                    retries=1,
+                )
+            except Exception:
+                receipt = DeliveryReceipt(self.channel, DeliveryState.UNKNOWN, normalized_key)
+            else:
+                provider_id = str(raw.get("id", "") or "")
+                receipt = DeliveryReceipt(
+                    self.channel,
+                    DeliveryState.SENT if provider_id else DeliveryState.UNKNOWN,
+                    normalized_key,
+                    provider_id or None,
+                )
+            with self._lock:
+                self._receipts[normalized_key] = receipt
+                self._receipt_fingerprints[normalized_key] = fingerprint
+            return receipt

@@ -431,6 +431,8 @@ async def listen() -> None:
     settings = Settings.from_env(env_file=env_path, require_shadow=False)
     phase = _phase2_settings(settings)
     official_config = OfficialQQConfig.from_env()
+    official_owner_openid = official_config.active_owner_openid
+    official_group_openids = official_config.active_group_openids
     embeddings = _embedding_client(enabled=phase.embedding_enabled, phase=phase)
     safety = _safety_policy(phase)
     client = _model_client(required=phase.mode in {"draft", "live"})
@@ -442,24 +444,18 @@ async def listen() -> None:
             allowed_private_qqs=settings.allowed_private_qqs,
             allowed_groups=settings.allowed_groups,
             owner_ids=frozenset(
-                value
-                for value in (settings.owner_qq, official_config.owner_openid)
-                if value is not None
+                value for value in (settings.owner_qq, official_owner_openid) if value is not None
             ),
             additional_private_ids=(
-                frozenset({official_config.owner_openid})
-                if official_config.owner_openid
-                else frozenset()
+                frozenset({official_owner_openid}) if official_owner_openid else frozenset()
             ),
-            additional_group_ids=official_config.allowed_group_openids,
+            additional_group_ids=official_group_openids,
         ),
         identities=IdentityStore(
             settings.data_dir / "identity.sqlite",
             owner_qq=settings.owner_qq,
             owner_identities=(
-                (("qq_official", official_config.owner_openid),)
-                if official_config.owner_openid
-                else ()
+                (("qq_official", official_owner_openid),) if official_owner_openid else ()
             ),
         ),
         journal=Journal(settings.data_dir / "journal.sqlite"),
@@ -528,18 +524,16 @@ async def listen() -> None:
         mode=phase.mode,
         private_users=phase.private_users.union(
             {settings.owner_qq} if settings.owner_qq else (),
-            {official_config.owner_openid} if official_config.owner_openid else (),
+            {official_owner_openid} if official_owner_openid else (),
         ),
-        groups=phase.groups.union(official_config.allowed_group_openids),
+        groups=phase.groups.union(official_group_openids),
         natural_trigger_groups=phase.natural_trigger_groups,
         natural_trigger_terms=phase.natural_trigger_terms,
         global_max_per_minute=phase.global_max_per_minute,
         owner_max_per_minute=phase.owner_conversation_per_minute,
         owner_qq=settings.owner_qq,
         owner_ids=frozenset(
-            value
-            for value in (settings.owner_qq, official_config.owner_openid)
-            if value is not None
+            value for value in (settings.owner_qq, official_owner_openid) if value is not None
         ),
         runtime_enabled=phase.runtime_enabled,
         require_mention=phase.require_mention,
@@ -729,9 +723,7 @@ async def listen() -> None:
             else:
                 channel_online = online.snapshot().qq_online
             owner_sender_id = (
-                official_config.owner_openid
-                if event.channel == "qq_official"
-                else settings.owner_qq
+                official_owner_openid if event.channel == "qq_official" else settings.owner_qq
             )
             plan = await process_reply(
                 event=event,
@@ -820,7 +812,7 @@ async def listen() -> None:
         *,
         resolve_onebot_reply: bool,
     ) -> None:
-        owner_ids = {settings.owner_qq, official_config.owner_openid}
+        owner_ids = {value for value in (settings.owner_qq, official_owner_openid) if value}
         learning_allowed = await asyncio.to_thread(
             risk_ledger.note_inbound,
             event.conversation_id,
