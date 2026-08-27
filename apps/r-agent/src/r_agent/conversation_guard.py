@@ -1,8 +1,10 @@
 # ruff: noqa: E501
-"""Persistent non-owner conversation circuit breaker."""
+"""Persistent non-owner circuit breaker with per-sender group isolation."""
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -35,6 +37,21 @@ class ConversationCircuitBreaker:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS conversation_guard_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO conversation_guard_meta(key, value)
+                VALUES ('hash_salt', ?)
+                """,
+                (secrets.token_hex(32),),
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS conversation_guard_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     conversation_id TEXT NOT NULL,
@@ -63,6 +80,7 @@ class ConversationCircuitBreaker:
         conversation_id: str,
         *,
         is_owner: bool,
+        source_id: str | None = None,
         now_ms: int | None = None,
     ) -> GuardDecision:
         if is_owner:
@@ -70,9 +88,19 @@ class ConversationCircuitBreaker:
         now = int(time.time() * 1000) if now_ms is None else now_ms
         with sqlite3.connect(self.path) as conn:
             conn.execute("BEGIN IMMEDIATE")
+            scope = conversation_id
+            if source_id is not None:
+                salt = str(
+                    conn.execute(
+                        "SELECT value FROM conversation_guard_meta WHERE key='hash_salt'"
+                    ).fetchone()[0]
+                )
+                scope = hashlib.sha256(
+                    f"{salt}:group-source\x00{conversation_id}\x00{source_id}".encode()
+                ).hexdigest()
             row = conn.execute(
                 "SELECT until_ms FROM conversation_guard_cooldowns WHERE conversation_id = ?",
-                (conversation_id,),
+                (scope,),
             ).fetchone()
             if row is not None and int(row[0]) > now:
                 return GuardDecision(False, max(1, (int(row[0]) - now + 999) // 1000))
@@ -83,7 +111,7 @@ class ConversationCircuitBreaker:
             count = int(
                 conn.execute(
                     "SELECT COUNT(*) FROM conversation_guard_events WHERE conversation_id = ?",
-                    (conversation_id,),
+                    (scope,),
                 ).fetchone()[0]
             )
             if count >= self.limit:
@@ -95,12 +123,12 @@ class ConversationCircuitBreaker:
                     ON CONFLICT(conversation_id) DO UPDATE SET
                         until_ms=excluded.until_ms, triggered_at_ms=excluded.triggered_at_ms
                     """,
-                    (conversation_id, until, now),
+                    (scope, until, now),
                 )
                 return GuardDecision(False, self.cooldown_ms // 1000)
             conn.execute(
                 "INSERT INTO conversation_guard_events(conversation_id, created_at_ms) VALUES (?, ?)",
-                (conversation_id, now),
+                (scope, now),
             )
         return GuardDecision(True)
 

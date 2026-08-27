@@ -107,6 +107,7 @@ class RiskLedger:
                     actor_class TEXT NOT NULL CHECK(actor_class IN ('owner','non_owner','system')),
                     account_hash TEXT,
                     conversation_hash TEXT,
+                    source_hash TEXT,
                     reason_code TEXT,
                     client_version TEXT,
                     transport_version TEXT,
@@ -115,6 +116,11 @@ class RiskLedger:
                 )
                 """
             )
+            columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(risk_events)").fetchall()
+            }
+            if "source_hash" not in columns:
+                conn.execute("ALTER TABLE risk_events ADD COLUMN source_hash TEXT")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_risk_time
@@ -125,6 +131,12 @@ class RiskLedger:
                 """
                 CREATE INDEX IF NOT EXISTS idx_risk_conversation_time
                 ON risk_events(conversation_hash, created_at_ms, outcome)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_risk_source_time
+                ON risk_events(source_hash, created_at_ms, event_type)
                 """
             )
             conn.execute(
@@ -156,6 +168,18 @@ class RiskLedger:
                 conn.execute("SELECT value FROM risk_meta WHERE key='hash_salt'").fetchone()[0]
             )
         return hashlib.sha256(f"{salt}:{value}".encode()).hexdigest()[:24]
+
+    def _source_hash(self, conversation_id: str, source_id: str | None) -> str:
+        """Hash one source while retaining conversation-wide send budgets."""
+
+        source_key = (
+            conversation_id
+            if source_id is None
+            else f"group-source\x00{conversation_id}\x00{source_id}"
+        )
+        value = self._hash(source_key)
+        assert value is not None
+        return value
 
     @staticmethod
     def _bounded_code(value: str | None, *, maximum: int = 120) -> str | None:
@@ -214,17 +238,19 @@ class RiskLedger:
         *,
         actor_class: str = "non_owner",
         account_id: str | None = None,
+        source_id: str | None = None,
         now_ms: int | None = None,
     ) -> bool:
         """Record no message text and return whether the source may be learned from.
 
-        Twelve inbound messages in one minute from a non-owner conversation is treated
-        as automation-like traffic. The source is cooled down for 24 hours, which also
-        prevents replies and memory observations from creating a robot-to-robot loop.
+        Twelve inbound messages in one minute from one non-owner source is treated as
+        automation-like traffic. Group callers bind the source to the sender, so normal
+        traffic from several humans cannot collectively trip a 24-hour cooldown.
         """
         now = int(time.time() * 1000) if now_ms is None else now_ms
         conversation_hash = self._hash(conversation_id)
         assert conversation_hash is not None
+        source_hash = self._source_hash(conversation_id, source_id)
         account_hash = self._hash(account_id)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -232,10 +258,10 @@ class RiskLedger:
                 """
                 INSERT INTO risk_events(
                     event_type, outcome, actor_class, account_hash,
-                    conversation_hash, created_at_ms
-                ) VALUES ('inbound', 'observed', ?, ?, ?, ?)
+                    conversation_hash, source_hash, created_at_ms
+                ) VALUES ('inbound', 'observed', ?, ?, ?, ?, ?)
                 """,
-                (actor_class, account_hash, conversation_hash, now),
+                (actor_class, account_hash, conversation_hash, source_hash, now),
             )
             conn.execute(
                 """
@@ -253,10 +279,10 @@ class RiskLedger:
                     conn.execute(
                         """
                         SELECT COUNT(*) FROM risk_events
-                        WHERE event_type='inbound' AND conversation_hash=?
+                        WHERE event_type='inbound' AND source_hash=?
                           AND created_at_ms>=?
                         """,
-                        (conversation_hash, now - 60_000),
+                        (source_hash, now - 60_000),
                     ).fetchone()[0]
                 )
                 if recent >= 12:
@@ -271,20 +297,26 @@ class RiskLedger:
                             reason_code=excluded.reason_code,
                             changed_at_ms=excluded.changed_at_ms
                         """,
-                        (conversation_hash, now + 86_400_000, now),
+                        (source_hash, now + 86_400_000, now),
                     )
-        return self.learning_allowed(conversation_id, now_ms=now)
+        return self.learning_allowed(conversation_id, source_id=source_id, now_ms=now)
 
-    def learning_allowed(self, conversation_id: str, *, now_ms: int | None = None) -> bool:
+    def learning_allowed(
+        self,
+        conversation_id: str,
+        *,
+        source_id: str | None = None,
+        now_ms: int | None = None,
+    ) -> bool:
         now = int(time.time() * 1000) if now_ms is None else now_ms
-        conversation_hash = self._hash(conversation_id)
+        source_hash = self._source_hash(conversation_id, source_id)
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT suspected_robot_until_ms FROM risk_source_state
                 WHERE conversation_hash=?
                 """,
-                (conversation_hash,),
+                (source_hash,),
             ).fetchone()
         return row is None or int(row[0]) <= now
 
@@ -360,6 +392,7 @@ class RiskLedger:
         actor_class: str,
         account_id: str,
         conversation_id: str,
+        source_id: str | None = None,
         now_ms: int | None = None,
     ) -> BudgetDecision:
         if event_type not in {"reply", "reminder", "proactive"}:
@@ -368,6 +401,7 @@ class RiskLedger:
             raise ValueError("unsupported actor class")
         now = int(time.time() * 1000) if now_ms is None else now_ms
         conversation_hash = self._hash(conversation_id)
+        source_hash = self._source_hash(conversation_id, source_id)
         account_hash = self._hash(account_id)
         assert conversation_hash is not None
         actor_budget = "owner" if actor_class == "owner" else "non_owner"
@@ -422,7 +456,7 @@ class RiskLedger:
                     SELECT suspected_robot_until_ms FROM risk_source_state
                     WHERE conversation_hash=?
                     """,
-                    (conversation_hash,),
+                    (source_hash,),
                 ).fetchone()
                 if source is not None and int(source[0]) > now:
                     return BudgetDecision(
@@ -454,20 +488,34 @@ class RiskLedger:
                         """
                         INSERT INTO risk_events(
                             event_type, outcome, actor_class, account_hash,
-                            conversation_hash, reason_code, created_at_ms
-                        ) VALUES ('rate_limit', 'limited', ?, ?, ?, ?, ?)
+                            conversation_hash, source_hash, reason_code, created_at_ms
+                        ) VALUES ('rate_limit', 'limited', ?, ?, ?, ?, ?, ?)
                         """,
-                        (actor_budget, account_hash, conversation_hash, reason, now),
+                        (
+                            actor_budget,
+                            account_hash,
+                            conversation_hash,
+                            source_hash,
+                            reason,
+                            now,
+                        ),
                     )
                     return BudgetDecision(False, reason, retry_after_seconds=retry)
             cursor = conn.execute(
                 """
                 INSERT INTO risk_events(
                     event_type, outcome, actor_class, account_hash,
-                    conversation_hash, created_at_ms
-                ) VALUES (?, 'reserved', ?, ?, ?, ?)
+                    conversation_hash, source_hash, created_at_ms
+                ) VALUES (?, 'reserved', ?, ?, ?, ?, ?)
                 """,
-                (event_type, actor_budget, account_hash, conversation_hash, now),
+                (
+                    event_type,
+                    actor_budget,
+                    account_hash,
+                    conversation_hash,
+                    source_hash,
+                    now,
+                ),
             )
             return BudgetDecision(True, "reserved", int(cursor.lastrowid))
 

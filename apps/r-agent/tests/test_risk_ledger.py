@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 from r_agent.risk_ledger import RiskLedger, RiskLimits
@@ -20,6 +21,36 @@ def ledger(tmp_path: Path) -> RiskLedger:
     )
     result.initialize()
     return result
+
+
+def test_initialize_migrates_existing_risk_events_for_source_hash(tmp_path: Path) -> None:
+    path = tmp_path / "risk.sqlite"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE risk_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                actor_class TEXT NOT NULL,
+                account_hash TEXT,
+                conversation_hash TEXT,
+                reason_code TEXT,
+                client_version TEXT,
+                transport_version TEXT,
+                egress_asn TEXT,
+                created_at_ms INTEGER NOT NULL
+            )
+            """
+        )
+
+    risk = RiskLedger(path)
+    risk.initialize()
+    with sqlite3.connect(path) as conn:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(risk_events)")}
+        indexes = {str(row[1]) for row in conn.execute("PRAGMA index_list(risk_events)")}
+    assert "source_hash" in columns
+    assert "idx_risk_source_time" in indexes
 
 
 def test_persistent_send_budget_is_shared_and_content_free(tmp_path: Path) -> None:
@@ -78,6 +109,57 @@ def test_robot_like_source_is_blocked_from_reply_and_learning(tmp_path: Path) ->
     assert not decision.allowed
     assert decision.reason == "suspected_robot_source"
     assert risk.stats(now_ms=2_000)["suspected_robot_sources"] == 1
+
+
+def test_group_robot_detection_isolated_per_sender(tmp_path: Path) -> None:
+    risk = ledger(tmp_path)
+    conversation = "qq:group:bot:group"
+    for index in range(11):
+        assert risk.note_inbound(
+            conversation,
+            actor_class="non_owner",
+            account_id="bot",
+            source_id="member-a",
+            now_ms=1_000 + index,
+        )
+        assert risk.note_inbound(
+            conversation,
+            actor_class="non_owner",
+            account_id="bot",
+            source_id="member-b",
+            now_ms=1_100 + index,
+        )
+
+    assert not risk.note_inbound(
+        conversation,
+        actor_class="non_owner",
+        account_id="bot",
+        source_id="member-a",
+        now_ms=2_000,
+    )
+    assert risk.learning_allowed(conversation, source_id="member-b", now_ms=2_000)
+    blocked = risk.reserve_send(
+        event_type="reply",
+        actor_class="non_owner",
+        account_id="bot",
+        conversation_id=conversation,
+        source_id="member-a",
+        now_ms=2_000,
+    )
+    allowed = risk.reserve_send(
+        event_type="reply",
+        actor_class="non_owner",
+        account_id="bot",
+        conversation_id=conversation,
+        source_id="member-b",
+        now_ms=2_000,
+    )
+    assert not blocked.allowed
+    assert blocked.reason == "suspected_robot_source"
+    assert allowed.allowed
+    blob = (tmp_path / "risk.sqlite").read_bytes()
+    assert b"member-a" not in blob
+    assert b"member-b" not in blob
 
 
 def test_online_transition_ledger_deduplicates_probes_and_counts_kicks(tmp_path: Path) -> None:

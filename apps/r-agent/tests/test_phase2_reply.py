@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from r_agent.access import IngressDecision
 from r_agent.events import ConversationKind, InboundEvent
 from r_agent.ingest import IngestResult
@@ -199,6 +201,59 @@ async def test_unknown_delivery_receipt_is_not_reported_as_sent() -> None:
         sender=unknown_sender,
     )
     assert plan.decision is ReplyDecision.SEND_FAILED
+
+
+async def test_group_reply_passes_sender_scope_to_both_risk_guards() -> None:
+    class Guard:
+        def __init__(self) -> None:
+            self.source_ids: list[str | None] = []
+
+        def check_and_reserve(
+            self,
+            _conversation_id: str,
+            *,
+            is_owner: bool,
+            source_id: str | None = None,
+        ) -> SimpleNamespace:
+            assert not is_owner
+            self.source_ids.append(source_id)
+            return SimpleNamespace(allowed=True)
+
+    class Risk:
+        def __init__(self) -> None:
+            self.source_ids: list[str | None] = []
+
+        def reserve_send(self, **kwargs: object) -> SimpleNamespace:
+            self.source_ids.append(kwargs.get("source_id"))
+            return SimpleNamespace(allowed=True, reservation_id=1)
+
+        def finish_send(self, _reservation_id: int, *, outcome: str) -> None:
+            assert outcome == "sent"
+
+    async def sender(_item: InboundEvent, _text: str) -> DeliveryReceipt:
+        return DeliveryReceipt("qq", DeliveryState.SENT, "group-sender-scope", "provider-1")
+
+    guard = Guard()
+    risk = Risk()
+    plan = await process_reply(
+        event=event(group="700001", mentioned=True),
+        result=accepted(),
+        policy=ReplyPolicy(
+            mode="live",
+            private_users=frozenset(),
+            groups=frozenset({"700001"}),
+            require_mention=True,
+            max_per_minute=2,
+        ),
+        brain=PersonaBrain(None, "test"),
+        sender=sender,
+        breaker=guard,  # type: ignore[arg-type]
+        owner_qq="owner",
+        risk_ledger=risk,  # type: ignore[arg-type]
+    )
+    assert plan.decision is ReplyDecision.SENT
+    assert guard.source_ids == ["800001"]
+    assert risk.source_ids == ["800001"]
 
 
 def test_private_reply_requires_explicit_user_permission() -> None:

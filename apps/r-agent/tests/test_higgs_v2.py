@@ -156,6 +156,27 @@ def test_non_owner_circuit_breaker_and_owner_bypass(tmp_path: Path) -> None:
     assert guard.check_and_reserve("c1", is_owner=True, now_ms=4_000).allowed
 
 
+def test_group_circuit_breaker_isolated_per_sender_and_hashed(tmp_path: Path) -> None:
+    path = tmp_path / "guard.sqlite"
+    guard = ConversationCircuitBreaker(path, limit=2, window_seconds=60, cooldown_seconds=30)
+    guard.initialize()
+    assert guard.check_and_reserve(
+        "group-conversation", is_owner=False, source_id="member-a", now_ms=1_000
+    ).allowed
+    assert guard.check_and_reserve(
+        "group-conversation", is_owner=False, source_id="member-a", now_ms=2_000
+    ).allowed
+    assert not guard.check_and_reserve(
+        "group-conversation", is_owner=False, source_id="member-a", now_ms=3_000
+    ).allowed
+    assert guard.check_and_reserve(
+        "group-conversation", is_owner=False, source_id="member-b", now_ms=3_000
+    ).allowed
+    blob = path.read_bytes()
+    assert b"member-a" not in blob
+    assert b"member-b" not in blob
+
+
 async def test_online_state_alerts_once_per_incident_and_health_is_two_layered(
     tmp_path: Path,
 ) -> None:
