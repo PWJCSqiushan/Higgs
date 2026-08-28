@@ -49,3 +49,32 @@ def test_opencloudos_build_prefetches_locked_dependencies_before_offline_sync() 
     assert text.index(export) < text.index(install) < text.index(dependency_sync)
     assert text.index('"hatchling==1.27.0"') < text.index(dependency_sync)
     assert text.index(dependency_sync) < text.index(project_sync)
+
+
+def test_official_qq_sidecar_is_opt_in_and_isolated_from_agent_data() -> None:
+    compose = (ROOT / "deploy/existing-server/compose.official-qq.yml").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "apps/official-qq-sidecar/Dockerfile").read_text(encoding="utf-8")
+    package = (ROOT / "apps/official-qq-sidecar/package.json").read_text(encoding="utf-8")
+    lock = (ROOT / "apps/official-qq-sidecar/package-lock.json").read_text(encoding="utf-8")
+    notices = (ROOT / "apps/official-qq-sidecar/THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+
+    assert 'profiles: ["official-qq"]' in compose
+    assert "official-qq.env" in compose
+    assert "networks:\n      - egress" in compose
+    assert "onebot" not in compose
+    assert "docker.sock" not in compose.casefold()
+    assert "/var/lib/higgs" not in compose
+    assert "read_only: true" in compose
+    assert 'user: "10001:10001"' in compose
+    assert "/run/higgs-official:size=1m,mode=0700,uid=10001,gid=10001" in compose
+    assert "no-new-privileges:true" in compose
+    assert "cap_drop:\n      - ALL" in compose
+    assert "NODE_IMAGE:" in compose
+    assert "npm ci --omit=optional --ignore-scripts" in dockerfile
+    assert dockerfile.startswith("ARG NODE_IMAGE\nFROM ${NODE_IMAGE}\n")
+    assert "USER 10001:10001" in dockerfile
+    assert '"@tencent-connect/qqbot-nodejs": "1.0.4"' in package
+    assert '"version": "1.0.4"' in lock
+    assert '"integrity": "sha512-' in lock
+    assert "Copyright (c) 2026 Tencent" in notices
+    assert 'THE SOFTWARE IS PROVIDED "AS IS"' in notices

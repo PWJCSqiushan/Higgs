@@ -1,0 +1,40 @@
+services:
+  official-qq-sidecar:
+    profiles: ["official-qq"]
+    image: ${HIGGS_OFFICIAL_QQ_IMAGE:?Set HIGGS_OFFICIAL_QQ_IMAGE to an immutable local release tag}
+    build:
+      context: ../../apps/official-qq-sidecar
+      dockerfile: Dockerfile
+      args:
+        NODE_IMAGE: ${HIGGS_OFFICIAL_QQ_NODE_IMAGE:?Set HIGGS_OFFICIAL_QQ_NODE_IMAGE to a pinned Node image digest}
+    restart: "on-failure:5"
+    env_file:
+      - ${HIGGS_CONFIG_DIR:-/srv/secrets/higgs}/official-qq.env
+    environment:
+      HIGGS_OFFICIAL_QQ_SOCKET: /run/higgs-official/sidecar.sock
+    networks:
+      - egress
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+      - /run/higgs-official:size=1m,mode=0700,uid=10001,gid=10001
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 192m
+    mem_reservation: 96m
+    cpus: 0.25
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "node", "src/health.mjs"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "4m"
+        max-file: "2"

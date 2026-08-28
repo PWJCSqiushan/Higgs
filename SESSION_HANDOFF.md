@@ -159,3 +159,19 @@
 - 复核确定剩余缺口不是 Resume 污染，而是 `OfficialQQOwnerCapture` 只调用 `start()` 后等待事件，未运行常驻适配器已有的监督循环；SDK 正常关闭读取后临时捕获进程无法自行恢复。原监督循环只限制连续失败次数，短暂恢复会重置计数，不适合作为一次性登录窗口的总预算。
 - 新建独立分支 `codex/higgs-official-capture-supervisor-20260828`：公共监督接口增加可选的总重启预算，健康恢复只重置连续预算、不重置总预算；退避结束后再次检查健康，避免连接已恢复仍被多重启一次。一次性捕获固定为最多五次总重启，监督结束或异常均匿名 fail-closed，成功/超时退出时可靠取消监督任务并停止 Gateway。
 - 新增回归覆盖总预算不会被短暂健康清零、退避期间恢复不重启、非法总预算拒绝，以及捕获器确实以五次总预算运行并在成功后取消监督。当前定向测试 `33 passed, 1 skipped`，完整测试 `289 passed, 5 skipped`，Ruff、格式与发布门通过；尚未提交、创建 PR、部署或再次要求主人发送。
+
+## 15. 2026-08-28 官方 WebSocket 真实投递阻断与替代通道决策
+
+- 总重启预算修复已由 PR #28 合并为主线提交 `b647b00db665a76d7ef6df7d85e88358b161061a`，并完成只重建 Agent 的禁用态生产发布；匿名验收确认发布、栈和容器镜像一致，NapCat 容器身份与启动时间未变化，官方开关仍关闭、主人 OpenID 仍为空。
+- 真实主人捕获任务在平台显示在线期间仍没有绑定。随后运行两类只记录布尔值与匿名原因的探针：基础 Gateway 探针连续看到 `connecting -> ready`、connected 与 authenticated；事件门控探针持续 120 秒保持 READY，却没有收到任何 C2C 回调。探针不读取或保存身份、消息 ID、正文，也不发送回复。
+- 再以 `GROUP_MESSAGES | DIRECT_MESSAGES` 兼容订阅组合执行 120 秒捕获，平台仍零事件并安全超时。由此排除 Higgs 解析、owner 比对和最小单一 intent 是首要阻断；当前失败边界位于平台到固定 Python SDK 1.2.2 的事件投递链路。主人 OpenID 没有写入，私有配置与官方禁用态保持不变。
+- 平台开发设置确认当前接收方式为 WebSocket，IP 白名单为空时允许调用，且主人测试用户仍存在；通知中心无异常提示。好友公开范围关闭不应影响机器人管理员或开发体验成员，故不以扩大公开范围绕过沙箱门控。
+- 腾讯官方 BotGo 已把旧 WebSocket 路径标记为淘汰方向；2026 年官方 `qqbot-nodejs` 同时提供 WebSocket 与 Webhook。新建分支 `codex/higgs-official-node-transport-20260828`，下一切片改为审计并实现官方 Node 协议适配，Python 业务、权限、记忆和治理仍只接收 Higgs 自有事件；现有 Python 官方适配器保持关闭态回退。真实部署、平台接收方式切换或开启官方通道仍需单独确认。
+
+## 16. 2026-08-28 官方 Node 诊断 sidecar 实现中
+
+- 官方 `tencent-connect/qqbot-nodejs` 审计锁定 npm `@tencent-connect/qqbot-nodejs==1.0.4`、MIT 和纯 ESM；公开仓库快照为 `ca55d9c395b582b7fcfad0ec27209c35dd04e0b3`。npm 包固定 integrity 为 `sha512-gU5HySLplczZXMUjM7NtiUACY7YfX9YlI/R9PKzCLMgLmHvwsX9L2sitsrYPMentGUr9b8NLfSaSTsndF77NBA==`，registry signature 验证通过，但其 `gitHead=589597a6cb5a24dce8230ba53bfba5390e13c073` 不在公开 GitHub 历史，包内元数据也与公开快照不同；已直接保留 MIT 全文，且在溯源差异解决或显式接受前只作诊断。SDK 支持 WebSocket/Webhook，但与 Python 共享同一平台协议，语言替换本身不能绕过平台事件授权。
+- 新增 `apps/official-qq-sidecar`：固定依赖与 lockfile，精确订阅 `1 << 25`，SDK logger 全静默；READY 身份合法后才认证，READY 前事件和发送全部拒绝。只接受 C2C 与群 `@`，事件队列、帧体、字段、ID、文本和附件元数据均有界，游标缺口 fail-closed。
+- sidecar 仅以 `0600` Unix Socket 提供版本化 hello/status/events/send；默认 `capture-only=true` 时队列只保留事件类型、私聊/群聊类别、接收时间和游标，不保留或返回机器人/发送者/群/消息身份、正文或附件元数据，发送接口直接拒绝。未来关闭 capture-only 后发送仍必须携带入站回复 ID，幂等键冲突拒绝，平台回执缺少非空 ID 时只报 `unknown`。匿名捕获 CLI 只输出连接/认证布尔值、固定原因和事件计数。
+- 新增 opt-in Compose overlay 与 `official-qq` profile；sidecar 只接 egress、非 root、只读根、无 capabilities、无 Docker Socket/Agent 数据/NapCat 网络。凭据必须进入独立 `0600 official-qq.env`，不会挂给 Python Agent。该 overlay 尚未部署，旧 Python 官方适配器仍关闭。
+- SDK 1.0.4 不公开 heartbeat ACK，且内部重连预算不满足 Higgs 长期生产治理。因此本切片明确是有时限、无 Resume 持久化的 capture-only 诊断，不得直接作为正式常驻通道；若真实 Node 捕获成功，再单独实现 Python UDS 客户端、受治理重连/会话和双通道健康；若仍零事件，则回到平台事件授权/沙箱配置，不继续更换语言盲试。

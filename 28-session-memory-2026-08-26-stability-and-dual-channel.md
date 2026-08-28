@@ -164,3 +164,18 @@
 - 根因进一步收敛为一次性捕获器没有运行适配器监督循环。SDK 在干净关闭读取后不会自行恢复；既有监督又只限制连续失败，短暂 READY 会重置预算，无法为五分钟临时登录提供绝对上限。
 - 新分支 `codex/higgs-official-capture-supervisor-20260828` 为监督接口增加可选总重启预算；连续预算可在健康时重置，总预算永不重置。退避后先重新检查健康，已恢复则不执行多余重启。捕获器固定最多五次总重启，监督终止或异常均匿名 fail-closed，退出时取消监督并停止 Gateway。
 - 回归覆盖总预算、健康竞态、非法预算与捕获任务生命周期。定向测试为 `33 passed, 1 skipped`，完整 pytest 为 `289 passed, 5 skipped`，Ruff、格式和发布门通过。当前仍只在本地，下一步是提交、PR/CI、Agent-only 发布与匿名不变性验收；完成前不再要求主人发送。
+
+## 节点 19：官方 WebSocket 零事件结论与 Node 双传输转向
+
+- 总重启预算修复经 PR #28 合并为主线 `b647b00db665a76d7ef6df7d85e88358b161061a`，并完成禁用态 Agent-only 生产发布。源码、栈与容器镜像一致；NapCat 未重启，官方开关仍关闭，主人 OpenID 仍为空。
+- 平台在临时 Gateway 期间显示在线。匿名基础探针连续确认 Token、Gateway、READY、connected 与 authenticated 均成功；匿名事件探针保持 120 秒 `ready`，但 `on_message_event` 从未被调用。探针不记录身份、消息 ID、正文或登录状态，不发送任何回复。
+- 兼容性探针把订阅从单一 `GROUP_MESSAGES` 扩展为 `GROUP_MESSAGES | DIRECT_MESSAGES` 后再次等待 120 秒，仍无事件。主人绑定没有发生，私有配置没有变化，官方通道始终保持关闭。这一结果把失败边界收敛到平台到 Python SDK 1.2.2 的事件投递，不再让主人重复试发同一路径。
+- 平台页面确认接收方式为 WebSocket、测试用户仍存在、IP 白名单为空不限制调用、通知中心无异常；好友公开服务范围关闭时仍允许管理员和开发体验成员使用，因此不扩大公开范围或跳过沙箱治理。
+- 腾讯官方现行 Node SDK 同时支持 WebSocket 和 Webhook，而旧 BotGo 已声明旧 WebSocket 路径进入淘汰。新建 `codex/higgs-official-node-transport-20260828`，转向最小、fail-closed 的官方 Node 协议边界；Python 继续拥有业务、owner/群门控、记忆、审计与发送决策。任何真实 sidecar 部署、Webhook 回调配置或官方启用仍走独立 PR、CI 和单独确认。
+
+## 节点 20：官方 Node capture-only sidecar 离线实现
+
+- 锁定官方 npm `@tencent-connect/qqbot-nodejs==1.0.4` 与完整 integrity，registry signature 验证通过，不跟随 `main`、不安装可选音频依赖。公开仓库快照为 `ca55d9c395b582b7fcfad0ec27209c35dd04e0b3`，但 npm 包 `gitHead=589597a6cb5a24dce8230ba53bfba5390e13c073` 在公开历史中不可达且包元数据与快照不同；已直接纳入 MIT 全文，在溯源差异解决或显式接受前维持诊断-only。使用精确 `1 << 25` 意图，避免 SDK 默认宽权限。
+- sidecar 默认关闭且隔离运行：专用 `0600` Unix Socket、专用 `official-qq.env`、仅 egress、非 root、只读根、无 Docker Socket、无 Agent/NapCat 数据。Node 只负责协议；Python 仍是 owner/群门控、身份、记忆、模型、审计与最终发送决策的唯一权威。
+- READY 身份不合法立即停止；READY 前事件/发送拒绝；仅接收 C2C 与群 `@`。默认 capture-only 队列只保留事件类型、私聊/群聊类别、接收时间与游标，不保留或返回任何身份、消息 ID、正文或附件元数据，且完全禁用发送。未来业务接入仍须严格 schema、请求指纹和幂等冲突拒绝，缺少平台消息 ID 为 `unknown`。
+- 当前 SDK 无 heartbeat ACK 公共回调，内部重连也不满足生产总预算；所以第一切片只允许 1 到 300 秒有界匿名捕获，不持久化 Resume、不与 Python Gateway 并发、不直接开启正式官方通道。真实部署仍需单独确认。
