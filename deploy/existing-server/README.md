@@ -112,6 +112,13 @@ test-user list contains exactly one owner entry.
 
 ## Operator commands
 
+Once the official shadow is approved, install and enable
+`higgs-existing-official.service` in place of `higgs-existing.service`. The
+official unit owns the complete base-plus-overlay Compose command and runs the
+runtime-directory preflight before every start. The two units conflict by
+design; never enable both. Keep the reply gate false through the first shadow
+and supervised Resume observation.
+
 Run these from `/srv/apps/higgs/current/deploy/existing-server`:
 
 ```bash

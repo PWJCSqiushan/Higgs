@@ -184,3 +184,20 @@
 - 已连接主人打开的腾讯云终端页面，但远程 Shell 处于断开状态并要求 MFA 微信扫码。主人随后要求关机，因此没有完成 MFA，没有执行服务器命令，没有创建私有 sidecar 配置，没有构建/启动容器，也没有改变 QQ 开放平台、Python 官方开关或 NapCat。
 - NapCat 48 小时观察窗口已截止；期间的多次短时掉线使其未达到稳定性标准，过期 `higgs-48` 观察自动化已删除。后续不再把个人 QQ 通道视为官方通道上线的前置条件。
 - 恢复顺序固定：①重新打开腾讯云终端并完成 MFA；②匿名只读核对生产仍为上一禁用态发布、Python 官方关闭且 NapCat 不变；③从主线 `0ad2705` 生成只含 Git 跟踪文件的发布包并双端校验；④锁定 Node 基础镜像 digest，在服务器私有目录创建独立 `0600 official-qq.env`，不回显凭据；⑤只启动 capture-only sidecar，确认 READY 后由主人从官方入口发送一次；⑥运行 120 秒匿名计数并立即停止 sidecar。若 event_seen=true，再以新 PR 实现 Python UDS 正式接入；若仍为零，则回到平台事件授权/测试范围排查，不继续更换语言盲试。
+
+## 18. 2026-08-28 Node 真实捕获成功与 UDS 正式接入启动
+
+- 从当前主线 `358d9681f5539b6fbb204af28929500b06ea1a40` 生成只含 Git 跟踪文件的发布包，本地 SHA-256 校验后上传；服务器端再次核对相同摘要。发布包不含私有配置、登录状态、身份或聊天数据。
+- 匿名生产门控确认旧 Python 官方 Gateway 关闭、Node sidecar 不存在、NapCat 容器健康；只在独立不可变目录解包并构建官方 Node sidecar，没有切换 Agent 当前发布，也没有重建或重启 NapCat。
+- 私有 sidecar 配置从服务器已有秘密原子派生为独立 `0600 official-qq.env`，未回显 App 凭据；Node 基础镜像按实际 digest 锁定。sidecar 以 `capture-only=true` 启动后达到 configured、Gateway connected、authenticated 与健康状态。
+- 主人从官方机器人入口发送后，120 秒匿名捕获成功看到事件，计数为 2；捕获只返回布尔状态、固定原因和数量，不读取、输出或保存身份、消息 ID、正文或附件，也未发送回复。窗口结束后 sidecar 自动停止；事后门控确认 Node 与 Python 官方 Gateway 均关闭、NapCat 仍运行且健康。
+- 结论由“平台到 Python SDK 零事件”推进为“官方 Node Gateway 真实投递可用”。已新建 `codex/higgs-official-uds-runtime-20260828`，下一步实现 Python 通过共享 `0600` Unix Socket 读取严格事件并仅作入站被动回复；正式运行仍默认关闭，需完整测试、独立 PR/CI 和再次生产门控后才能灰度启用。
+
+## 19. 2026-08-29 UDS 正式运行时代码收束
+
+- 独立分支 `codex/higgs-official-uds-runtime-20260828` 已完成 Node 独占 Gateway、私有 Resume、`0600` UDS 和 Python 业务适配层。Agent 的 sidecar 模式无论启用与否均拒绝 App 凭据；官方回复另有默认关闭的独立开关。
+- Node 发送只有在当前固定 SDK WebSocket 可观测、连接打开且最近心跳 ACK 不超过 90 秒时才允许；发送调用有独立 10 秒上限，缺平台 ID、异常或超时只能返回 `UNKNOWN`。重复事件不能重置或续期一次性回复授权，协议损坏会终止通道而不是伪装成不确定送达。
+- Node 与 Python 双层执行主人和群白名单。sidecar 对非主人私聊和未获准群 `@` 在入队及授权前即丢弃；Python 继续负责相同策略、规范会话、记忆与业务。
+- 新增替代基础 unit 的 `higgs-existing-official.service`，固定同时加载基础 Compose 和官方 overlay、启用 `official-qq` profile，并在每次启动前强制验证两个专用目录为 UID/GID `10001:10001`、模式 `0700`。两套 systemd unit 明确互斥，避免重启后丢失 UDS 挂载或 sidecar。
+- Node 基础镜像在示例和 CI 中固定为 Docker Official Image 的完整 digest；SDK 启动时再次断言精确 `1.0.4`。本地 Node 当前 `25 passed, 2 skipped`（两个真实 Linux UDS/session 测试交由 Ubuntu CI），Python 完整测试 `304 passed, 5 skipped`，Ruff 与格式通过。
+- 正式回复仍不得开启：当前事件队列和发送回执为内存态，固定 SDK 又会在事件回调前保存 Gateway sequence，进程崩溃可能造成尚未进入 Agent journal 的事件丢失。当前可进入的下一门仅是“官方在线、业务摄取但回复关闭”的 shadow 部署；需 PR/CI 全绿及单独生产确认，随后验证 Linux UDS、Compose、systemd 重启与 Resume，再设计协调崩溃恢复。

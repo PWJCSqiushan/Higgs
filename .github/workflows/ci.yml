@@ -34,6 +34,7 @@ jobs:
         run: |
           bash -n deploy/server/activate_release.sh
           bash -n deploy/server/rollback_release.sh
+          bash -n deploy/existing-server/prepare_official_qq_runtime.sh
       - name: Check formatting
         run: uv run ruff format --check .
       - name: Lint
@@ -74,7 +75,10 @@ jobs:
       - name: Test fail-closed sidecar boundary
         run: npm test
       - name: Build isolated sidecar image
-        run: docker build --build-arg NODE_IMAGE=node:22-bookworm-slim --tag higgs-official-qq:ci .
+        run: >-
+          docker build
+          --build-arg NODE_IMAGE=node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+          --tag higgs-official-qq:ci .
       - name: Validate opt-in Compose overlay
         working-directory: .
         run: |
@@ -88,7 +92,7 @@ jobs:
           NAPCAT_WEBUI_TOKEN=ci-only-placeholder \
           NAPCAT_ONEBOT_TOKEN=ci-only-placeholder \
           HIGGS_OFFICIAL_QQ_IMAGE=higgs-official-qq:ci \
-          HIGGS_OFFICIAL_QQ_NODE_IMAGE=node:22-bookworm-slim \
+          HIGGS_OFFICIAL_QQ_NODE_IMAGE=node:22-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 \
           docker compose \
             -f deploy/existing-server/compose.yml \
             -f deploy/existing-server/compose.official-qq.yml \

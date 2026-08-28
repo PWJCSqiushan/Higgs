@@ -1,13 +1,15 @@
-import { chmodSync } from "node:fs";
+import { chmodSync, lstatSync, unlinkSync } from "node:fs";
 import { createServer } from "node:http";
-import { resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { OfficialQQClient } from "./qq-client.mjs";
+import { SecureOfficialQQSessionStore } from "./session-store.mjs";
 import {
   MAX_BODY_BYTES,
   PROTOCOL_VERSION,
   ProtocolError,
+  isSafeId,
   normalizeSendRequest,
 } from "./protocol.mjs";
 
@@ -23,14 +25,87 @@ export function loadConfig(env = process.env) {
   const captureOnly = boolEnv(env.HIGGS_OFFICIAL_QQ_CAPTURE_ONLY, true);
   const appId = String(env.QQBOT_APP_ID ?? "").trim();
   const appSecret = String(env.QQBOT_APP_SECRET ?? "").trim();
+  const ownerOpenId = String(env.HIGGS_OFFICIAL_QQ_OWNER_OPENID ?? "").trim();
+  const allowedGroupOpenIds = Object.freeze(
+    String(env.HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
   const socketPath = resolve(env.HIGGS_OFFICIAL_QQ_SOCKET ?? "/run/higgs-official/sidecar.sock");
+  const sessionValue = env.HIGGS_OFFICIAL_QQ_SESSION_FILE ?? "/var/lib/higgs-official/session.json";
+  if (!isAbsolute(sessionValue) || basename(sessionValue) !== "session.json") {
+    throw new Error("invalid session file configuration");
+  }
+  const sessionFile = resolve(sessionValue);
   if (enabled) {
     if (!/^\d{5,32}$/u.test(appId)) throw new Error("invalid AppID configuration");
     if (appSecret.length < 16 || appSecret.length > 512) {
       throw new Error("invalid AppSecret configuration");
     }
+    if (!captureOnly && !isSafeId(ownerOpenId)) {
+      throw new Error("invalid owner OpenID configuration");
+    }
+    if (allowedGroupOpenIds.some((value) => !isSafeId(value))) {
+      throw new Error("invalid group OpenID configuration");
+    }
   }
-  return Object.freeze({ enabled, captureOnly, appId, appSecret, socketPath });
+  return Object.freeze({
+    enabled,
+    captureOnly,
+    appId,
+    appSecret,
+    ownerOpenId,
+    allowedGroupOpenIds,
+    socketPath,
+    sessionFile,
+  });
+}
+
+export function validateSocketDirectory(parent, expectedUid) {
+  if (
+    parent.isSymbolicLink() ||
+    !parent.isDirectory() ||
+    (expectedUid !== null && parent.uid !== expectedUid) ||
+    (parent.mode & 0o077) !== 0
+  ) {
+    throw new Error("unsafe_socket_directory");
+  }
+}
+
+export function validateSocketInode(existing, expectedUid = null, requirePrivateMode = false) {
+  if (
+    existing.isSymbolicLink() ||
+    !existing.isSocket() ||
+    (expectedUid !== null && existing.uid !== expectedUid) ||
+    (requirePrivateMode && (existing.mode & 0o777) !== 0o600)
+  ) {
+    throw new Error("unsafe_existing_socket_path");
+  }
+}
+
+export function prepareSocketPath(socketPath) {
+  const parent = lstatSync(dirname(socketPath));
+  const expectedUid = typeof process.getuid === "function" ? process.getuid() : null;
+  validateSocketDirectory(parent, expectedUid);
+  try {
+    const existing = lstatSync(socketPath);
+    validateSocketInode(existing, expectedUid, true);
+    unlinkSync(socketPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+
+export function removeSocketPath(socketPath) {
+  const expectedUid = typeof process.getuid === "function" ? process.getuid() : null;
+  try {
+    const existing = lstatSync(socketPath);
+    validateSocketInode(existing, expectedUid, true);
+    unlinkSync(socketPath);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
 }
 
 function jsonResponse(response, status, value) {
@@ -106,36 +181,79 @@ export function createHandler(client) {
 
 export async function run(env = process.env) {
   const config = loadConfig(env);
-  const client = new OfficialQQClient(config);
+  process.umask(0o077);
+  prepareSocketPath(config.socketPath);
+  let fatalRequested = false;
+  let shutdown = async () => {};
+  let clientReference = null;
+  const sessionStore = config.enabled && !config.captureOnly
+    ? new SecureOfficialQQSessionStore(config.sessionFile, {
+        onFailure: () => clientReference?._failFatal("session_store_error"),
+      })
+    : null;
+  const client = new OfficialQQClient({
+    ...config,
+    sessionStore,
+    onFatal: () => {
+      fatalRequested = true;
+      process.exitCode = 1;
+      queueMicrotask(() => void shutdown());
+    },
+  });
+  clientReference = client;
   const server = createServer(createHandler(client));
   server.requestTimeout = 5000;
   server.headersTimeout = 5000;
   server.keepAliveTimeout = 2000;
   server.maxRequestsPerSocket = 100;
 
-  await new Promise((resolveListen, rejectListen) => {
-    server.once("error", rejectListen);
-    server.listen(config.socketPath, () => {
-      server.off("error", rejectListen);
-      chmodSync(config.socketPath, 0o600);
-      resolveListen();
+  try {
+    await new Promise((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(config.socketPath, () => {
+        server.off("error", rejectListen);
+        try {
+          chmodSync(config.socketPath, 0o600);
+          validateSocketInode(
+            lstatSync(config.socketPath),
+            typeof process.getuid === "function" ? process.getuid() : null,
+            true,
+          );
+          resolveListen();
+        } catch (error) {
+          rejectListen(error);
+        }
+      });
     });
-  });
+  } catch {
+    if (server.listening) {
+      await new Promise((resolveClose) => server.close(resolveClose));
+    }
+    removeSocketPath(config.socketPath);
+    throw new Error("sidecar_listen_failed");
+  }
 
   try {
     await client.start();
   } catch {
     await new Promise((resolveClose) => server.close(resolveClose));
+    removeSocketPath(config.socketPath);
     throw new Error("sidecar_start_failed");
   }
 
-  const shutdown = async () => {
-    server.closeIdleConnections();
-    await new Promise((resolveClose) => server.close(resolveClose));
-    await client.stop();
+  let shutdownPromise = null;
+  shutdown = () => {
+    shutdownPromise ??= (async () => {
+      server.closeIdleConnections();
+      await new Promise((resolveClose) => server.close(resolveClose));
+      removeSocketPath(config.socketPath);
+      await client.stop();
+    })();
+    return shutdownPromise;
   };
   process.once("SIGTERM", () => void shutdown());
   process.once("SIGINT", () => void shutdown());
+  if (fatalRequested) void shutdown();
   return { client, server, shutdown };
 }
 

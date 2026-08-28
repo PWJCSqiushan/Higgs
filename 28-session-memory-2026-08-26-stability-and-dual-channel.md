@@ -187,3 +187,19 @@
 - 腾讯云远程 Shell 当前断开并停在 MFA 微信扫码；主人要求关机，故本轮未完成验证、未执行服务器命令、未生成/上传新发布包、未创建私有配置、未构建或启动 sidecar，也未改变官方平台、Python 官方开关或 NapCat。
 - 恢复后先完成 MFA 与匿名只读生产门控，再从 `0ad2705` 生成/校验发布包、锁定 Node 镜像 digest、私下建立 `0600 official-qq.env`。只允许 Node 单实例 capture-only READY 后让主人发送一次，匿名计数 120 秒后立即停止；成功才进入 Python UDS 正式接入新阶段，失败则回到平台授权和测试范围。
 - NapCat 48 小时观察未达到稳定标准，过期观察自动化已删除；停止继续执行该观察任务。
+
+## 节点 22：Node 官方 Gateway 真实捕获成功
+
+- 已从主线 `358d9681f5539b6fbb204af28929500b06ea1a40` 生成并双端校验只含跟踪文件的发布包。生产只增加独立不可变 release、固定 digest 的 Node 镜像和 `0600` sidecar 私有配置；没有切换 Agent release，没有让 App 凭据进入聊天或发布包，也没有重建 NapCat。
+- capture-only sidecar 真实达到 configured、connected、authenticated 与健康。主人从官方入口发送后，匿名 120 秒窗口返回 `event_seen=true`、数量 2、原因 `ready`；未保留身份、消息 ID、正文或附件，未调用发送接口。
+- 捕获退出后 sidecar 自动停止。匿名复核为 Node running false、旧 Python 官方 enabled false、NapCat running true 且 healthy，满足同 AppID 不并发和个人 QQ 通道不受影响的门控。
+- 该证据确认官方平台会向 Node SDK 1.0.4 投递真实事件；先前阻断限于旧 Python SDK 路径，不再继续让主人重复发送同类探针。新阶段在 `codex/higgs-official-uds-runtime-20260828` 实现 Python UDS 客户端、事件/身份/群白名单门控、被动回复和 UNKNOWN 回执；完成代码、测试、PR/CI 与默认关闭部署前不得开放正式回复。
+
+## 节点 23：UDS 双进程正式运行时完成本地收束
+
+- Node sidecar 现独占官方凭据、Gateway、心跳监督和私有 Resume；Agent 只通过只读挂载的 `0600` UDS 使用严格版本协议。Agent sidecar 模式无条件拒绝 App 凭据，官方摄取与回复由两个独立开关控制，回复默认关闭。
+- 发送前必须确认固定 SDK 的当前 WebSocket、可观测且新鲜的心跳 ACK；provider 调用最多等待 10 秒。无平台消息 ID、异常或超时均为 `UNKNOWN`。协议错误直接 fail-closed，幂等冲突只拒绝该请求而不误杀整个通道。
+- 重复投递不能重置已领取或过期的回复授权；Node 在入队前独立丢弃非主人私聊与未获准群事件，Python 再执行同一策略。SDK 精确版本在运行时断言，Node 基础镜像以完整 digest 固定。
+- 新增完整 overlay systemd unit并与原基础 unit 互斥；启动前强制执行 UDS 与私有 session 目录的所有者和权限预检，重启后不会退回缺少 sidecar 的基础 Compose。
+- 本地 Node `25 passed, 2 skipped`，Python `304 passed, 5 skipped`，Ruff、格式和语法检查通过；真实 Linux UDS/session、镜像构建与 Compose 由 PR 的 Ubuntu CI 验证。
+- 架构复核确认内存事件队列和回执与 SDK 先保存 sequence 后回调之间仍有崩溃丢事件窗口。因此下一步只允许回复关闭的 shadow：先走 PR/CI，再单独确认部署，验证 systemd 重启和 Resume。正式回复开关继续保持 false，直到协调持久化与崩溃恢复完成。

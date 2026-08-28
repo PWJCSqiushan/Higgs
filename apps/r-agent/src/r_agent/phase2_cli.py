@@ -40,7 +40,11 @@ from r_agent.model_memory_candidates import (
     ModelCandidateExtractor,
     ModelCandidateShadowStore,
 )
-from r_agent.official_qq import OfficialQQAdapter, OfficialQQConfig
+from r_agent.official_qq import (
+    OfficialQQAdapter,
+    OfficialQQConfig,
+    OfficialQQSidecarAdapter,
+)
 from r_agent.onebot import OneBotParseError, parse_message_event
 from r_agent.onebot_adapter import OneBotAdapter
 from r_agent.online_reliability import OnlineState, PushPlusNotifier, onebot_online_hint
@@ -427,6 +431,27 @@ def _onebot_reminder_target(occurrence: DueOccurrence) -> OutboundTarget | None:
     )
 
 
+def _build_official_adapter(
+    config: OfficialQQConfig,
+    *,
+    event_handler: Callable[[InboundEvent], Awaitable[None]],
+    data_dir: Path,
+    transport_state: TransportStateStore | None,
+) -> OfficialQQAdapter | OfficialQQSidecarAdapter:
+    if config.transport == "sidecar":
+        return OfficialQQSidecarAdapter(
+            config,
+            event_handler=event_handler,
+            transport_state=transport_state,
+        )
+    return OfficialQQAdapter(
+        config,
+        event_handler=event_handler,
+        data_dir=data_dir,
+        transport_state=transport_state,
+    )
+
+
 async def listen() -> None:
     import websockets
 
@@ -694,12 +719,12 @@ async def listen() -> None:
         else None
     )
 
-    official_adapter: OfficialQQAdapter | None = None
+    official_adapter: OfficialQQAdapter | OfficialQQSidecarAdapter | None = None
     official_supervisor_task: asyncio.Task[None] | None = None
 
     async def sender(event: InboundEvent, text: str) -> DeliveryReceipt:
         if event.channel == "qq_official":
-            if official_adapter is None:
+            if official_adapter is None or not official_config.reply_enabled:
                 return DeliveryReceipt(
                     channel=event.channel,
                     state=DeliveryState.FAILED,
@@ -722,7 +747,11 @@ async def listen() -> None:
         try:
             if event.channel == "qq_official" and official_adapter is not None:
                 official_status = await official_adapter.status()
-                channel_online = official_status.connected and official_status.authenticated
+                channel_online = (
+                    official_config.reply_enabled
+                    and official_status.connected
+                    and official_status.authenticated
+                )
             else:
                 channel_online = online.snapshot().qq_online
             owner_sender_id = (
@@ -860,7 +889,7 @@ async def listen() -> None:
     async def route_official_event(event: InboundEvent) -> None:
         await route_inbound_event(event, resolve_onebot_reply=False)
 
-    official_adapter = OfficialQQAdapter(
+    official_adapter = _build_official_adapter(
         official_config,
         event_handler=route_official_event,
         data_dir=settings.data_dir,

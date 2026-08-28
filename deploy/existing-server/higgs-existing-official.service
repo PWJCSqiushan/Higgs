@@ -1,0 +1,21 @@
+[Unit]
+Description=Higgs dual QQ stack on the existing Lighthouse host
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+Conflicts=higgs-existing.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/srv/apps/higgs/current/deploy/existing-server
+EnvironmentFile=/srv/secrets/higgs/stack.env
+ExecStartPre=/bin/sh ./prepare_official_qq_runtime.sh
+ExecStart=/usr/bin/docker compose --env-file /srv/secrets/higgs/stack.env -f compose.yml -f compose.official-qq.yml --profile official-qq up -d --no-build --wait
+ExecReload=/usr/bin/docker compose --env-file /srv/secrets/higgs/stack.env -f compose.yml -f compose.official-qq.yml --profile official-qq up -d --no-build --wait
+ExecStop=/usr/bin/docker compose --env-file /srv/secrets/higgs/stack.env -f compose.yml -f compose.official-qq.yml --profile official-qq stop
+TimeoutStartSec=300
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

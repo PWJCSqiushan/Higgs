@@ -30,6 +30,18 @@ def test_systemd_stack_unit_restores_bounded_compose_after_host_boot() -> None:
         assert "up -d" in text
 
 
+def test_official_systemd_unit_owns_the_complete_overlay_and_preflight() -> None:
+    text = (ROOT / "deploy/existing-server/higgs-existing-official.service").read_text(
+        encoding="utf-8"
+    )
+    assert "Conflicts=higgs-existing.service" in text
+    assert "ExecStartPre=/bin/sh ./prepare_official_qq_runtime.sh" in text
+    for command in ("ExecStart=", "ExecReload=", "ExecStop="):
+        line = next(item for item in text.splitlines() if item.startswith(command))
+        assert "-f compose.yml -f compose.official-qq.yml" in line
+        assert "--profile official-qq" in line
+
+
 def test_opencloudos_build_prefetches_locked_dependencies_before_offline_sync() -> None:
     text = (ROOT / "apps/r-agent/Dockerfile.opencloudos").read_text(encoding="utf-8")
     pyproject = (ROOT / "apps/r-agent/pyproject.toml").read_text(encoding="utf-8")
@@ -57,16 +69,18 @@ def test_official_qq_sidecar_is_opt_in_and_isolated_from_agent_data() -> None:
     package = (ROOT / "apps/official-qq-sidecar/package.json").read_text(encoding="utf-8")
     lock = (ROOT / "apps/official-qq-sidecar/package-lock.json").read_text(encoding="utf-8")
     notices = (ROOT / "apps/official-qq-sidecar/THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
+    stack_env = (ROOT / "deploy/existing-server/stack.env.example").read_text(encoding="utf-8")
 
     assert 'profiles: ["official-qq"]' in compose
     assert "official-qq.env" in compose
     assert "networks:\n      - egress" in compose
     assert "onebot" not in compose
     assert "docker.sock" not in compose.casefold()
-    assert "/var/lib/higgs" not in compose
+    assert ":/var/lib/higgs\n" not in compose
+    assert compose.count("official-qq-private:/var/lib/higgs-official") == 1
     assert "read_only: true" in compose
     assert 'user: "10001:10001"' in compose
-    assert "/run/higgs-official:size=1m,mode=0700,uid=10001,gid=10001" in compose
+    assert "official-qq-runtime:/run/higgs-official" in compose
     assert "no-new-privileges:true" in compose
     assert "cap_drop:\n      - ALL" in compose
     assert "NODE_IMAGE:" in compose
@@ -78,3 +92,21 @@ def test_official_qq_sidecar_is_opt_in_and_isolated_from_agent_data() -> None:
     assert '"integrity": "sha512-' in lock
     assert "Copyright (c) 2026 Tencent" in notices
     assert 'THE SOFTWARE IS PROVIDED "AS IS"' in notices
+
+    assert "official-qq-runtime:/run/higgs-official:ro" in compose
+    assert "R_AGENT_OFFICIAL_QQ_TRANSPORT: sidecar" in compose
+    assert "R_AGENT_OFFICIAL_QQ_SIDECAR_SOCKET: /run/higgs-official/sidecar.sock" in compose
+    assert "QQBOT_APP_SECRET" not in compose
+    assert "HIGGS_OFFICIAL_QQ_NODE_IMAGE=node:22-bookworm-slim@sha256:" in stack_env
+    node_image = next(
+        line.split("=", 1)[1]
+        for line in stack_env.splitlines()
+        if line.startswith("HIGGS_OFFICIAL_QQ_NODE_IMAGE=")
+    )
+    assert len(node_image.rsplit("@sha256:", 1)[1]) == 64
+
+    prepare = (ROOT / "deploy/existing-server/prepare_official_qq_runtime.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "install -d -m 0700 -o 10001 -g 10001" in prepare
+    assert '[ -L "$directory" ]' in prepare
