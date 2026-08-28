@@ -55,6 +55,7 @@ function boundedReason(value) {
     "heartbeat_ack_timeout",
     "reconnect_budget_exhausted",
     "session_store_error",
+    "owner_bind_error",
     "protocol_error",
     "stopped",
   ]);
@@ -76,6 +77,7 @@ export class OfficialQQClient {
     sendTimeoutMs = DEFAULT_SEND_TIMEOUT_MS,
     ownerOpenId = null,
     allowedGroupOpenIds = [],
+    onOwnerCandidate = null,
     onFatal = () => {},
     sessionStore = null,
   }) {
@@ -92,6 +94,7 @@ export class OfficialQQClient {
     this.sendTimeoutMs = sendTimeoutMs;
     this.ownerOpenId = ownerOpenId;
     this.allowedGroupOpenIds = new Set(allowedGroupOpenIds);
+    this.onOwnerCandidate = onOwnerCandidate;
     this.onFatal = onFatal;
     this.sessionStore = sessionStore;
     this.generation = newGeneration();
@@ -292,6 +295,18 @@ export class OfficialQQClient {
       if (!this.state.authenticated || !isSafeId(this.state.bot_id)) return;
       const normalized = normalizeInboundMessage(message, this.state.bot_id, this.now());
       if (!normalized) return;
+      if (
+        this.captureOnly &&
+        normalized.kind === "c2c" &&
+        typeof this.onOwnerCandidate === "function"
+      ) {
+        try {
+          this.onOwnerCandidate(normalized.sender_id);
+        } catch {
+          this._failFatal("owner_bind_error");
+          return;
+        }
+      }
       if (
         !this.captureOnly &&
         ((normalized.kind === "c2c" && normalized.sender_id !== this.ownerOpenId) ||

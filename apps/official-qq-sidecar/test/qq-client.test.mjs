@@ -114,6 +114,77 @@ test("capture-only mode retains no identity or message content and disables send
   await client.stop();
 });
 
+test("owner binding callback receives only an authenticated C2C sender", async () => {
+  const candidates = [];
+  const client = newClient({
+    captureOnly: true,
+    onOwnerCandidate: (value) => candidates.push(value),
+  });
+  try {
+    await client.start();
+    const bot = FakeBot.instances[0];
+    bot.emit("message", {}, {
+      rawEventType: "C2C_MESSAGE_CREATE",
+      kind: "c2c",
+      senderId: senderSafe,
+      messageId: safe,
+      content: "before-ready",
+      timestamp: "2026-08-29T01:00:00Z",
+    });
+    bot.emit("ready", { user: { id: safe } });
+    bot.emit("message", {}, {
+      rawEventType: "GROUP_AT_MESSAGE_CREATE",
+      kind: "group",
+      senderId: senderSafe,
+      groupOpenid: safe,
+      messageId: safe,
+      content: "group",
+      timestamp: "2026-08-29T01:00:01Z",
+    });
+    bot.emit("message", {}, {
+      rawEventType: "C2C_MESSAGE_CREATE",
+      kind: "c2c",
+      senderId: senderSafe,
+      messageId: safe,
+      content: "must-not-be-retained",
+      timestamp: "2026-08-29T01:00:02Z",
+    });
+    assert.deepEqual(candidates, [senderSafe]);
+    assert.equal(
+      client.readEvents(0, 10).every((event) => event.sender_id === undefined),
+      true,
+    );
+  } finally {
+    await client.stop();
+  }
+});
+
+test("owner binding callback failure stops the client fail-closed", async () => {
+  const client = newClient({
+    captureOnly: true,
+    onOwnerCandidate: () => {
+      throw new Error("private write failed");
+    },
+  });
+  try {
+    await client.start();
+    const bot = FakeBot.instances[0];
+    bot.emit("ready", { user: { id: safe } });
+    bot.emit("message", {}, {
+      rawEventType: "C2C_MESSAGE_CREATE",
+      kind: "c2c",
+      senderId: senderSafe,
+      messageId: safe,
+      content: "must-not-be-retained",
+      timestamp: "2026-08-29T01:00:00Z",
+    });
+    assert.equal(client.status().authenticated, false);
+    assert.equal(client.status().reason, "owner_bind_error");
+  } finally {
+    await client.stop();
+  }
+});
+
 function sendRequest(client, overrides = {}) {
   return {
     protocol_version: PROTOCOL_VERSION,
