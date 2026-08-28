@@ -202,3 +202,4 @@
 - Node 基础镜像在示例和 CI 中固定为 Docker Official Image 的完整 digest；SDK 启动时再次断言精确 `1.0.4`。本地 Node 当前 `25 passed, 2 skipped`（两个真实 Linux UDS/session 测试交由 Ubuntu CI），Python 完整测试 `304 passed, 5 skipped`，Ruff 与格式通过。
 - 正式回复仍不得开启：当前事件队列和发送回执为内存态，固定 SDK 又会在事件回调前保存 Gateway sequence，进程崩溃可能造成尚未进入 Agent journal 的事件丢失。当前可进入的下一门仅是“官方在线、业务摄取但回复关闭”的 shadow 部署；需 PR/CI 全绿及单独生产确认，随后验证 Linux UDS、Compose、systemd 重启与 Resume，再设计协调崩溃恢复。
 - 功能提交 `d7e71dd` 已推送独立分支并创建 PR #32；push 与 pull request 两套 Python、Node/镜像/Compose CI 均通过，包含 Windows 本地跳过的 Linux UDS/session 测试。等待文档检查点的最终 CI 后按阶段 PR 流程合并；尚未部署或修改生产开关。
+- 文档检查点 `ca72bbb` 的两套 CI 同样通过；PR #32 已合并为主线 `fd60229b80878cacf0e516967cd02b9a1e1594fb`，合并后主线 CI 成功。生产仍未部署，下一动作必须取得独立确认后才可启用“摄取开启、回复关闭”的 shadow，并先做匿名配置、目录、镜像和单 Gateway 门控。
