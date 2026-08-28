@@ -203,3 +203,4 @@
 - 新增完整 overlay systemd unit并与原基础 unit 互斥；启动前强制执行 UDS 与私有 session 目录的所有者和权限预检，重启后不会退回缺少 sidecar 的基础 Compose。
 - 本地 Node `25 passed, 2 skipped`，Python `304 passed, 5 skipped`，Ruff、格式和语法检查通过；真实 Linux UDS/session、镜像构建与 Compose 由 PR 的 Ubuntu CI 验证。
 - 架构复核确认内存事件队列和回执与 SDK 先保存 sequence 后回调之间仍有崩溃丢事件窗口。因此下一步只允许回复关闭的 shadow：先走 PR/CI，再单独确认部署，验证 systemd 重启和 Resume。正式回复开关继续保持 false，直到协调持久化与崩溃恢复完成。
+- 功能提交 `d7e71dd` 已进入 PR #32；分支 push 与 PR 的 Python、Node/镜像/Compose CI 全绿，Linux UDS/session 测试已执行。文档检查点尚待同一 PR 的最终 CI；生产未部署，官方回复保持关闭。
