@@ -140,4 +140,5 @@
 - 独立工作树与分支 `codex/higgs-official-owner-capture-20260828` 已建立，严格保持现有官方主通道关闭。新增独立 CLI 与服务器包装脚本，只有输入固定单测试用户确认短语后才能开始；包装脚本使用独占锁和 `docker compose run --rm --no-deps agent`，不重启常驻 Agent 或 NapCat。
 - 捕获路径只接收 READY/RESUMED 后首个合法 C2C sender，群聊、未就绪、未知类型、scope 不匹配与后续身份全部丢弃。捕获过程不创建 `InboundEvent`、不记录消息 ID/正文、不发送回复，成功后立即停止 Gateway。
 - 私有环境写入拒绝 symlink、非普通文件、超大文件、权限偏离、重复键、主人已存在、官方已启用和非沙箱状态；先创建 `0600` 私有备份，再以 fsync 和同目录 `os.replace` 原子绑定。任何失败临时文件只移入私有备份目录，不直接删除；最终再次证明官方仍关闭。
-- 本地完整 pytest 为 `282 passed, 5 skipped`，Ruff、格式、Git Bash 语法、发布门和新增文件 `detect-secrets==1.5.0` 扫描通过。Windows 的 5 个跳过项必须由 Ubuntu CI 补跑。当前尚未提交或推送，未创建 PR，未在服务器运行捕获，也未写入或回显主人 OpenID。
+- 本地完整 pytest 为 `282 passed, 5 skipped`，Ruff、格式、Git Bash 语法、发布门和新增文件 `detect-secrets==1.5.0` 扫描通过。功能提交经 rebase 后为 `187a959`，已推送独立分支并创建 PR #25；该提交的两组 Ubuntu `Higgs CI / test` 均通过，合并状态为 clean，Windows 跳过的 POSIX 合约已由 CI 覆盖。
+- PR/CI 检查点没有扩大真实运行范围：捕获脚本未部署或运行，Gateway 未打开，主人 OpenID 未读取、写入或回显，官方通道仍关闭。当前等待文档检查点的最终 CI 与人工验收；合并后才可另行执行一次性私有捕获。
