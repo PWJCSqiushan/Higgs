@@ -11,12 +11,14 @@ from typing import Any
 import pytest
 
 from r_agent.official_qq_owner_capture import (
+    CAPTURE_SESSION_FILENAME,
     OfficialQQOwnerCapture,
     OwnerCaptureError,
     OwnerCaptureTimeout,
     SecureOwnerBinding,
 )
 from r_agent.official_qq_owner_capture_cli import main
+from r_agent.official_qq_session import SecureOfficialQQSessionStore
 
 
 def _write_env(path: Path, *, enabled: str = "false", owner: str | None = None) -> None:
@@ -289,6 +291,58 @@ async def test_capture_timeout_stops_gateway_without_binding(
         await capture.run(timeout_seconds=10)
     assert gateway is not None and gateway.stopped is True
     assert "R_AGENT_OFFICIAL_QQ_OWNER_OPENID" not in env_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_default_capture_store_forces_identify_without_touching_production_resume(
+    tmp_path: Path,
+) -> None:
+    env_path = tmp_path / "higgs.env"
+    _write_env(env_path)
+    production = SecureOfficialQQSessionStore(tmp_path)
+    production.save("123456", "production-session", 7)
+    production.set_account_id("123456", "production-bot-openid")
+    stale_capture = SecureOfficialQQSessionStore(
+        tmp_path,
+        filename=CAPTURE_SESSION_FILENAME,
+    )
+    stale_capture.save("123456", "stale-capture-session", 9)
+    stale_capture.set_account_id("123456", "stale-capture-bot-openid")
+    gateway: FakeGateway | None = None
+    gateway_ready = asyncio.Event()
+
+    def gateway_factory(callbacks: Any) -> FakeGateway:
+        nonlocal gateway
+        gateway = FakeGateway(callbacks)
+        gateway_ready.set()
+        return gateway
+
+    capture = OfficialQQOwnerCapture(
+        SecureOwnerBinding(env_path, backup_dir=tmp_path / "backups"),
+        data_dir=tmp_path,
+        api_client=FakeApi(),  # type: ignore[arg-type]
+        gateway_factory=gateway_factory,
+        parser=lambda _event_type, _raw: SimpleNamespace(
+            chat_scope="c2c",
+            user_id="captured-owner-openid",
+            chat_id="captured-owner-openid",
+        ),
+    )
+    task = asyncio.create_task(capture.run(timeout_seconds=10))
+    await asyncio.wait_for(gateway_ready.wait(), timeout=2)
+    assert gateway is not None
+
+    assert gateway.callbacks.get_session() == (None, None)
+    gateway.callbacks.set_session("fresh-capture-session", 1)
+    gateway.callbacks.on_connected()
+    gateway.callbacks.on_ready(SimpleNamespace(user=SimpleNamespace(id="fresh-bot-openid")))
+    await gateway.callbacks.on_message_event("C2C_MESSAGE_CREATE", {})
+    await task
+
+    persisted = production.get("123456")
+    assert persisted.session_id == "production-session"
+    assert persisted.seq == 7
+    assert persisted.account_id == "production-bot-openid"
 
 
 def test_cli_requires_exact_single_test_user_confirmation(tmp_path: Path, capsys: Any) -> None:

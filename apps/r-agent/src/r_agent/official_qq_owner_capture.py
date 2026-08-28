@@ -27,6 +27,7 @@ from r_agent.official_qq_gateway import (
     Parser,
     SessionStore,
 )
+from r_agent.official_qq_session import SecureOfficialQQSessionStore
 
 APP_ID_KEY = "R_AGENT_OFFICIAL_QQ_APP_ID"
 SECRET_KEY = "R_AGENT_OFFICIAL_QQ_CLIENT_SECRET"  # pragma: allowlist secret
@@ -34,6 +35,7 @@ OWNER_KEY = "R_AGENT_OFFICIAL_QQ_OWNER_OPENID"
 ENABLED_KEY = "R_AGENT_OFFICIAL_QQ_ENABLED"
 SANDBOX_KEY = "R_AGENT_OFFICIAL_QQ_SANDBOX"
 MAX_ENV_BYTES = 256 * 1024
+CAPTURE_SESSION_FILENAME = "official_qq_owner_capture_sessions.json"
 _KEY_RE = re.compile(r"R_AGENT_[A-Z0-9_]+\Z")
 
 
@@ -306,6 +308,20 @@ class OfficialQQOwnerCapture:
         if not 10 <= timeout_seconds <= 900:
             raise ValueError("capture timeout must be between 10 and 900 seconds")
         credentials = self.binding.credentials()
+        session_store = self.session_store
+        if session_store is None:
+            # A bounded capture is never resumed.  Reusing the production
+            # Gateway session lets an earlier, deliberately stopped capture
+            # trigger op 9 on the next attempt.  SDK 1.2.2 then clears the bot
+            # identity before an operator can send the C2C message.  Keep a
+            # dedicated private store and clear only its app record so every
+            # capture begins with Identify while the real Resume state remains
+            # untouched for the long-running adapter.
+            session_store = SecureOfficialQQSessionStore(
+                self.data_dir,
+                filename=CAPTURE_SESSION_FILENAME,
+            )
+            session_store.clear(credentials.app_id)
         finished = asyncio.Event()
         failure: list[Exception] = []
 
@@ -331,7 +347,7 @@ class OfficialQQOwnerCapture:
             data_dir=self.data_dir,
             api_client=self.api_client,
             gateway_factory=self.gateway_factory,
-            session_store=self.session_store,
+            session_store=session_store,
             parser=self.parser,
         )
         try:
