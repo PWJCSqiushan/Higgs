@@ -402,6 +402,7 @@ class OfficialQQAdapter:
         base_delay_seconds: float = 1.0,
         max_delay_seconds: float = 30.0,
         max_consecutive_restarts: int = 5,
+        max_total_restarts: int | None = None,
     ) -> None:
         """Poll health and apply bounded recovery for ordinary gateway faults.
 
@@ -418,9 +419,12 @@ class OfficialQQAdapter:
             raise ValueError("restart delay bounds are invalid")
         if not 1 <= max_consecutive_restarts <= 10:
             raise ValueError("restart budget must be between 1 and 10")
+        if max_total_restarts is not None and not 1 <= max_total_restarts <= 100:
+            raise ValueError("total restart budget must be between 1 and 100")
 
         delay = base_delay_seconds
         consecutive_restarts = 0
+        total_restarts = 0
         while True:
             with self._lock:
                 stop_requested = self._stop_requested
@@ -445,10 +449,22 @@ class OfficialQQAdapter:
                     self._reason = "restart_budget_exhausted"
                 self._persist_status(await self.status())
                 return
+            if max_total_restarts is not None and total_restarts >= max_total_restarts:
+                with self._lock:
+                    self._reason = "total_restart_budget_exhausted"
+                self._persist_status(await self.status())
+                return
             await asyncio.sleep(delay)
             with self._lock:
                 if self._stop_requested or self._terminal_failure:
                     return
+            current = await self.status()
+            self._persist_status(current)
+            if current.connected and current.authenticated:
+                consecutive_restarts = 0
+                delay = base_delay_seconds
+                continue
+            total_restarts += 1
             try:
                 await self._restart_gateway()
             except TransportUnavailable:

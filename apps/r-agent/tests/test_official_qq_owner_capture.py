@@ -260,6 +260,70 @@ async def test_fake_gateway_captures_only_first_ready_c2c_without_content_logs(
 
 
 @pytest.mark.asyncio
+async def test_capture_runs_and_cancels_bounded_supervisor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_path = tmp_path / "higgs.env"
+    _write_env(env_path)
+    gateway: FakeGateway | None = None
+    gateway_ready = asyncio.Event()
+    supervisor_started = asyncio.Event()
+    supervisor_cancelled = asyncio.Event()
+    supervisor_options: dict[str, Any] = {}
+
+    def gateway_factory(callbacks: Any) -> FakeGateway:
+        nonlocal gateway
+        gateway = FakeGateway(callbacks)
+        gateway_ready.set()
+        return gateway
+
+    async def fake_supervise(_adapter: Any, **kwargs: Any) -> None:
+        supervisor_options.update(kwargs)
+        supervisor_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            supervisor_cancelled.set()
+            raise
+
+    monkeypatch.setattr(
+        "r_agent.official_qq_owner_capture._OwnerCaptureAdapter.supervise",
+        fake_supervise,
+    )
+    capture = OfficialQQOwnerCapture(
+        SecureOwnerBinding(env_path, backup_dir=tmp_path / "backups"),
+        data_dir=tmp_path,
+        api_client=FakeApi(),  # type: ignore[arg-type]
+        gateway_factory=gateway_factory,
+        session_store=FakeSessionStore(),
+        parser=lambda _event_type, _raw: SimpleNamespace(
+            chat_scope="c2c",
+            user_id="captured-owner-openid",
+            chat_id="captured-owner-openid",
+        ),
+    )
+
+    task = asyncio.create_task(capture.run(timeout_seconds=10))
+    await asyncio.wait_for(gateway_ready.wait(), timeout=2)
+    await asyncio.wait_for(supervisor_started.wait(), timeout=2)
+    assert gateway is not None
+    gateway.callbacks.on_connected()
+    gateway.callbacks.on_ready(SimpleNamespace(user=SimpleNamespace(id="bot-openid")))
+    await gateway.callbacks.on_message_event("C2C_MESSAGE_CREATE", {})
+    await task
+
+    assert supervisor_options == {
+        "poll_interval_seconds": 1.0,
+        "base_delay_seconds": 1.0,
+        "max_delay_seconds": 8.0,
+        "max_consecutive_restarts": 5,
+        "max_total_restarts": 5,
+    }
+    assert supervisor_cancelled.is_set()
+    assert gateway.stopped is True
+
+
+@pytest.mark.asyncio
 async def test_capture_timeout_stops_gateway_without_binding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -156,3 +156,11 @@
 - 匿名 75 秒时序探针显示：2、10、25 秒 READY/authenticated 正常；首个 ACK 后的 45、75 秒 connected 与 ACK 仍存在，但 authenticated 已被清空且 event_seen 始终为 false。固定 SDK 1.2.2 在 op 9 清 session 后 graceful close，读取 loop 正常返回而没有进入异常重连；旧适配器也未立即清 connected，形成假连接。一次性捕获无 supervisor，因此无法像常驻进程一样纠正。
 - 独立修复分支将捕获会话与生产 Resume 分离：每次捕获只清理独立私有存储中的本 App 记录并 fresh Identify，绝不触碰生产 Resume。有效 op 7/op 9 先发布 disconnected；session invalidation 同步清理 connected、authenticated、bot 身份和连接时间，匿名原因固定为 `session_invalidated`。
 - 定向回归为 `29 passed, 1 skipped`，完整 pytest 为 `285 passed, 5 skipped`，Ruff、格式与发布门通过。当前 Windows 环境没有可用 Bash/WSL 发行版，发布脚本语法由 Ubuntu CI 复核。下一步执行 PR/CI、Agent-only 发布，再只进行一次正确官方入口捕获；未完成前不得开启正式官方通道。
+
+## 节点 18：捕获 Resume 修复上线与有限重连监督
+
+- Resume 隔离修复经 PR #27 全部 CI 及合并后主线 CI 通过，合并提交为 `fa62bebadadac727a9fd743feb290f2482dab676`；不可变发布仅切换 Agent，NapCat 匿名身份与启动时间保持不变。部署后官方仍关闭，主人绑定仍为空。
+- 主人随后从官方入口发送，但捕获窗口结束后匿名权威配置仍为主人零条、官方关闭、私有权限正确；未保存消息正文、身份、消息 ID，也未发送回复。
+- 根因进一步收敛为一次性捕获器没有运行适配器监督循环。SDK 在干净关闭读取后不会自行恢复；既有监督又只限制连续失败，短暂 READY 会重置预算，无法为五分钟临时登录提供绝对上限。
+- 新分支 `codex/higgs-official-capture-supervisor-20260828` 为监督接口增加可选总重启预算；连续预算可在健康时重置，总预算永不重置。退避后先重新检查健康，已恢复则不执行多余重启。捕获器固定最多五次总重启，监督终止或异常均匿名 fail-closed，退出时取消监督并停止 Gateway。
+- 回归覆盖总预算、健康竞态、非法预算与捕获任务生命周期。定向测试为 `33 passed, 1 skipped`，完整 pytest 为 `289 passed, 5 skipped`，Ruff、格式和发布门通过。当前仍只在本地，下一步是提交、PR/CI、Agent-only 发布与匿名不变性验收；完成前不再要求主人发送。

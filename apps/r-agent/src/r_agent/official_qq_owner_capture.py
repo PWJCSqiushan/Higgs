@@ -14,6 +14,7 @@ import re
 import stat
 import tempfile
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -323,9 +324,11 @@ class OfficialQQOwnerCapture:
             )
             session_store.clear(credentials.app_id)
         finished = asyncio.Event()
+        capture_started = asyncio.Event()
         failure: list[Exception] = []
 
         async def capture(sender_id: str) -> None:
+            capture_started.set()
             try:
                 await asyncio.to_thread(self.binding.bind, sender_id)
             except Exception as exc:
@@ -350,15 +353,46 @@ class OfficialQQOwnerCapture:
             session_store=session_store,
             parser=self.parser,
         )
+        supervisor_task: asyncio.Task[None] | None = None
+
+        async def supervise_capture() -> None:
+            try:
+                await adapter.supervise(
+                    poll_interval_seconds=1.0,
+                    base_delay_seconds=1.0,
+                    max_delay_seconds=8.0,
+                    max_consecutive_restarts=5,
+                    max_total_restarts=5,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if not capture_started.is_set() and not finished.is_set():
+                    error = OwnerCaptureError("official capture recovery failed")
+                    error.__cause__ = exc
+                    failure.append(error)
+            else:
+                if not capture_started.is_set() and not finished.is_set():
+                    failure.append(OwnerCaptureError("official capture recovery ended"))
+            if not capture_started.is_set() and not finished.is_set():
+                finished.set()
+
         try:
             await adapter.start()
+            supervisor_task = asyncio.create_task(supervise_capture())
             try:
                 await asyncio.wait_for(finished.wait(), timeout=timeout_seconds)
             except TimeoutError as exc:
                 raise OwnerCaptureTimeout("no eligible official C2C event arrived") from exc
         finally:
+            if supervisor_task is not None:
+                supervisor_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await supervisor_task
             await adapter.stop()
         if failure:
+            if isinstance(failure[0], OwnerCaptureError):
+                raise failure[0]
             raise OwnerCaptureError("private owner binding failed") from failure[0]
 
 

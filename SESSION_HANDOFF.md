@@ -151,3 +151,11 @@
 - 实时匿名时序诊断确认 Gateway 在 2、10、25 秒均 READY 且 authenticated；首个心跳周期后，45 与 75 秒仍有 ACK、底层连接未立即退出，但 authenticated 被清空且事件始终为零。SDK 1.2.2 对 op 9 清除 Resume 后以 graceful close 结束读取，外层 loop 未进入异常重连，Higgs 旧状态因此可能残留假连接；捕获器又没有生产 supervisor，后续 C2C 被 fail-closed 门控丢弃。
 - 新建独立分支 `codex/higgs-official-capture-resume-fix-20260828`：一次性捕获改用独立私有会话文件，并在每次启动前只清理该 App 的捕获记录，强制 fresh Identify，不再读取或污染生产 Resume；有效 op 7/op 9 立即发布 disconnected，session 清理同时清除 connected、身份与开始时间并标记匿名 `session_invalidated`。
 - 新增回归测试覆盖捕获会话与生产 Resume 隔离、旧捕获记录强制清理、有效 op 7/op 9 断线通知及 session invalidation 的完整 fail-closed 状态；定向测试为 `29 passed, 1 skipped`，完整 pytest 为 `285 passed, 5 skipped`，Ruff、格式与发布门通过。当前 Windows 环境没有可用 Bash/WSL 发行版，两个发布脚本的 `bash -n` 留给 Ubuntu CI 复核。尚未提交、推送、部署或再次要求主人发送消息。
+
+## 14. 2026-08-28 捕获 Resume 修复部署与有限监督修复中
+
+- 捕获 Resume 修复经独立 PR #27、分支 CI、PR CI 与合并后主线 CI 通过，合并提交为 `fa62bebadadac727a9fd743feb290f2482dab676`。对应不可变发布已只重建 Agent；匿名验收确认源码、栈与容器镜像一致，NapCat 容器身份和启动时间未变，官方通道仍关闭，主人 OpenID 仍未绑定。
+- 主人在修复后的真实捕获窗口从官方入口发送后，私有配置仍为主人零条、官方关闭、权限正确。该次发送没有完成绑定，也没有记录正文、身份或消息 ID，更没有发送回复。
+- 复核确定剩余缺口不是 Resume 污染，而是 `OfficialQQOwnerCapture` 只调用 `start()` 后等待事件，未运行常驻适配器已有的监督循环；SDK 正常关闭读取后临时捕获进程无法自行恢复。原监督循环只限制连续失败次数，短暂恢复会重置计数，不适合作为一次性登录窗口的总预算。
+- 新建独立分支 `codex/higgs-official-capture-supervisor-20260828`：公共监督接口增加可选的总重启预算，健康恢复只重置连续预算、不重置总预算；退避结束后再次检查健康，避免连接已恢复仍被多重启一次。一次性捕获固定为最多五次总重启，监督结束或异常均匿名 fail-closed，成功/超时退出时可靠取消监督任务并停止 Gateway。
+- 新增回归覆盖总预算不会被短暂健康清零、退避期间恢复不重启、非法总预算拒绝，以及捕获器确实以五次总预算运行并在成功后取消监督。当前定向测试 `33 passed, 1 skipped`，完整测试 `289 passed, 5 skipped`，Ruff、格式与发布门通过；尚未提交、创建 PR、部署或再次要求主人发送。
