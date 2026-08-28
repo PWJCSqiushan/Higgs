@@ -213,4 +213,4 @@
 - 匿名诊断将剩余阻断唯一收敛为主人官方 OpenID 缺失；其他私有配置、权限、App 凭据格式、Compose 与 runtime preflight 均通过。既有匿名 Node 捕获严格丢弃身份，因此不能事后恢复绑定值；禁止用 QQ 号或 AppID 替代，也禁止暂时取消 owner 门控。
 - 新的一次性 Node 绑定器只在“平台测试用户恰为主人一人”的显式确认下运行，只接收 READY 后首个 C2C sender，并以 create-once、fsync、`0600` 文件直接落入私有挂载；不输出或记录身份、正文、消息 ID、附件与凭据，成功即停止 Gateway。
 - 包装脚本保证无并发官方 Gateway、Python 官方关闭、目录权限/UID 正确；更新两份私有环境前创建 `0600` 备份，任一更新或后验检查失败即恢复，成功后把中间身份文件移入 `/srv/trash`，官方摄取仍保持关闭。
-- 当前本地验证为 Node `29 passed, 2 skipped`、Python `305 passed, 5 skipped`，Ruff、格式、发布门、秘密边界、Shell LF 与 diff 检查通过。待独立 PR/Ubuntu CI 通过后再部署绑定器，并只请主人从官方入口发送一次；绑定成功后才进入回复关闭的 shadow 部署。
+- 当前本地验证为 Node `29 passed, 2 skipped`、Python `305 passed, 5 skipped`，Ruff、格式、发布门、秘密边界、Shell LF 与 diff 检查通过。功能提交 `24296a1` 已进入 PR #35；push 与 pull request 两套 Python、Node/镜像/Compose CI 全绿，Ubuntu 已覆盖 Bash 语法和 Linux 零跳过测试。待文档检查点 CI 后合并，再部署绑定器并只请主人从官方入口发送一次；绑定成功后才进入回复关闭的 shadow 部署。

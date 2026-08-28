@@ -211,4 +211,4 @@
 - 匿名兼容性诊断确认私有配置权限、模式、App 凭据格式、Compose 和运行时预检均通过；唯一阻断是两份运行时配置都尚无主人官方 OpenID。早先 Node capture-only 诊断按设计只统计事件并丢弃身份，不能为正式 owner 门控提供绑定值。不得把 AppID 或 QQ 号冒充 OpenID，也不得绕过 owner 门控。
 - 新分支 `codex/higgs-official-node-owner-bind-20260829` 实现一次性 Node 绑定器：只有在平台测试用户恰为主人一人的人工确认短语下运行；只接受 READY 后首个合法 C2C sender，直接写入私有 `0600` create-once 文件，不输出身份、消息 ID、正文、附件或凭据，成功后立即停止 Gateway。
 - 服务器包装脚本要求 Python 官方通道关闭、没有其他官方 Gateway、专用目录为 `0700` 且 UID/GID 正确；私有环境先备份，双文件更新失败会事务式恢复，临时身份文件只移入 `/srv/trash`。绑定完成后再次证明官方摄取仍关闭，正式回复始终保持关闭。
-- 当前本地 Node 为 `29 passed, 2 skipped`，Python 为 `305 passed, 5 skipped`；Ruff、格式、发布包、秘密边界、Shell LF 与 `git diff --check` 均通过。下一步是提交独立 PR、等待 Ubuntu CI 覆盖真实 UDS/session 与 shell，再只部署绑定器；主人从官方入口发送一次后完成私有绑定，随后才重试回复关闭的 shadow 上线。
+- 当前本地 Node 为 `29 passed, 2 skipped`，Python 为 `305 passed, 5 skipped`；Ruff、格式、发布包、秘密边界、Shell LF 与 `git diff --check` 均通过。功能提交 `24296a1` 已创建 PR #35，push 与 pull request 两套 Python、Node/镜像/Compose CI 全绿，Ubuntu 同时验证新增绑定脚本的 Bash 语法与 Linux 零跳过测试。待文档检查点 CI 后合并；随后只部署绑定器，主人从官方入口发送一次完成私有绑定，再重试回复关闭的 shadow 上线。
