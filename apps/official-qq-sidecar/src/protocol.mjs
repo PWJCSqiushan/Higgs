@@ -101,7 +101,20 @@ export function normalizeInboundMessage(message, botId, receivedAt = Date.now())
   if (!EVENT_TYPES.has(message.rawEventType)) return null;
   if (!KINDS.has(message.kind) || !isSafeId(botId)) return null;
   if (!isSafeId(message.senderId) || !isSafeId(message.messageId)) return null;
-  if (typeof message.content !== "string" || message.content.length > MAX_TEXT_LENGTH) return null;
+  if (message.senderId === botId) return null;
+  if (
+    (message.rawEventType === "C2C_MESSAGE_CREATE" && message.kind !== "c2c") ||
+    (message.rawEventType === "GROUP_AT_MESSAGE_CREATE" && message.kind !== "group")
+  ) {
+    return null;
+  }
+  if (
+    typeof message.content !== "string" ||
+    message.content.trim().length === 0 ||
+    message.content.length > MAX_TEXT_LENGTH
+  ) {
+    return null;
+  }
 
   const occurredAt = Date.parse(message.timestamp);
   if (!Number.isFinite(occurredAt)) return null;
@@ -109,18 +122,41 @@ export function normalizeInboundMessage(message, botId, receivedAt = Date.now())
   if (message.kind === "group" && !isSafeId(groupId)) return null;
   if (message.kind === "c2c" && groupId !== null) return null;
 
-  const attachments = Array.isArray(message.attachments)
-    ? message.attachments.slice(0, 8).map((attachment) => ({
-        content_type:
-          typeof attachment?.content_type === "string"
-            ? attachment.content_type.slice(0, 120)
-            : "application/octet-stream",
-        filename:
-          typeof attachment?.filename === "string" ? attachment.filename.slice(0, 255) : null,
-        size:
-          Number.isSafeInteger(attachment?.size) && attachment.size >= 0 ? attachment.size : null,
-      }))
-    : [];
+  if (message.attachments !== undefined && !Array.isArray(message.attachments)) return null;
+  const attachmentValues = message.attachments ?? [];
+  if (attachmentValues.length > 8) return null;
+  const attachments = [];
+  for (const attachment of attachmentValues) {
+    if (!attachment || typeof attachment !== "object" || Array.isArray(attachment)) return null;
+    const keys = Object.keys(attachment);
+    if (keys.some((key) => !new Set(["content_type", "filename", "size"]).has(key))) return null;
+    if (
+      typeof attachment.content_type !== "string" ||
+      attachment.content_type.length === 0 ||
+      attachment.content_type.length > 120
+    ) {
+      return null;
+    }
+    if (
+      attachment.filename !== null &&
+      attachment.filename !== undefined &&
+      (typeof attachment.filename !== "string" || attachment.filename.length > 255)
+    ) {
+      return null;
+    }
+    if (
+      attachment.size !== null &&
+      attachment.size !== undefined &&
+      (!Number.isSafeInteger(attachment.size) || attachment.size < 0)
+    ) {
+      return null;
+    }
+    attachments.push({
+      content_type: attachment.content_type,
+      filename: attachment.filename ?? null,
+      size: attachment.size ?? null,
+    });
+  }
 
   return Object.freeze({
     event_type: message.rawEventType,
@@ -148,7 +184,7 @@ export class EventQueue {
 
   append(event) {
     this.cursor += 1;
-    const stored = Object.freeze({ cursor: this.cursor, ...event });
+    const stored = Object.freeze({ ...event, cursor: this.cursor });
     this.events.push(stored);
     if (this.events.length > this.limit) this.events.shift();
     return stored;
@@ -162,6 +198,9 @@ export class EventQueue {
       throw new ProtocolError("invalid_limit");
     }
     const first = this.events[0]?.cursor ?? this.cursor + 1;
+    if (after > this.cursor) {
+      throw new ProtocolError("invalid_cursor");
+    }
     if (after < first - 1) {
       throw new ProtocolError("cursor_gap", 409);
     }
@@ -189,6 +228,45 @@ export class ReceiptCache {
     while (this.items.size > this.limit) {
       this.items.delete(this.items.keys().next().value);
     }
+  }
+}
+
+export class ReplyAuthorizationCache {
+  constructor(limit = 256, ttlMs = 15 * 60 * 1000) {
+    this.limit = limit;
+    this.ttlMs = ttlMs;
+    this.items = new Map();
+  }
+
+  authorize(messageId, kind, targetId, now = Date.now()) {
+    if (!isSafeId(messageId) || !KINDS.has(kind) || !isSafeId(targetId)) return;
+    const existing = this.items.get(messageId);
+    if (existing) {
+      if (existing.kind !== kind || existing.targetId !== targetId) {
+        throw new ProtocolError("invalid_reply_binding", 403);
+      }
+      // Duplicate delivery must not renew an expired authorization or clear
+      // the idempotency key that already claimed it.
+      return;
+    }
+    this.items.set(messageId, { kind, targetId, expiresAt: now + this.ttlMs, claimedBy: null });
+    while (this.items.size > this.limit) {
+      this.items.delete(this.items.keys().next().value);
+    }
+  }
+
+  claim(messageId, kind, targetId, idempotencyKey, now = Date.now()) {
+    const item = this.items.get(messageId);
+    if (!item || item.expiresAt < now) {
+      throw new ProtocolError("invalid_reply_binding", 403);
+    }
+    if (item.kind !== kind || item.targetId !== targetId) {
+      throw new ProtocolError("invalid_reply_binding", 403);
+    }
+    if (item.claimedBy !== null && item.claimedBy !== idempotencyKey) {
+      throw new ProtocolError("invalid_reply_binding", 403);
+    }
+    item.claimedBy = idempotencyKey;
   }
 }
 

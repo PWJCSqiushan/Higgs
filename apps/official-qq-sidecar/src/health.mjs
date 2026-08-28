@@ -1,10 +1,11 @@
 import { getJson } from "./uds-client.mjs";
+import { isReadyStatus } from "./health-status.mjs";
 
 const socketPath = process.env.HIGGS_OFFICIAL_QQ_SOCKET ?? "/run/higgs-official/sidecar.sock";
 
-getJson(socketPath, "/v1/hello", 2000).then(
+getJson(socketPath, "/v1/status", 2000).then(
   (value) => {
-    if (value?.protocol_version !== 1 || typeof value?.generation !== "string") {
+    if (!isReadyStatus(value)) {
       process.exitCode = 1;
     }
   },

@@ -1,4 +1,16 @@
 services:
+  agent:
+    depends_on:
+      official-qq-sidecar:
+        condition: service_healthy
+    environment:
+      R_AGENT_OFFICIAL_QQ_TRANSPORT: sidecar
+      R_AGENT_OFFICIAL_QQ_SIDECAR_SOCKET: /run/higgs-official/sidecar.sock
+    volumes:
+      # Same UID as the sidecar, but mounted read-only so the Agent can connect
+      # without replacing or removing the socket inode.
+      - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/official-qq-runtime:/run/higgs-official:ro
+
   official-qq-sidecar:
     profiles: ["official-qq"]
     image: ${HIGGS_OFFICIAL_QQ_IMAGE:?Set HIGGS_OFFICIAL_QQ_IMAGE to an immutable local release tag}
@@ -12,13 +24,16 @@ services:
       - ${HIGGS_CONFIG_DIR:-/srv/secrets/higgs}/official-qq.env
     environment:
       HIGGS_OFFICIAL_QQ_SOCKET: /run/higgs-official/sidecar.sock
+      HIGGS_OFFICIAL_QQ_SESSION_FILE: /var/lib/higgs-official/session.json
     networks:
       - egress
     user: "10001:10001"
     read_only: true
+    volumes:
+      - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/official-qq-runtime:/run/higgs-official
+      - ${HIGGS_DATA_ROOT:-/srv/data/higgs}/official-qq-private:/var/lib/higgs-official
     tmpfs:
-      - /tmp:size=32m,mode=1777
-      - /run/higgs-official:size=1m,mode=0700,uid=10001,gid=10001
+      - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
     security_opt:
       - no-new-privileges:true
     cap_drop:

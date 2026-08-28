@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 
-import { createHandler, loadConfig } from "../src/index.mjs";
+import {
+  createHandler,
+  loadConfig,
+  validateSocketDirectory,
+  validateSocketInode,
+} from "../src/index.mjs";
+import { isReadyStatus } from "../src/health-status.mjs";
 
 async function withServer(client, callback) {
   const server = createServer(createHandler(client));
@@ -22,6 +28,37 @@ test("configuration is disabled by default and validates enabled secrets", () =>
     () => loadConfig({ HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED: "true" }),
     /invalid AppID/,
   );
+  assert.throws(
+    () =>
+      loadConfig({
+        HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED: "true",
+        HIGGS_OFFICIAL_QQ_CAPTURE_ONLY: "false",
+        QQBOT_APP_ID: "123456789",
+        QQBOT_APP_SECRET: "0123456789abcdef",
+      }),
+    /invalid owner OpenID/,
+  );
+});
+
+test("socket preparation rejects unsafe parent modes and non-socket paths", () => {
+  const directory = (mode, uid = 10001) => ({
+    mode,
+    uid,
+    isDirectory: () => true,
+    isSymbolicLink: () => false,
+  });
+  assert.throws(() => validateSocketDirectory(directory(0o40755), 10001), /unsafe_socket/);
+  assert.throws(() => validateSocketDirectory(directory(0o40700, 0), 10001), /unsafe_socket/);
+  assert.throws(
+    () =>
+      validateSocketInode({
+        mode: 0o100600,
+        uid: 10001,
+        isSymbolicLink: () => false,
+        isSocket: () => false,
+      }),
+    /unsafe_existing_socket_path/,
+  );
 });
 
 test("status and events expose only versioned protocol envelopes", async () => {
@@ -37,6 +74,23 @@ test("status and events expose only versioned protocol envelopes", async () => {
     const events = await (await fetch(`${base}/v1/events?after=0&limit=1`)).json();
     assert.deepEqual(events.events, []);
   });
+});
+
+test("health requires authenticated gateway and a fresh heartbeat ACK", () => {
+  const status = {
+    protocol_version: 1,
+    generation: "generation",
+    configured: true,
+    gateway_connected: true,
+    authenticated: true,
+    capture_only: false,
+    bot_id: "bot-id",
+    heartbeat_ack_observable: true,
+    last_heartbeat_ack_at_ms: 1000,
+  };
+  assert.equal(isReadyStatus(status, 1001), true);
+  assert.equal(isReadyStatus({ ...status, authenticated: false }, 1001), false);
+  assert.equal(isReadyStatus(status, 91_001), false);
 });
 
 test("send rejects malformed and oversized bodies without calling the client", async () => {

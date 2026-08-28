@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 from r_agent.config import ConfigError
 
@@ -34,6 +35,9 @@ class OfficialQQConfig:
     sandbox: bool = True
     owner_openid: str | None = None
     allowed_group_openids: frozenset[str] = frozenset()
+    transport: str = "sdk"
+    sidecar_socket_path: str = "/run/higgs-official/sidecar.sock"
+    reply_enabled: bool = False
 
     @property
     def active_owner_openid(self) -> str | None:
@@ -50,7 +54,10 @@ class OfficialQQConfig:
             f"client_secret={'<configured>' if self.client_secret else None!r}, "
             f"sandbox={self.sandbox!r}, "
             f"owner_openid={'<configured>' if self.owner_openid else None!r}, "
-            f"allowed_group_count={len(self.allowed_group_openids)!r})"
+            f"allowed_group_count={len(self.allowed_group_openids)!r}, "
+            f"transport={self.transport!r}, "
+            f"sidecar_socket_path={self.sidecar_socket_path!r}, "
+            f"reply_enabled={self.reply_enabled!r})"
         )
 
     @classmethod
@@ -60,6 +67,14 @@ class OfficialQQConfig:
         secret = os.environ.get("R_AGENT_OFFICIAL_QQ_CLIENT_SECRET", "").strip() or None
         sandbox = _bool_value(os.environ.get("R_AGENT_OFFICIAL_QQ_SANDBOX"), default=True)
         owner_openid = os.environ.get("R_AGENT_OFFICIAL_QQ_OWNER_OPENID", "").strip() or None
+        transport = os.environ.get("R_AGENT_OFFICIAL_QQ_TRANSPORT", "sdk").strip().casefold()
+        socket_path = os.environ.get(
+            "R_AGENT_OFFICIAL_QQ_SIDECAR_SOCKET",
+            "/run/higgs-official/sidecar.sock",
+        ).strip()
+        reply_enabled = _bool_value(
+            os.environ.get("R_AGENT_OFFICIAL_QQ_REPLY_ENABLED"), default=False
+        )
         groups = frozenset(
             item.strip()
             for item in os.environ.get("R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS", "").split(",")
@@ -71,10 +86,31 @@ class OfficialQQConfig:
             raise ConfigError("R_AGENT_OFFICIAL_QQ_APP_ID must be 5-32 ASCII digits")
         if secret is not None and len(secret) < 16:
             raise ConfigError("R_AGENT_OFFICIAL_QQ_CLIENT_SECRET is too short")
-        if enabled and (app_id is None or secret is None or owner_openid is None):
+        if transport not in {"sdk", "sidecar"}:
+            raise ConfigError("R_AGENT_OFFICIAL_QQ_TRANSPORT must be sdk or sidecar")
+        socket = PurePosixPath(socket_path)
+        if (
+            not socket_path
+            or len(socket_path) > 240
+            or not socket.is_absolute()
+            or ".." in socket.parts
+            or socket.name != "sidecar.sock"
+        ):
+            raise ConfigError("R_AGENT_OFFICIAL_QQ_SIDECAR_SOCKET must be an absolute socket path")
+        if (
+            enabled
+            and transport == "sdk"
+            and (app_id is None or secret is None or owner_openid is None)
+        ):
             raise ConfigError(
                 "enabled official QQ requires AppID, ClientSecret, and explicit owner OpenID"
             )
+        if enabled and transport == "sidecar" and owner_openid is None:
+            raise ConfigError("enabled official QQ requires an explicit owner OpenID")
+        if transport == "sidecar" and (app_id is not None or secret is not None):
+            raise ConfigError("sidecar official QQ forbids App credentials in the Agent process")
+        if reply_enabled and not enabled:
+            raise ConfigError("official QQ replies require the official transport to be enabled")
         return cls(
             enabled=enabled,
             app_id=app_id,
@@ -82,9 +118,13 @@ class OfficialQQConfig:
             sandbox=sandbox,
             owner_openid=owner_openid,
             allowed_group_openids=groups,
+            transport=transport,
+            sidecar_socket_path=socket_path,
+            reply_enabled=reply_enabled,
         )
 
 
 from r_agent.official_qq_gateway import OfficialQQAdapter  # noqa: E402
+from r_agent.official_qq_sidecar import OfficialQQSidecarAdapter  # noqa: E402
 
-__all__ = ["OfficialQQAdapter", "OfficialQQConfig"]
+__all__ = ["OfficialQQAdapter", "OfficialQQConfig", "OfficialQQSidecarAdapter"]

@@ -15,6 +15,9 @@ def test_official_qq_defaults_to_disabled(monkeypatch: pytest.MonkeyPatch) -> No
         "R_AGENT_OFFICIAL_QQ_SANDBOX",
         "R_AGENT_OFFICIAL_QQ_OWNER_OPENID",
         "R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS",
+        "R_AGENT_OFFICIAL_QQ_TRANSPORT",
+        "R_AGENT_OFFICIAL_QQ_SIDECAR_SOCKET",
+        "R_AGENT_OFFICIAL_QQ_REPLY_ENABLED",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -22,6 +25,7 @@ def test_official_qq_defaults_to_disabled(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert config.enabled is False
     assert config.app_id is None
+    assert config.reply_enabled is False
     assert "CLIENT_SECRET" not in repr(config)
 
 
@@ -36,8 +40,50 @@ def test_enabled_official_qq_requires_both_credentials(
         OfficialQQConfig.from_env()
 
 
+def test_sidecar_transport_requires_owner_but_forbids_agent_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ENABLED", "true")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_TRANSPORT", "sidecar")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_OWNER_OPENID", "owner-openid")
+    monkeypatch.delenv("R_AGENT_OFFICIAL_QQ_APP_ID", raising=False)
+    monkeypatch.delenv("R_AGENT_OFFICIAL_QQ_CLIENT_SECRET", raising=False)
+
+    config = OfficialQQConfig.from_env()
+    assert config.transport == "sidecar"
+    assert config.app_id is None
+    assert config.client_secret is None
+
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_APP_ID", "123456")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_CLIENT_SECRET", "a-secure-client-secret")
+    with pytest.raises(ConfigError, match="forbids App credentials"):
+        OfficialQQConfig.from_env()
+
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ENABLED", "false")
+    with pytest.raises(ConfigError, match="forbids App credentials"):
+        OfficialQQConfig.from_env()
+
+
+def test_sidecar_socket_path_is_strict(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_TRANSPORT", "sidecar")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_SIDECAR_SOCKET", "../sidecar.sock")
+
+    with pytest.raises(ConfigError, match="absolute socket path"):
+        OfficialQQConfig.from_env()
+
+
+def test_official_reply_gate_cannot_enable_a_disabled_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ENABLED", "false")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_REPLY_ENABLED", "true")
+
+    with pytest.raises(ConfigError, match="replies require"):
+        OfficialQQConfig.from_env()
+
+
 def test_official_qq_repr_never_contains_secret(monkeypatch: pytest.MonkeyPatch) -> None:
-    secret = "this-secret-must-not-leak"
+    secret = "this-secret-must-not-leak"  # pragma: allowlist secret
     monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ENABLED", "true")
     monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_APP_ID", "123456")
     monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_CLIENT_SECRET", secret)
@@ -52,7 +98,7 @@ def test_disabled_official_config_has_no_active_policy_identities() -> None:
     config = OfficialQQConfig(
         enabled=False,
         app_id="123456",
-        client_secret="a-secure-client-secret",
+        client_secret="a-secure-client-secret",  # pragma: allowlist secret
         owner_openid="owner-openid",
         allowed_group_openids=frozenset({"group-openid"}),
     )
