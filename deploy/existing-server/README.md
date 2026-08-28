@@ -115,9 +115,25 @@ test-user list contains exactly one owner entry.
 Once the official shadow is approved, install and enable
 `higgs-existing-official.service` in place of `higgs-existing.service`. The
 official unit owns the complete base-plus-overlay Compose command and runs the
-runtime-directory preflight before every start. The two units conflict by
-design; never enable both. Keep the reply gate false through the first shadow
-and supervised Resume observation.
+runtime-directory preflight before every start. During the one-time migration,
+disable the legacy unit **without stopping it**, then enable and start the
+official unit. The units deliberately do not declare `Conflicts=` because
+stopping the legacy `RemainAfterExit` unit would execute its complete-stack
+`ExecStop` and interrupt NapCat. Never re-enable or reload the legacy unit after
+migration. Keep the reply gate false through the first shadow and supervised
+Resume observation.
+
+The migration sequence is:
+
+```bash
+systemctl disable higgs-existing.service
+systemctl enable higgs-existing-official.service
+systemctl start higgs-existing-official.service
+```
+
+Do not use `systemctl stop`, `disable --now`, or `restart` on the legacy unit
+during migration. Record the NapCat container identity and start time before
+the sequence and prove both are unchanged afterward.
 
 Run these from `/srv/apps/higgs/current/deploy/existing-server`:
 
@@ -125,8 +141,8 @@ Run these from `/srv/apps/higgs/current/deploy/existing-server`:
 docker compose --env-file /srv/secrets/higgs/stack.env ps
 docker compose --env-file /srv/secrets/higgs/stack.env logs --tail=120 napcat
 docker compose --env-file /srv/secrets/higgs/stack.env logs --tail=120 agent
-systemctl stop higgs-existing.service
-systemctl start higgs-existing.service
+systemctl reload higgs-existing-official.service
+systemctl status higgs-existing-official.service --no-pager
 ```
 
 Do not publish ports `3001` or `6099`, and do not add a public Nginx route for

@@ -200,7 +200,7 @@
 - Node sidecar 现独占官方凭据、Gateway、心跳监督和私有 Resume；Agent 只通过只读挂载的 `0600` UDS 使用严格版本协议。Agent sidecar 模式无条件拒绝 App 凭据，官方摄取与回复由两个独立开关控制，回复默认关闭。
 - 发送前必须确认固定 SDK 的当前 WebSocket、可观测且新鲜的心跳 ACK；provider 调用最多等待 10 秒。无平台消息 ID、异常或超时均为 `UNKNOWN`。协议错误直接 fail-closed，幂等冲突只拒绝该请求而不误杀整个通道。
 - 重复投递不能重置已领取或过期的回复授权；Node 在入队前独立丢弃非主人私聊与未获准群事件，Python 再执行同一策略。SDK 精确版本在运行时断言，Node 基础镜像以完整 digest 固定。
-- 新增完整 overlay systemd unit并与原基础 unit 互斥；启动前强制执行 UDS 与私有 session 目录的所有者和权限预检，重启后不会退回缺少 sidecar 的基础 Compose。
+- 新增完整 overlay systemd unit；启动前强制执行 UDS 与私有 session 目录的所有者和权限预检，重启后不会退回缺少 sidecar 的基础 Compose。生产切换审计发现旧 unit 是会停止整栈的 `RemainAfterExit` 服务，因此官方 unit 不得声明 `Conflicts=`；迁移只禁用而不停止旧 unit，再启用官方 unit，并以 NapCat 容器身份和启动时间前后不变作为硬验收。
 - 本地 Node `25 passed, 2 skipped`，Python `304 passed, 5 skipped`，Ruff、格式和语法检查通过；真实 Linux UDS/session、镜像构建与 Compose 由 PR 的 Ubuntu CI 验证。
 - 架构复核确认内存事件队列和回执与 SDK 先保存 sequence 后回调之间仍有崩溃丢事件窗口。因此下一步只允许回复关闭的 shadow：先走 PR/CI，再单独确认部署，验证 systemd 重启和 Resume。正式回复开关继续保持 false，直到协调持久化与崩溃恢复完成。
 - 功能提交 `d7e71dd` 已进入 PR #32；分支 push 与 PR 的 Python、Node/镜像/Compose CI 全绿，Linux UDS/session 测试已执行。文档检查点尚待同一 PR 的最终 CI；生产未部署，官方回复保持关闭。
