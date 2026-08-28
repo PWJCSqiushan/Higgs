@@ -204,3 +204,4 @@
 - 本地 Node `25 passed, 2 skipped`，Python `304 passed, 5 skipped`，Ruff、格式和语法检查通过；真实 Linux UDS/session、镜像构建与 Compose 由 PR 的 Ubuntu CI 验证。
 - 架构复核确认内存事件队列和回执与 SDK 先保存 sequence 后回调之间仍有崩溃丢事件窗口。因此下一步只允许回复关闭的 shadow：先走 PR/CI，再单独确认部署，验证 systemd 重启和 Resume。正式回复开关继续保持 false，直到协调持久化与崩溃恢复完成。
 - 功能提交 `d7e71dd` 已进入 PR #32；分支 push 与 PR 的 Python、Node/镜像/Compose CI 全绿，Linux UDS/session 测试已执行。文档检查点尚待同一 PR 的最终 CI；生产未部署，官方回复保持关闭。
+- 文档检查点 `ca72bbb` 的两套 CI 通过后，PR #32 已合并为主线 `fd60229b80878cacf0e516967cd02b9a1e1594fb`，合并后主线 CI 成功。生产环境没有随合并自动变化；下一门仍是需单独确认的回复关闭 shadow 部署。
