@@ -185,6 +185,14 @@ class OfficialQQAdapter:
                         )
                         self._close_ws_async()
                         return
+                    if raw.get("op") in {OPCode.RECONNECT, OPCode.INVALID_SESSION}:
+                        # SDK 1.2.2 closes op 7/op 9 sockets gracefully.  Its
+                        # read loop can therefore return without raising and
+                        # never invokes on_disconnected, leaving Higgs falsely
+                        # authenticated while the SDK spins on a closed socket.
+                        # Publish fail-closed state immediately; the bounded
+                        # Higgs supervisor owns the subsequent restart.
+                        self._cb.on_disconnected()  # type: ignore[attr-defined]
                     super()._dispatch_payload(raw)  # type: ignore[attr-defined]
 
             self._gateway_factory = lambda callbacks: FailClosedQQWebSocket(
@@ -486,8 +494,11 @@ class OfficialQQAdapter:
         if session_id is None:
             self._session_store.clear(self.config.app_id)
             with self._lock:
+                self._connected = False
                 self._account_id = None
                 self._authenticated = False
+                self._connected_at_ms = None
+                self._reason = "session_invalidated"
         else:
             self._session_store.save(self.config.app_id, session_id, seq)
 

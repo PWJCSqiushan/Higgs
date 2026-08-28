@@ -149,3 +149,10 @@
 - 部署前匿名门控为 AppID 一条、ClientSecret 一条、主人 OpenID 零条、官方启用 false。原子激活不可变发布 `9cfbc69363008330d6b9bcbd9002c0aaa7bf2290`，旧 `current` 移入 `/srv/trash`；同提交标签的 Agent 镜像构建成功。
 - 以新镜像离线运行既有原子配置脚本，私有环境先备份再更新不可变镜像标签且未打印秘密。只对 Agent 执行 `--no-deps --no-build` 重建；NapCat 容器身份与启动时间均未变化。
 - 匿名验收确认 Agent running、发布与镜像匹配、捕获脚本可执行、主人 OpenID 仍为零条、官方启用仍为 false。真实捕获 Gateway 尚未启动，未读取或写入主人 OpenID，也未发送 QQ 消息；下一步需在动作时确认平台仍只有主人一个测试用户，再开启五分钟捕获窗口。
+
+## 节点 17：官方捕获 Resume 现场诊断与修复中
+
+- 主人在正确官方入口发送后，一次性捕获仍超时；三轮均没有身份写入、正文/消息 ID 日志或回复，官方通道保持关闭。平台在诊断会话早期显示在线，说明凭据、Gateway URL、READY 与基础 WebSocket 并非阻断点。
+- 匿名 75 秒时序探针显示：2、10、25 秒 READY/authenticated 正常；首个 ACK 后的 45、75 秒 connected 与 ACK 仍存在，但 authenticated 已被清空且 event_seen 始终为 false。固定 SDK 1.2.2 在 op 9 清 session 后 graceful close，读取 loop 正常返回而没有进入异常重连；旧适配器也未立即清 connected，形成假连接。一次性捕获无 supervisor，因此无法像常驻进程一样纠正。
+- 独立修复分支将捕获会话与生产 Resume 分离：每次捕获只清理独立私有存储中的本 App 记录并 fresh Identify，绝不触碰生产 Resume。有效 op 7/op 9 先发布 disconnected；session invalidation 同步清理 connected、authenticated、bot 身份和连接时间，匿名原因固定为 `session_invalidated`。
+- 定向回归为 `29 passed, 1 skipped`，完整 pytest 为 `285 passed, 5 skipped`，Ruff、格式与发布门通过。当前 Windows 环境没有可用 Bash/WSL 发行版，发布脚本语法由 Ubuntu CI 复核。下一步执行 PR/CI、Agent-only 发布，再只进行一次正确官方入口捕获；未完成前不得开启正式官方通道。

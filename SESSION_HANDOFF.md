@@ -144,3 +144,10 @@
 - 部署前匿名门控为 AppID 一条、ClientSecret 一条、主人 OpenID 零条、官方启用 false。原子激活不可变发布 `9cfbc69363008330d6b9bcbd9002c0aaa7bf2290`，旧 `current` 进入 `/srv/trash`；新 Agent 镜像以相同提交标签构建成功。
 - 使用新镜像离线运行既有原子配置脚本，私有环境先备份到 `/srv/trash`，再更新不可变镜像标签；没有打印秘密。只执行 Agent 的 `--no-deps --no-build` 重建，匿名比较确认 NapCat 容器身份与启动时间均未改变。
 - 部署验收为 Agent running、active release 与镜像匹配、捕获脚本可执行、主人 OpenID 仍为零条、官方启用仍为 false。真实捕获 Gateway 尚未启动，未读取或写入主人 OpenID，也未发送任何 QQ 消息。
+
+## 13. 2026-08-28 官方捕获 Resume 现场诊断与修复中
+
+- 平台仍仅登记主人测试用户；三次显式五分钟捕获均安全超时，未绑定身份、未记录消息正文或 ID、未发送回复，官方通道始终关闭。通过平台提供的官方机器人入口重试后仍未捕获，因此排除单纯误发旧个人 QQ 会话。
+- 实时匿名时序诊断确认 Gateway 在 2、10、25 秒均 READY 且 authenticated；首个心跳周期后，45 与 75 秒仍有 ACK、底层连接未立即退出，但 authenticated 被清空且事件始终为零。SDK 1.2.2 对 op 9 清除 Resume 后以 graceful close 结束读取，外层 loop 未进入异常重连，Higgs 旧状态因此可能残留假连接；捕获器又没有生产 supervisor，后续 C2C 被 fail-closed 门控丢弃。
+- 新建独立分支 `codex/higgs-official-capture-resume-fix-20260828`：一次性捕获改用独立私有会话文件，并在每次启动前只清理该 App 的捕获记录，强制 fresh Identify，不再读取或污染生产 Resume；有效 op 7/op 9 立即发布 disconnected，session 清理同时清除 connected、身份与开始时间并标记匿名 `session_invalidated`。
+- 新增回归测试覆盖捕获会话与生产 Resume 隔离、旧捕获记录强制清理、有效 op 7/op 9 断线通知及 session invalidation 的完整 fail-closed 状态；定向测试为 `29 passed, 1 skipped`，完整 pytest 为 `285 passed, 5 skipped`，Ruff、格式与发布门通过。当前 Windows 环境没有可用 Bash/WSL 发行版，两个发布脚本的 `bash -n` 留给 Ubuntu CI 复核。尚未提交、推送、部署或再次要求主人发送消息。

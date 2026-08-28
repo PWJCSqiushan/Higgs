@@ -202,6 +202,29 @@ def test_live_gateway_rejects_malformed_invalid_session_payload(tmp_path: Path) 
     assert close_calls == [True]
 
 
+def test_live_gateway_marks_valid_reconnect_and_invalid_session_disconnected(
+    tmp_path: Path,
+) -> None:
+    from qqbot_agent_sdk.dto import OPCode
+
+    adapter = OfficialQQAdapter(config(), data_dir=tmp_path)
+    adapter._ensure_dependencies()  # type: ignore[attr-defined]
+    disconnects: list[bool] = []
+    callbacks = SimpleNamespace(
+        get_session=lambda: (None, None),
+        set_session=lambda _session, _seq: None,
+        on_disconnected=lambda: disconnects.append(True),
+    )
+    assert adapter._gateway_factory is not None  # type: ignore[attr-defined]
+    gateway = adapter._gateway_factory(callbacks)  # type: ignore[attr-defined]
+    gateway._close_ws_async = lambda: None
+
+    gateway._dispatch_payload({"op": OPCode.RECONNECT, "d": None})
+    gateway._dispatch_payload({"op": OPCode.INVALID_SESSION, "d": False})
+
+    assert disconnects == [True, True]
+
+
 @pytest.mark.asyncio
 async def test_fake_gateway_normalizes_only_bound_owner_and_allowlisted_group(
     tmp_path: Path,
@@ -613,6 +636,33 @@ async def test_resume_restores_persisted_bot_identity_before_connected(tmp_path:
     assert status.connected is True
     assert status.authenticated is True
     assert status.account_id == "bot-openid"
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_session_invalidation_clears_connected_identity_immediately(tmp_path: Path) -> None:
+    session_store = FakeSessionStore()
+    session_store.session = FakePersistedSession("resume-session", 7)
+    session_store.account_id = "bot-openid"
+    adapter = OfficialQQAdapter(
+        config(),
+        data_dir=tmp_path,
+        api_client=FakeApi(),
+        gateway_factory=FakeGateway,
+        session_store=session_store,
+        parser=lambda _event_type, _raw: None,
+    )
+    await adapter.start()
+    assert adapter._get_session() == ("resume-session", 7)  # type: ignore[attr-defined]
+    adapter._on_connected()  # type: ignore[attr-defined]
+
+    adapter._set_session(None, None)  # type: ignore[attr-defined]
+
+    status = await adapter.status()
+    assert status.connected is False
+    assert status.authenticated is False
+    assert status.account_id is None
+    assert status.reason == "session_invalidated"
     await adapter.stop()
 
 
