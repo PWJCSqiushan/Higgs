@@ -803,3 +803,92 @@ async def test_supervisor_caps_ordinary_restart_backoff(tmp_path: Path) -> None:
     assert starts == 3  # initial start plus two bounded ordinary retries
     assert (await adapter.status()).reason == "restart_budget_exhausted"
     await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_total_budget_survives_healthy_resets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = OfficialQQAdapter(
+        config(),
+        data_dir=tmp_path,
+        api_client=FakeApi(),
+        gateway_factory=lambda callbacks: FakeGateway(callbacks),
+        session_store=FakeSessionStore(),
+        parser=lambda _event_type, _raw: None,
+    )
+    await adapter.start()
+    restarts = 0
+    original_sleep = asyncio.sleep
+
+    async def restart_gateway() -> None:
+        nonlocal restarts
+        restarts += 1
+        adapter._on_connected()  # type: ignore[attr-defined]
+        adapter._on_ready(SimpleNamespace(user=SimpleNamespace(id="bot-openid")))  # type: ignore[attr-defined]
+
+    async def disconnect_after_healthy_sleep(_delay: float) -> None:
+        if (await adapter.status()).authenticated:
+            adapter._on_disconnected()  # type: ignore[attr-defined]
+        await original_sleep(0)
+
+    monkeypatch.setattr(adapter, "_restart_gateway", restart_gateway)
+    monkeypatch.setattr(asyncio, "sleep", disconnect_after_healthy_sleep)
+
+    await adapter.supervise(
+        poll_interval_seconds=0.1,
+        base_delay_seconds=0.1,
+        max_consecutive_restarts=1,
+        max_total_restarts=2,
+    )
+
+    assert restarts == 2
+    assert (await adapter.status()).reason == "total_restart_budget_exhausted"
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_supervisor_rejects_invalid_total_restart_budget(tmp_path: Path) -> None:
+    adapter = OfficialQQAdapter(config(), data_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="total restart budget"):
+        await adapter.supervise(max_total_restarts=0)
+
+
+@pytest.mark.asyncio
+async def test_supervisor_rechecks_health_before_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = OfficialQQAdapter(
+        config(),
+        data_dir=tmp_path,
+        api_client=FakeApi(),
+        gateway_factory=lambda callbacks: FakeGateway(callbacks),
+        session_store=FakeSessionStore(),
+        parser=lambda _event_type, _raw: None,
+    )
+    await adapter.start()
+    restarts = 0
+    sleep_calls = 0
+
+    async def become_healthy_then_stop(_delay: float) -> None:
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 1:
+            adapter._on_connected()  # type: ignore[attr-defined]
+            adapter._on_ready(SimpleNamespace(user=SimpleNamespace(id="bot-openid")))  # type: ignore[attr-defined]
+        else:
+            with adapter._lock:  # type: ignore[attr-defined]
+                adapter._stop_requested = True  # type: ignore[attr-defined]
+
+    async def restart_gateway() -> None:
+        nonlocal restarts
+        restarts += 1
+
+    monkeypatch.setattr(asyncio, "sleep", become_healthy_then_stop)
+    monkeypatch.setattr(adapter, "_restart_gateway", restart_gateway)
+
+    await adapter.supervise(poll_interval_seconds=0.1, base_delay_seconds=0.1)
+
+    assert restarts == 0
+    await adapter.stop()
