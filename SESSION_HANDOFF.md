@@ -176,3 +176,11 @@
 - 新增 opt-in Compose overlay 与 `official-qq` profile；sidecar 只接 egress、非 root、只读根、无 capabilities、无 Docker Socket/Agent 数据/NapCat 网络。凭据必须进入独立 `0600 official-qq.env`，不会挂给 Python Agent。该 overlay 尚未部署，旧 Python 官方适配器仍关闭。
 - SDK 1.0.4 不公开 heartbeat ACK，且内部重连预算不满足 Higgs 长期生产治理。因此本切片明确是有时限、无 Resume 持久化的 capture-only 诊断，不得直接作为正式常驻通道；若真实 Node 捕获成功，再单独实现 Python UDS 客户端、受治理重连/会话和双通道健康；若仍零事件，则回到平台事件授权/沙箱配置，不继续更换语言盲试。
 - 本地 Node `14 passed`；Python 完整 `290 passed, 5 skipped`（Windows 既有 POSIX 跳过）；Ruff、格式、release gate、npm registry signature、固定依赖树与 staged `detect-secrets==1.5.0` 均通过。提交 `02826e0` 与文档检查点 `ca5efd6` 经 PR #29 的 push/PR 两组 `test` 和两组 `official-qq-sidecar` 全绿后合并为主线 `0ec1b5b53c1ff14313147308e0cbf49623fa4524`；合并后主线 Python 与 Node/镜像/Compose CI 再次全部通过。尚未部署或执行真实 Node 捕获。
+
+## 17. 2026-08-28 关机前暂停：Node 真实诊断已授权、尚未部署
+
+- 主人已明确允许部署已披露 npm 溯源差异的官方 Node 1.0.4，但授权范围仍是一次 120 秒 capture-only 诊断；不得直接把该 SDK 作为长期生产通道。诊断必须不保留身份/消息 ID/正文、不发送回复，并确保同一 AppID 的 Python 与 Node Gateway 不并发。
+- PR #30 已把 PR #29 合并状态写回权威记忆并合并为主线 `0ad270549f332edb99e58ea9f132b29bdea44c56`；合并后主线 Python 与 Node/镜像/Compose CI 全绿。本地已只读抓取该主线引用，工作树干净；尚未生成或上传新发布包。
+- 已连接主人打开的腾讯云终端页面，但远程 Shell 处于断开状态并要求 MFA 微信扫码。主人随后要求关机，因此没有完成 MFA，没有执行服务器命令，没有创建私有 sidecar 配置，没有构建/启动容器，也没有改变 QQ 开放平台、Python 官方开关或 NapCat。
+- NapCat 48 小时观察窗口已截止；期间的多次短时掉线使其未达到稳定性标准，过期 `higgs-48` 观察自动化已删除。后续不再把个人 QQ 通道视为官方通道上线的前置条件。
+- 恢复顺序固定：①重新打开腾讯云终端并完成 MFA；②匿名只读核对生产仍为上一禁用态发布、Python 官方关闭且 NapCat 不变；③从主线 `0ad2705` 生成只含 Git 跟踪文件的发布包并双端校验；④锁定 Node 基础镜像 digest，在服务器私有目录创建独立 `0600 official-qq.env`，不回显凭据；⑤只启动 capture-only sidecar，确认 READY 后由主人从官方入口发送一次；⑥运行 120 秒匿名计数并立即停止 sidecar。若 event_seen=true，再以新 PR 实现 Python UDS 正式接入；若仍为零，则回到平台事件授权/测试范围排查，不继续更换语言盲试。

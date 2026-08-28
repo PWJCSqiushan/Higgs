@@ -180,3 +180,10 @@
 - READY 身份不合法立即停止；READY 前事件/发送拒绝；仅接收 C2C 与群 `@`。默认 capture-only 队列只保留事件类型、私聊/群聊类别、接收时间与游标，不保留或返回任何身份、消息 ID、正文或附件元数据，且完全禁用发送。未来业务接入仍须严格 schema、请求指纹和幂等冲突拒绝，缺少平台消息 ID 为 `unknown`。
 - 当前 SDK 无 heartbeat ACK 公共回调，内部重连也不满足生产总预算；所以第一切片只允许 1 到 300 秒有界匿名捕获，不持久化 Resume、不与 Python Gateway 并发、不直接开启正式官方通道。真实部署仍需单独确认。
 - 本地 Node `14 passed`、Python `290 passed, 5 skipped`，Ruff/格式、发布门、npm registry signature 与 staged 秘密扫描通过。功能 `02826e0` 和文档 `ca5efd6` 经 PR #29 的 push/PR 两套 Python、Node/镜像/Compose CI 全绿后合并为主线 `0ec1b5b53c1ff14313147308e0cbf49623fa4524`，合并后主线两项 CI 再次通过。未部署、未真实捕获、未改变平台或生产开关。
+
+## 节点 21：关机暂停与 Node 诊断恢复点
+
+- 主人已在知晓 npm 1.0.4 公开溯源差异后允许一次 120 秒 capture-only 生产诊断。PR #30 已把前一合并状态写回权威记忆并合并为主线 `0ad270549f332edb99e58ea9f132b29bdea44c56`，主线 Python 与 Node/镜像/Compose CI 全绿。
+- 腾讯云远程 Shell 当前断开并停在 MFA 微信扫码；主人要求关机，故本轮未完成验证、未执行服务器命令、未生成/上传新发布包、未创建私有配置、未构建或启动 sidecar，也未改变官方平台、Python 官方开关或 NapCat。
+- 恢复后先完成 MFA 与匿名只读生产门控，再从 `0ad2705` 生成/校验发布包、锁定 Node 镜像 digest、私下建立 `0600 official-qq.env`。只允许 Node 单实例 capture-only READY 后让主人发送一次，匿名计数 120 秒后立即停止；成功才进入 Python UDS 正式接入新阶段，失败则回到平台授权和测试范围。
+- NapCat 48 小时观察未达到稳定标准，过期观察自动化已删除；停止继续执行该观察任务。
