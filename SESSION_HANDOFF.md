@@ -175,3 +175,4 @@
 - sidecar 仅以 `0600` Unix Socket 提供版本化 hello/status/events/send；默认 `capture-only=true` 时队列只保留事件类型、私聊/群聊类别、接收时间和游标，不保留或返回机器人/发送者/群/消息身份、正文或附件元数据，发送接口直接拒绝。未来关闭 capture-only 后发送仍必须携带入站回复 ID，幂等键冲突拒绝，平台回执缺少非空 ID 时只报 `unknown`。匿名捕获 CLI 只输出连接/认证布尔值、固定原因和事件计数。
 - 新增 opt-in Compose overlay 与 `official-qq` profile；sidecar 只接 egress、非 root、只读根、无 capabilities、无 Docker Socket/Agent 数据/NapCat 网络。凭据必须进入独立 `0600 official-qq.env`，不会挂给 Python Agent。该 overlay 尚未部署，旧 Python 官方适配器仍关闭。
 - SDK 1.0.4 不公开 heartbeat ACK，且内部重连预算不满足 Higgs 长期生产治理。因此本切片明确是有时限、无 Resume 持久化的 capture-only 诊断，不得直接作为正式常驻通道；若真实 Node 捕获成功，再单独实现 Python UDS 客户端、受治理重连/会话和双通道健康；若仍零事件，则回到平台事件授权/沙箱配置，不继续更换语言盲试。
+- 本地 Node `14 passed`；Python 完整 `290 passed, 5 skipped`（Windows 既有 POSIX 跳过）；Ruff、格式、release gate、npm registry signature、固定依赖树与 staged `detect-secrets==1.5.0` 均通过。提交 `02826e0` 已推送，PR #29 的 push 与 pull_request 两组 `test`、两组 `official-qq-sidecar` 均通过；其中 Ubuntu 实际完成 Node 镜像构建与 Compose overlay 解析。当前等待文档检查点 CI，尚未合并或部署。

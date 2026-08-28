@@ -179,3 +179,4 @@
 - sidecar 默认关闭且隔离运行：专用 `0600` Unix Socket、专用 `official-qq.env`、仅 egress、非 root、只读根、无 Docker Socket、无 Agent/NapCat 数据。Node 只负责协议；Python 仍是 owner/群门控、身份、记忆、模型、审计与最终发送决策的唯一权威。
 - READY 身份不合法立即停止；READY 前事件/发送拒绝；仅接收 C2C 与群 `@`。默认 capture-only 队列只保留事件类型、私聊/群聊类别、接收时间与游标，不保留或返回任何身份、消息 ID、正文或附件元数据，且完全禁用发送。未来业务接入仍须严格 schema、请求指纹和幂等冲突拒绝，缺少平台消息 ID 为 `unknown`。
 - 当前 SDK 无 heartbeat ACK 公共回调，内部重连也不满足生产总预算；所以第一切片只允许 1 到 300 秒有界匿名捕获，不持久化 Resume、不与 Python Gateway 并发、不直接开启正式官方通道。真实部署仍需单独确认。
+- 本地 Node `14 passed`、Python `290 passed, 5 skipped`，Ruff/格式、发布门、npm registry signature 与 staged 秘密扫描通过。功能提交 `02826e0` 已推送并建立 PR #29；push 与 PR 两套 CI 的 Python、Node/镜像/Compose 四项检查全部通过。当前只追加 PR/CI 记忆检查点，不合并、不部署、不改变平台或生产开关。
