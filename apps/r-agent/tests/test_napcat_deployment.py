@@ -34,7 +34,10 @@ def test_official_systemd_unit_owns_the_complete_overlay_and_preflight() -> None
     text = (ROOT / "deploy/existing-server/higgs-existing-official.service").read_text(
         encoding="utf-8"
     )
-    assert "Conflicts=higgs-existing.service" in text
+    # The legacy unit is a RemainAfterExit oneshot whose ExecStop stops the
+    # complete stack, including NapCat.  The official unit must therefore not
+    # conflict with it: migration disables the legacy unit without stopping it.
+    assert "Conflicts=higgs-existing.service" not in text
     assert "ExecStartPre=/bin/sh ./prepare_official_qq_runtime.sh" in text
     for command in ("ExecStart=", "ExecReload=", "ExecStop="):
         line = next(item for item in text.splitlines() if item.startswith(command))

@@ -3,7 +3,6 @@ Description=Higgs dual QQ stack on the existing Lighthouse host
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
-Conflicts=higgs-existing.service
 
 [Service]
 Type=oneshot

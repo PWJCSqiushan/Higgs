@@ -198,7 +198,7 @@
 - 独立分支 `codex/higgs-official-uds-runtime-20260828` 已完成 Node 独占 Gateway、私有 Resume、`0600` UDS 和 Python 业务适配层。Agent 的 sidecar 模式无论启用与否均拒绝 App 凭据；官方回复另有默认关闭的独立开关。
 - Node 发送只有在当前固定 SDK WebSocket 可观测、连接打开且最近心跳 ACK 不超过 90 秒时才允许；发送调用有独立 10 秒上限，缺平台 ID、异常或超时只能返回 `UNKNOWN`。重复事件不能重置或续期一次性回复授权，协议损坏会终止通道而不是伪装成不确定送达。
 - Node 与 Python 双层执行主人和群白名单。sidecar 对非主人私聊和未获准群 `@` 在入队及授权前即丢弃；Python 继续负责相同策略、规范会话、记忆与业务。
-- 新增替代基础 unit 的 `higgs-existing-official.service`，固定同时加载基础 Compose 和官方 overlay、启用 `official-qq` profile，并在每次启动前强制验证两个专用目录为 UID/GID `10001:10001`、模式 `0700`。两套 systemd unit 明确互斥，避免重启后丢失 UDS 挂载或 sidecar。
+- 新增替代基础 unit 的 `higgs-existing-official.service`，固定同时加载基础 Compose 和官方 overlay、启用 `official-qq` profile，并在每次启动前强制验证两个专用目录为 UID/GID `10001:10001`、模式 `0700`。生产迁移必须只禁用但不停止旧的 `RemainAfterExit` unit，再启用官方 unit；两者不得声明 `Conflicts=`，否则旧 unit 的整栈 `ExecStop` 会中断 NapCat。
 - Node 基础镜像在示例和 CI 中固定为 Docker Official Image 的完整 digest；SDK 启动时再次断言精确 `1.0.4`。本地 Node 当前 `25 passed, 2 skipped`（两个真实 Linux UDS/session 测试交由 Ubuntu CI），Python 完整测试 `304 passed, 5 skipped`，Ruff 与格式通过。
 - 正式回复仍不得开启：当前事件队列和发送回执为内存态，固定 SDK 又会在事件回调前保存 Gateway sequence，进程崩溃可能造成尚未进入 Agent journal 的事件丢失。当前可进入的下一门仅是“官方在线、业务摄取但回复关闭”的 shadow 部署；需 PR/CI 全绿及单独生产确认，随后验证 Linux UDS、Compose、systemd 重启与 Resume，再设计协调崩溃恢复。
 - 功能提交 `d7e71dd` 已推送独立分支并创建 PR #32；push 与 pull request 两套 Python、Node/镜像/Compose CI 均通过，包含 Windows 本地跳过的 Linux UDS/session 测试。等待文档检查点的最终 CI 后按阶段 PR 流程合并；尚未部署或修改生产开关。
