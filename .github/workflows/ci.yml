@@ -51,3 +51,45 @@ jobs:
               raise SystemExit(f"Linux CI unexpectedly skipped {skipped} tests")
           print("linux-skips=0")
           PY
+
+  official-qq-sidecar:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/official-qq-sidecar
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/official-qq-sidecar/package-lock.json
+      - name: Install fixed production dependency graph
+        run: npm ci --omit=optional --ignore-scripts
+      - name: Verify npm registry signatures
+        run: npm audit signatures
+      - name: Check JavaScript syntax
+        run: npm run check
+      - name: Test fail-closed sidecar boundary
+        run: npm test
+      - name: Build isolated sidecar image
+        run: docker build --build-arg NODE_IMAGE=node:22-bookworm-slim --tag higgs-official-qq:ci .
+      - name: Validate opt-in Compose overlay
+        working-directory: .
+        run: |
+          mkdir -p /tmp/higgs-ci-config
+          : > /tmp/higgs-ci-config/higgs.env
+          cp deploy/existing-server/official-qq.env.example /tmp/higgs-ci-config/official-qq.env
+          HIGGS_CONFIG_DIR=/tmp/higgs-ci-config \
+          HIGGS_IMAGE=higgs-agent:ci \
+          NAPCAT_IMAGE=napcat:ci \
+          NAPCAT_ACCOUNT=10000 \
+          NAPCAT_WEBUI_TOKEN=ci-only-placeholder \
+          NAPCAT_ONEBOT_TOKEN=ci-only-placeholder \
+          HIGGS_OFFICIAL_QQ_IMAGE=higgs-official-qq:ci \
+          HIGGS_OFFICIAL_QQ_NODE_IMAGE=node:22-bookworm-slim \
+          docker compose \
+            -f deploy/existing-server/compose.yml \
+            -f deploy/existing-server/compose.official-qq.yml \
+            --profile official-qq config --quiet

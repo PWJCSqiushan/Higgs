@@ -1,0 +1,17 @@
+{
+  "name": "@higgs/official-qq-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Fail-closed QQ Open Platform protocol sidecar for Higgs",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node --check src/index.mjs && node --check src/protocol.mjs && node --check src/qq-client.mjs && node --check src/uds-client.mjs && node --check src/health.mjs && node --check src/capture.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@tencent-connect/qqbot-nodejs": "1.0.4"
+  }
+}
