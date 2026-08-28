@@ -45,6 +45,26 @@ def test_official_systemd_unit_owns_the_complete_overlay_and_preflight() -> None
         assert "--profile official-qq" in line
 
 
+def test_node_owner_binding_is_single_user_private_and_fail_closed() -> None:
+    text = (ROOT / "deploy/existing-server/run_official_node_owner_bind.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "ONLY_OWNER_IS_TEST_USER" in text
+    assert "another official Gateway is active" in text
+    assert "HIGGS_OFFICIAL_QQ_BIND_OWNER_FILE" in text
+    assert "R_AGENT_OFFICIAL_QQ_ENABLED" in text
+    assert "owner is already configured" in text
+    assert "official QQ remains disabled" in text
+    assert "owner.openid" in text
+    assert "/srv/trash/higgs-official-owner-bind-" in text
+    assert "restore_private_configuration" in text
+    assert "rollback_required=true" in text
+    assert 'echo "$owner"' not in text
+    assert 'cat "$owner_file"' not in text
+    assert "\nrm " not in text
+    assert ".unlink(" not in text
+
+
 def test_opencloudos_build_prefetches_locked_dependencies_before_offline_sync() -> None:
     text = (ROOT / "apps/r-agent/Dockerfile.opencloudos").read_text(encoding="utf-8")
     pyproject = (ROOT / "apps/r-agent/pyproject.toml").read_text(encoding="utf-8")

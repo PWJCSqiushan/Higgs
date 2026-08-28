@@ -135,6 +135,20 @@ Do not use `systemctl stop`, `disable --now`, or `restart` on the legacy unit
 during migration. Record the NapCat container identity and start time before
 the sequence and prove both are unchanged afterward.
 
+If the anonymous Node capture succeeded but no owner OpenID was retained, use
+the audited one-shot Node binder before enabling shadow ingestion. First prove
+that the QQ Bot platform test-user list contains only the owner, then run:
+
+```bash
+sh run_official_node_owner_bind.sh ONLY_OWNER_IS_TEST_USER higgs-official-qq:<commit>
+```
+
+The binder accepts only the first authenticated C2C sender, writes the OpenID
+directly into a private `0600` file, atomically updates both private environment
+files, moves the intermediate file to `/srv/trash`, and exits. It never exposes
+the OpenID, message ID, content, credentials, or attachments and never enables
+the official Agent transport. A separate deployment gate is still required.
+
 Run these from `/srv/apps/higgs/current/deploy/existing-server`:
 
 ```bash

@@ -203,3 +203,12 @@
 - 正式回复仍不得开启：当前事件队列和发送回执为内存态，固定 SDK 又会在事件回调前保存 Gateway sequence，进程崩溃可能造成尚未进入 Agent journal 的事件丢失。当前可进入的下一门仅是“官方在线、业务摄取但回复关闭”的 shadow 部署；需 PR/CI 全绿及单独生产确认，随后验证 Linux UDS、Compose、systemd 重启与 Resume，再设计协调崩溃恢复。
 - 功能提交 `d7e71dd` 已推送独立分支并创建 PR #32；push 与 pull request 两套 Python、Node/镜像/Compose CI 均通过，包含 Windows 本地跳过的 Linux UDS/session 测试。等待文档检查点的最终 CI 后按阶段 PR 流程合并；尚未部署或修改生产开关。
 - 文档检查点 `ca72bbb` 的两套 CI 同样通过；PR #32 已合并为主线 `fd60229b80878cacf0e516967cd02b9a1e1594fb`，合并后主线 CI 成功。生产仍未部署，下一动作必须取得独立确认后才可启用“摄取开启、回复关闭”的 shadow，并先做匿名配置、目录、镜像和单 Gateway 门控。
+
+## 20. 2026-08-29 shadow 部署门控与一次性 Node 主人绑定器
+
+- systemd 迁移复核发现官方 unit 的 `Conflicts=higgs-existing.service` 会触发旧 `RemainAfterExit` unit 的整栈停止路径，存在误停 NapCat 的风险。修复经 PR #34 合并为主线 `0a930e2fbf2bd2256430ce92ecdf04f196b06cdd`，去除 `Conflicts` 并把迁移固定为“只 disable、不 stop”；分支、PR 与合并后主线 CI 均通过。
+- 生产已成功构建该主线提交的不可变 release、Agent 镜像与官方 sidecar 镜像。两次 shadow 切换尝试均在门控失败时安全退出或回滚：current release 未切换、官方摄取与回复均保持关闭、官方 sidecar 停止、NapCat 保持运行与健康，且未出现新的容器启动事件。
+- 匿名兼容性诊断确认私有配置权限、模式、App 凭据格式、Compose 和运行时预检均通过；唯一阻断是两份运行时配置都尚无主人官方 OpenID。早先 Node capture-only 诊断按设计只统计事件并丢弃身份，不能为正式 owner 门控提供绑定值。不得把 AppID 或 QQ 号冒充 OpenID，也不得绕过 owner 门控。
+- 新分支 `codex/higgs-official-node-owner-bind-20260829` 实现一次性 Node 绑定器：只有在平台测试用户恰为主人一人的人工确认短语下运行；只接受 READY 后首个合法 C2C sender，直接写入私有 `0600` create-once 文件，不输出身份、消息 ID、正文、附件或凭据，成功后立即停止 Gateway。
+- 服务器包装脚本要求 Python 官方通道关闭、没有其他官方 Gateway、专用目录为 `0700` 且 UID/GID 正确；私有环境先备份，双文件更新失败会事务式恢复，临时身份文件只移入 `/srv/trash`。绑定完成后再次证明官方摄取仍关闭，正式回复始终保持关闭。
+- 当前本地 Node 为 `29 passed, 2 skipped`，Python 为 `305 passed, 5 skipped`；Ruff、格式、发布包、秘密边界、Shell LF 与 `git diff --check` 均通过。功能提交 `24296a1` 已创建 PR #35，push 与 pull request 两套 Python、Node/镜像/Compose CI 全绿，Ubuntu 同时验证新增绑定脚本的 Bash 语法与 Linux 零跳过测试。待文档检查点 CI 后合并；随后只部署绑定器，主人从官方入口发送一次完成私有绑定，再重试回复关闭的 shadow 上线。

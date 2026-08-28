@@ -205,3 +205,12 @@
 - 架构复核确认内存事件队列和回执与 SDK 先保存 sequence 后回调之间仍有崩溃丢事件窗口。因此下一步只允许回复关闭的 shadow：先走 PR/CI，再单独确认部署，验证 systemd 重启和 Resume。正式回复开关继续保持 false，直到协调持久化与崩溃恢复完成。
 - 功能提交 `d7e71dd` 已进入 PR #32；分支 push 与 PR 的 Python、Node/镜像/Compose CI 全绿，Linux UDS/session 测试已执行。文档检查点尚待同一 PR 的最终 CI；生产未部署，官方回复保持关闭。
 - 文档检查点 `ca72bbb` 的两套 CI 通过后，PR #32 已合并为主线 `fd60229b80878cacf0e516967cd02b9a1e1594fb`，合并后主线 CI 成功。生产环境没有随合并自动变化；下一门仍是需单独确认的回复关闭 shadow 部署。
+
+## 节点 24：shadow 门控收敛与一次性 Node 主人绑定器
+
+- 官方 systemd unit 原有 `Conflicts=higgs-existing.service` 会在迁移时触发旧整栈 unit 的 `ExecStop`，可能中断 NapCat。PR #34 已去除该关系并把迁移固定为仅 disable 旧 unit、不 stop；合并提交 `0a930e2fbf2bd2256430ce92ecdf04f196b06cdd` 及主线 CI 均通过。
+- 生产端已构建该提交的不可变 release、Agent 与官方 sidecar 镜像。两次 shadow 尝试均因门控不满足而无损退出或回滚：旧 release、官方关闭态、sidecar 停止态和 NapCat 健康状态均保持不变，没有发送测试消息或触发 NapCat 重启。
+- 匿名诊断将剩余阻断唯一收敛为主人官方 OpenID 缺失；其他私有配置、权限、App 凭据格式、Compose 与 runtime preflight 均通过。既有匿名 Node 捕获严格丢弃身份，因此不能事后恢复绑定值；禁止用 QQ 号或 AppID 替代，也禁止暂时取消 owner 门控。
+- 新的一次性 Node 绑定器只在“平台测试用户恰为主人一人”的显式确认下运行，只接收 READY 后首个 C2C sender，并以 create-once、fsync、`0600` 文件直接落入私有挂载；不输出或记录身份、正文、消息 ID、附件与凭据，成功即停止 Gateway。
+- 包装脚本保证无并发官方 Gateway、Python 官方关闭、目录权限/UID 正确；更新两份私有环境前创建 `0600` 备份，任一更新或后验检查失败即恢复，成功后把中间身份文件移入 `/srv/trash`，官方摄取仍保持关闭。
+- 当前本地验证为 Node `29 passed, 2 skipped`、Python `305 passed, 5 skipped`，Ruff、格式、发布门、秘密边界、Shell LF 与 diff 检查通过。功能提交 `24296a1` 已进入 PR #35；push 与 pull request 两套 Python、Node/镜像/Compose CI 全绿，Ubuntu 已覆盖 Bash 语法和 Linux 零跳过测试。待文档检查点 CI 后合并，再部署绑定器并只请主人从官方入口发送一次；绑定成功后才进入回复关闭的 shadow 部署。
