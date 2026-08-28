@@ -91,6 +91,25 @@ Docker socket, host shell, or general path reader. A missing, malformed, linked,
 or older-than-180-seconds snapshot is reported as unavailable. The command is
 owner-only and model shadow requests cannot execute it.
 
+## One-shot official owner capture
+
+Keep `R_AGENT_OFFICIAL_QQ_ENABLED=false` while binding the official sandbox
+owner. Before the capture window, verify in the QQ Bot console that the owner is
+the only test user. Then run the bounded helper from the active release:
+
+```bash
+bash run_official_owner_capture.sh ONLY_OWNER_IS_TEST_USER
+```
+
+The helper takes an exclusive host lock, starts one temporary `agent` container
+with `--no-deps`, ignores group and pre-READY events, and accepts only the first
+C2C sender. It never prints the OpenID, credentials, message ID, or message
+content. The old private environment is copied to a mode-`0600` backup, the
+owner binding is replaced atomically, and the script proves that the official
+channel is still disabled before returning. A timeout stops the temporary
+Gateway without adding a binding. Do not run the helper unless the platform
+test-user list contains exactly one owner entry.
+
 ## Operator commands
 
 Run these from `/srv/apps/higgs/current/deploy/existing-server`:
