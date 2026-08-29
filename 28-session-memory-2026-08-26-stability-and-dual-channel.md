@@ -229,3 +229,12 @@
 - 脱敏时序为 `pending/startup → verified/ready → pending/gateway_reconnecting（约 2.5 秒）→ rejected/protocol_error`。sidecar 自动恢复后保持健康数小时，Agent terminal failure 不会自愈。诊断未读取日志、聊天正文、身份、消息 ID 或凭据。
 - 根因是 READY/RESUMED 与首个新 heartbeat ACK 之间的合法窗口被错误表达为 authenticated。修复新增 `heartbeat_pending`：身份校验与 session bot id 可先完成，但直到 ACK 可观测、session touch 成功后才公开 authenticated 和 `ready/resumed`；期间事件与发送拒绝，90 秒无 ACK 仍以 `heartbeat_ack_timeout` fail-closed。
 - 独立工作树 `Higgs-wt-official-heartbeat-auth`、分支 `codex/higgs-official-heartbeat-auth-20260829` 已完成本地代码与回归。Node `30 passed, 2 skipped`，Python 定向 `11 passed`、完整 `306 passed, 5 skipped`，Ruff、格式、Node 语法与 diff 检查通过。下一步是发布门、秘密扫描、提交、PR/Ubuntu CI；全绿前不部署、不重启生产，也不打开回复。
+
+## 节点 27：首 ACK 修复合并、生产发布与真实 Resume 验收
+
+- 首 ACK 修复连同回归和匿名记忆由 PR #36 合并为主线 `f18ff1b8b4a86845316f960fdb7b8a350e5a2eec`。PR 的两组 Python 与两组 Node/镜像/Compose CI 全绿，合并后主线 Python 与 Node CI 再次通过；没有直接推送 `main`。
+- 只含 Git 跟踪文件的发布包为 448270 字节、263 个归档成员，本地与服务器 SHA-256 完全一致。首次直接执行激活脚本因归档内脚本非 executable 以 126 安全退出，未产生版本、配置或容器变化；随后显式经 `bash` 调用同一脚本，成功原子激活不可变主线 release，旧 `current` 进入 `/srv/trash`。
+- 新 Agent 与 official sidecar 镜像使用同一 40 位主线标签构建成功。私有 `stack.env` 在 `/srv/trash` 创建 `0600` 备份后原子更新；仅依次重建 official sidecar 与 Agent。匿名前后比较确认 NapCat 容器身份、启动时间和 health 完全不变，未重启、未重新登录、未发送测试消息。
+- 现场切换脚本曾因在循环/条件上下文依赖 `set -e`，没有按预期把一次旧的 `rejected/protocol_error` 读取当作失败；该次回执不能作为成功证据，后续运维脚本不得用隐式 `errexit` 代替显式返回码。独立后验核验最终确认新 sidecar healthy、零重启、connected/authenticated、ACK 新鲜，原子 session 真实以 `resumed` 恢复；Agent 将持续约十小时的旧 `protocol_error` 区间关闭并进入 `verified/resumed`，身份匹配为真。
+- 官方回复保持 false，且同 AppID 只有一个 Node Gateway。个人 QQ 当前为 `rejected/get_status_offline`、权威在线 false、身份匹配未知、无新的 kick reason；因此 Agent 综合 Docker health 仍 unhealthy，不能据此否定已独立验证的官方 transport。
+- systemd 尚未执行 `restart`：官方 unit enabled/inactive，旧基础 unit disabled/active；官方 unit 的 `ExecStop` 会停止整栈，`ExecStart --wait` 又会受个人 QQ 离线的 Agent health 牵连。下一步先用独立 PR/CI 建立不影响 NapCat 的官方 Resume 生命周期入口，并实现事件/回执协调持久化；两者完成前不得开启正式回复。

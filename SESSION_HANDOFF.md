@@ -6,15 +6,15 @@
 
 - 本地统一项目根：`D:\丘山\R\_Higgs`；主仓库在 `source`，阶段工作树在 `worktrees`，私有归档和发布包分别在 `archives`、`artifacts`。
 - 本地权威集成工作树：`D:\丘山\R\_Higgs\worktrees\R_Higgs-takeover-20260826`，分支 `codex/higgs-integration-20260826`。
-- 当前官方 QQ 修复工作树：`D:\丘山\R\_Higgs\worktrees\Higgs-wt-official-heartbeat-auth`；分支为 `codex/higgs-official-heartbeat-auth-20260829`，基于 `origin/main` 的 `635045d30cf6f02970ddbbb464afd165f220459e`。
+- 当前官方 QQ 修复工作树：`D:\丘山\R\_Higgs\worktrees\Higgs-wt-official-heartbeat-auth`；分支为 `codex/higgs-official-heartbeat-auth-20260829`。修复已由 PR #36 合并为主线 `f18ff1b8b4a86845316f960fdb7b8a350e5a2eec`，PR 与合并后主线 CI 全绿。
 - 官方 Node UDS 运行时与一次性主人绑定器已经分别完成独立 PR/CI。主人 OpenID 已由首个合法官方 C2C 事件私有绑定到两份 `0600` 服务器配置；身份值从未回显，也未进入聊天、日志或项目记忆。
 - 群聊风控误判修复已由 PR #23 合并到 GitHub `main` 的 `38a5ddc`，合并后主线 CI 通过；该修复现已随 Agent-only 发布进入生产。
-- 生产源码、Agent 与官方 sidecar 镜像现为主线合并提交 `635045d30cf6f02970ddbbb464afd165f220459e`；平台 Gateway 在线且心跳健康，但 Agent 的官方传输已因 READY/首个 ACK 竞态进入 `protocol_error`，所以业务摄取当前不可用。回复开关仍为 false，NapCat healthy 且未在切换中重建。
+- 生产源码、Agent 与官方 sidecar 镜像现为主线合并提交 `f18ff1b8b4a86845316f960fdb7b8a350e5a2eec`。平台 Gateway、首个心跳 ACK、私有 Resume 与 Agent 官方传输均已真实恢复，`qq_official` 当前为 `verified/resumed`、身份匹配为真；回复开关仍为 false。NapCat 容器在发布前后身份、启动时间和 health 均未改变，但个人 QQ 权威状态当前为离线，因此 Agent 的综合 Docker health 仍为 unhealthy。
 - GitHub 已按批准顺序合并 PR #7–#17；所有功能、迁移和 OpenCloudOS 离线构建修复均通过分支、PR 与合并后主线 CI，没有直接向 `main` 推送。
-- 已按主人确认完成官方回复关闭的 shadow 部署；现场核验发现摄取竞态后，已在独立分支完成离线修复和回归，尚未走 PR/CI 或生产发布。官方 Bot 当前不会回复，模型记忆候选仍显式关闭。
+- 已按主人确认完成官方回复关闭的 shadow 部署，并把现场摄取竞态修复经独立 PR/CI 发布到生产。官方 Bot 当前在线且业务摄取已恢复，但按设计不会回复；模型记忆候选仍显式关闭。
 - 开放官方主人沙箱、加入测试群、启用模型候选或改变 live 状态仍必须获得单独确认。
 
-上述生产提交与健康结论来自 2026-08-26 的实时发布验收；后续继续操作仍须重新核对主线、镜像和匿名 transport 状态，不能把本次结果当作永久在线保证。
+上述最新生产提交与健康结论来自 2026-08-29 的实时发布验收；后续继续操作仍须重新核对主线、镜像和匿名 transport 状态，不能把本次结果当作永久在线保证。
 
 ## 2. 已完成代码阶段
 
@@ -26,6 +26,7 @@
 | 2 官方 QQ 双通道 | `945b5b2` + `92df3d2` + `30ca0c5` + `abc4a0c` | `codex/higgs-phase2-official-qq-20260826` / PR #9（已合并） | 官方 SDK 1.2.2、Gateway/Resume、有限监督恢复、统一类型回执、身份隔离和被动原路回复已实现；默认关闭 |
 | 2A 官方 QQ fail-closed 硬化 | `aa877df` | `codex/higgs-official-qq-mvp-20260827` / PR #21（已合并） | 私有 Resume/READY 身份、真实鉴权状态、精确 intents、有限 SDK 重连、异常会话断链和发送幂等已完成；仍默认关闭 |
 | 2B 官方主人一次性捕获 | `187a959` + `36e936d` | `codex/higgs-official-owner-capture-20260828` / PR #25（已合并） | 显式单测试用户确认、首个 READY 后 C2C、无正文日志、私有备份、原子 OpenID 绑定与成功即停已实现并禁用态部署；尚未真实捕获 |
+| 2C 官方 Node UDS 与首 ACK 认证 | `f18ff1b` | `codex/higgs-official-heartbeat-auth-20260829` / PR #36（已合并） | Node 独占 Gateway、私有 Resume、`0600` UDS、Python 业务摄取及 `heartbeat_pending` 首 ACK 门控已部署；当前 `verified/resumed`，回复仍关闭 |
 | 3 只读工具 | `80c1c86` + `b083ccf` + `5fa5bc3` | `codex/higgs-phase3-governed-tools-20260826` / PR #10（已合并） | `/higgs server status` 仅限主人私聊；审批哈希、默认拒绝、审计、限频、超时、幂等和只读宿主快照已实现 |
 | 4 Memory V2.1 | `d52739b` + `56cdda2` | `codex/higgs-phase4-memory-shadow-20260826` / PR #11（已合并） | 严格 JSON 模型候选、敏感隔离、追加式 shadow 队列、36 例中文全提取链路评测与主人只读队列已实现；默认关闭 |
 
@@ -85,9 +86,9 @@
 
 ## 6. 下一步顺序
 
-1. 完成 `codex/higgs-official-heartbeat-auth-20260829` 的发布门、秘密扫描、提交、PR 与 Ubuntu CI；修复只允许在首个可观测且新鲜的心跳 ACK 到达后公开 authenticated，ACK 超时仍 fail-closed。
-2. CI 通过后构建同提交不可变 release/镜像，只重建 official sidecar 和 Agent；必须保持 reply=false，前后证明 NapCat 容器身份、启动时间和健康均不变。随后观察 `qq_official` 从 pending 转为 verified。
-3. 再设计并执行受控的 systemd 进程重启与 Resume 验收；不得让 Python 与 Node 官方 Gateway 并发，也不得触发 NapCat 重启。当前官方 unit 已 enabled 但 inactive，旧基础 unit 已 disabled 但仍 active，真实重启恢复尚未验收。
+1. 先设计并实现官方入站事件与发送回执的协调持久化，封闭 SDK 先保存 sequence、业务事件尚未进入 Agent journal 时的崩溃丢失窗口；完成前不得把 `R_AGENT_OFFICIAL_QQ_REPLY_ENABLED` 改为 true。
+2. 单独修复 systemd 生命周期边界：当前官方 unit 的 `ExecStop` 会停止整栈，而 `ExecStart --wait` 又受个人 QQ 离线导致的 Agent unhealthy 影响。不得直接 `restart` 该 unit；应先通过独立 PR/CI 设计不影响 NapCat 的官方进程 Resume 验收入口。
+3. 在回复关闭状态持续观察官方通道至少 72 小时，记录匿名 heartbeat、Resume、重连、transport 转换和容器重启次数；不得发送自动测试消息。当前官方 unit enabled/inactive、旧基础 unit disabled/active，主机重启路径尚未验收。
 4. 在事件/回执协调持久化和崩溃恢复方案完成前，不得开启官方回复。之后灰度顺序仍为主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大；提醒继续只走 NapCat。
 5. NapCat 的原 48 小时观察已以多次快速 `KickedOffLine` 判定失败并停止；不自动重启、重复登录或把容器健康误报为 QQ 在线。
 
