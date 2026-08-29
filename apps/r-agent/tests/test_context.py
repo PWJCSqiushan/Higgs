@@ -163,3 +163,36 @@ def test_memory_disabled_records_empty_recall_decision(tmp_path: Path) -> None:
     built = builder.build(event("4", "hello"), principal_id="owner")
     assert built.memory_item_ids == ()
     assert recall.get_for_owner(built.turn_id, actor=OWNER).memory_item_ids == ()
+
+
+def test_context_hashes_long_platform_message_id_for_bounded_recall_key(
+    tmp_path: Path,
+) -> None:
+    history, memory, recall = stores(tmp_path)
+    builder = ContextBuilder(
+        history=history,
+        memory=memory,
+        recall=recall,
+        persona="test persona",
+        memory_limit=0,
+    )
+    long_message_id = "platform-message-" + "x" * 160
+    inbound = InboundEvent(
+        channel="qq_official",
+        account_id="bot-account-identifier",
+        sender_id="owner-openid-placeholder",
+        message_id=long_message_id,
+        occurred_at_ms=1_767_225_600_000,
+        conversation_kind=ConversationKind.PRIVATE,
+        conversation_id="qq_official:private:owner-openid-placeholder",
+        group_id=None,
+        text="测试",
+        mentioned=False,
+    )
+
+    built = builder.build(inbound, principal_id="owner", principal_role="owner")
+
+    assert built.turn_id.startswith("event-sha256:")
+    assert len(built.turn_id) == 77
+    assert long_message_id not in built.turn_id
+    assert recall.get_for_owner(built.turn_id, actor=OWNER).turn_id == built.turn_id
