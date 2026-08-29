@@ -271,3 +271,11 @@
 - 生产 Agent 当前 `running/unhealthy` 的唯一匿名健康原因是个人 QQ `get_status_offline`：OneBot 仍可达、账号匹配未知、没有账号不匹配证据。官方 sidecar 独立健康，因此不能把这一 Docker health 结果解释为官方 Gateway 离线。不得为修复综合 health 自动重启或重新登录 NapCat。
 - 根因是基础 Compose 的 Agent healthcheck 仍带 `--require-qq-online`，官方 overlay 未覆盖；这会让已健康的官方双通道被个人 QQ 离线拖成整体 unhealthy，并阻断 official unit 的 `--wait`。独立分支 `codex/higgs-dual-channel-health-20260830` 已在 overlay 中仅移除个人 QQ 权威在线要求，仍保留 Agent 新鲜心跳、OneBot 可达和 NapCat 容器 marker 门槛；新增回归禁止 overlay 重新带入 `--require-qq-online`。
 - 当前本地定向部署测试 `6 passed`，Ruff/格式通过；完整 Python 在正确安装 `dev` extra 后为 `330 passed, 5 skipped`，Node 为 `31 passed, 7 skipped`。下一步提交该小修、PR/Ubuntu CI、合并后只部署新的 Compose overlay 并重建 Agent，再匿名确认 Agent healthy、官方 sidecar 单实例健康、reply=false、NapCat 容器未变化。真实回复仍需该生产验收后单独确认。
+
+## 27. 2026-08-30 双通道健康修复完成生产验收
+
+- 健康覆盖修复提交 `5e0d82d` 经 PR #41 合并为主线 `a0f32c49db88318c696f22b4b9d345312557f465`。PR 的 push 与 pull request 两组 Python、Node/镜像/Compose CI 全绿；合并提交 tree 与本地完整门禁所验收 tree 完全一致。完整门禁为 Python `330 passed, 5 skipped`、Node `31 passed, 7 skipped`，Ruff、格式、秘密扫描、Shell LF 和 267 成员发布门全部通过。
+- 本地生成了完整主线发布包并通过发布门。OrcaTerm 标准文件选择器不可用且完整 Base64 分块通道超过平台单次等待上限，因此生产未使用未完成归档；改为从当前已验收 `9e55b829` 不可变 release 克隆新不可变运行目录，只以双端 SHA-256 一致的 PR #41 `compose.official-qq.yml` 替换唯一运行时差异。测试和文档仍以 GitHub 合并提交为权威，不把该最小运行目录宣称为完整 Git 归档镜像。
+- 切换脚本显式验证 overlay 摘要、Compose 配置、新旧 release 链接和回复开关；仅 `--force-recreate agent`，不重建镜像，不操作 official sidecar 或 NapCat。若 Agent 未在 90 秒内健康或任一旁路容器身份改变，脚本会恢复旧 `current` 并重建旧 Agent。本次回执为成功。
+- 匿名生产验收为：新运行目录生效；Agent `healthy`；official sidecar `healthy`；同 AppID 只有一个 official Gateway；`transport.sqlite` 的 `qq_official` 为 `verified`，连接、认证、身份匹配和新鲜健康回执均通过；`R_AGENT_OFFICIAL_QQ_REPLY_ENABLED=false`。NapCat 容器运行且健康，部署前后容器身份、启动时间和重启计数未改变；没有自动重登、重启 NapCat 或发送测试消息。
+- 这解除的是个人 QQ 离线拖累官方双通道整体健康的问题，不代表个人 QQ 已恢复，也不是正式回复验收。下一动作必须由主人单独确认把官方被动回复从 false 切为 true；获准后只原子更新服务器私有配置并重建 Agent，随后由主人从官方入口发送一条测试消息，验证真实回复、持久状态机、审计和 UNKNOWN/幂等边界。NapCat 提醒与个人 QQ 通道继续保持独立。
