@@ -246,3 +246,12 @@
 - 授权领取现在同时绑定完整请求指纹。首次领取先落盘再调用平台；若 sidecar 在平台调用边界崩溃且没有最终回执，重启后返回 `UNKNOWN` 而不是再次发送。已落盘回执跨进程复用，冲突请求继续拒绝。
 - 本地验证为 Node `31 passed, 5 skipped`、Python 定向 `12 passed`、完整 `307 passed, 5 skipped`，Ruff、格式、Node 语法、release gate 与 `git diff --check` 通过。功能提交已进入 PR #38；push 与 pull request 两组 Python、Node/镜像/Compose CI 全绿，Ubuntu 零跳过验证了权限、symlink、原子重载、镜像与 Compose。尚未合并或部署，生产 reply=false。
 - sidecar 层完成不代表端到端 exactly-once。Agent 当前 debouncer 和业务处理仍是内存态；下一步必须建立 Agent 持久状态机与故障注入，之后才能申请真实被动回复验收。
+
+## 节点 29：协调持久化合并并完成 reply=false 生产发布
+
+- PR #38 已合并为主线 `e02bbc85d04683af7e8854521117c9152ef47d96`，合并后主线 CI run `33254680991` 的 Python 与 Node/镜像/Compose 任务均通过；没有直接推送 `main`。
+- 发布包仅含 Git 跟踪文件，共 455927 字节，SHA-256 为 `99202cf6add2d6e9939315c14e14bf6d28b99dac18bbdffb9f1a23081262e62c`。上传后服务器端再次核对大小与摘要，未携带任何凭据、QQ/OpenID、聊天正文或登录状态。
+- 第一次尝试在 Compose build 缺少 official profile 时于容器变更前停止；第二次在 profile 外执行 `compose ps` 后触发受控回滚，旧 release、私有镜像标签和运行容器均恢复。修正为所有 Compose 命令统一携带 profile 后，复用已构建镜像完成最终切换。
+- 最终匿名回执为：release 与 Agent/sidecar 镜像精确匹配；sidecar healthy、零重启、单 Gateway；Agent running；官方 transport `verified/resumed`、authenticated、身份匹配、心跳新鲜；reply=false。NapCat 容器身份、启动时间和 health 未改变，全程没有自动重登、重启 NapCat 或发送测试消息。
+- 私有持久化目录的 owner/mode 门控通过。当前没有待持久化状态，因此 `delivery-state.json` 尚未物化并记为 armed；首个入站事件、授权领取或回执会以 `0600` 原子创建。不得用文件暂不存在误判为部署失败。
+- 官方 shadow 连续观察从 2026-08-29 21:53（Asia/Shanghai）重新开始。Agent 端 quiet-window、模型生成和业务副作用仍未持久化，正式回复必须继续关闭；下一切片是 Agent 持久处理状态机、重启故障注入和跨进程 UNKNOWN/幂等验收。
