@@ -3,6 +3,23 @@ services:
     depends_on:
       official-qq-sidecar:
         condition: service_healthy
+    # In dual-channel mode an offline personal QQ must not make the whole
+    # Agent unhealthy while the official Gateway remains available.  The
+    # base probe still verifies a fresh Agent heartbeat, OneBot reachability,
+    # and the NapCat container marker; only the authoritative personal-QQ
+    # online requirement is removed by this overlay.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-m",
+          "r_agent.health_probe",
+          "--path",
+          "/var/lib/higgs/health.json",
+          "--max-age",
+          "90",
+        ]
     environment:
       R_AGENT_OFFICIAL_QQ_TRANSPORT: sidecar
       R_AGENT_OFFICIAL_QQ_SIDECAR_SOCKET: /run/higgs-official/sidecar.sock

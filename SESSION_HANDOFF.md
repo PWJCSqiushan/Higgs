@@ -263,3 +263,11 @@
 - 故障测试进一步覆盖真实 `RiskLedger` 的 prepare 崩溃预留复用、`UNKNOWN → P.complete/R.unknown/A+C.send_failed` 且不重发、ACK 仅在 SQLite durable enqueue 后提交、监督循环对 ACK 响应丢失的权威游标恢复，以及 Linux `SecureDeliveryStore` 的真实 claim/receipt 跨进程替换与 provider 调用计数。adapter 自身也强制执行 reply 开关和 sidecar 凭据隔离。
 - 本地门禁：Python `330 passed, 5 skipped`（Windows 仅跳过 Linux 权限/UDS 项）、Ruff 与格式通过；Node `31 passed, 7 skipped`（新增两项真实 POSIX 持久化测试交由 Ubuntu CI）、语法检查通过；发布门确认 244 个跟踪文件、267 个归档成员、秘密模式与 Shell LF 均通过。
 - 功能提交 `33b34eb` 的等价远端提交已进入 PR #40；首轮 push/PR 两套 Python 与 Node/镜像/Compose CI 全绿。当前正在把上述审计修正追加到同一 PR 并等待 Ubuntu 零跳过复验。生产仍为上一主线 release、reply=false；没有发送测试消息、修改私有配置、重建容器或触碰 NapCat。用户已单独批准后续上传与 reply=false 部署；真实回复仍须在合并、生产恢复验收后再次确认。
+
+## 26. 2026-08-30 PR #40 合并发布与双通道健康门槛修复中
+
+- PR #40 已合并为主线 `9e55b8293a45feac3d89c8b5f32f1d94c9077185`；合并后 CI run `33259705508` 的 Python 与 Node/镜像/Compose 任务全部通过，Ubuntu 对本地 POSIX 跳过项为零跳过。只含 Git 跟踪文件的发布包为 470185 字节、267 个成员，SHA-256 为 `ffaef83ac222b6a963634cb10b554e11eefd1bebfa120c62c46b9661dd78c3df`，本地与服务器校验一致。
+- 第一次部署在生产变更前因归档内脚本无 executable 位安全退出。改为显式经 Bash 调用后，新 release、Agent 与 official sidecar 镜像均已生效；只重建 sidecar 和 Agent。匿名后验确认 sidecar running/healthy、零重启、单 Gateway，`official_processing.sqlite` 已物化，官方回复仍为 false；NapCat 容器 running/healthy、零重启且未参与重建。
+- 生产 Agent 当前 `running/unhealthy` 的唯一匿名健康原因是个人 QQ `get_status_offline`：OneBot 仍可达、账号匹配未知、没有账号不匹配证据。官方 sidecar 独立健康，因此不能把这一 Docker health 结果解释为官方 Gateway 离线。不得为修复综合 health 自动重启或重新登录 NapCat。
+- 根因是基础 Compose 的 Agent healthcheck 仍带 `--require-qq-online`，官方 overlay 未覆盖；这会让已健康的官方双通道被个人 QQ 离线拖成整体 unhealthy，并阻断 official unit 的 `--wait`。独立分支 `codex/higgs-dual-channel-health-20260830` 已在 overlay 中仅移除个人 QQ 权威在线要求，仍保留 Agent 新鲜心跳、OneBot 可达和 NapCat 容器 marker 门槛；新增回归禁止 overlay 重新带入 `--require-qq-online`。
+- 当前本地定向部署测试 `6 passed`，Ruff/格式通过；完整 Python 在正确安装 `dev` extra 后为 `330 passed, 5 skipped`，Node 为 `31 passed, 7 skipped`。下一步提交该小修、PR/Ubuntu CI、合并后只部署新的 Compose overlay 并重建 Agent，再匿名确认 Agent healthy、官方 sidecar 单实例健康、reply=false、NapCat 容器未变化。真实回复仍需该生产验收后单独确认。
