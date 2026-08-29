@@ -244,5 +244,5 @@
 - 新建独立分支 `codex/higgs-official-durable-delivery-20260829`。full-mode Node sidecar 新增专用私有 `delivery-state.json`，以临时文件、fsync、原子 rename、目录 fsync 和 `0600/0700` 权限门保存未确认事件、被动回复授权领取及发送回执；结构、owner、symlink、大小、权限、容量任一异常均匿名 fail-closed。capture-only 仍不保留身份或正文。
 - UDS hello 增加匿名事件基准游标，新增 generation 绑定的逐条 ACK。Python 只有在 handler 正常返回后 ACK 并推进游标；异常时保留事件，Agent 重启从 ACK 游标续读，sidecar 重启则只重放尚未确认事件。
 - 授权领取现在同时绑定完整请求指纹。首次领取先落盘再调用平台；若 sidecar 在平台调用边界崩溃且没有最终回执，重启后返回 `UNKNOWN` 而不是再次发送。已落盘回执跨进程复用，冲突请求继续拒绝。
-- 本地验证为 Node `31 passed, 5 skipped`、Python 定向 `12 passed`、完整 `307 passed, 5 skipped`，Ruff、格式、Node 语法、release gate 与 `git diff --check` 通过。Linux 的权限、symlink、原子重载、镜像与 Compose 仍由 PR Ubuntu CI 验证；尚未提交、合并或部署，生产 reply=false。
+- 本地验证为 Node `31 passed, 5 skipped`、Python 定向 `12 passed`、完整 `307 passed, 5 skipped`，Ruff、格式、Node 语法、release gate 与 `git diff --check` 通过。功能提交已进入 PR #38；push 与 pull request 两组 Python、Node/镜像/Compose CI 全绿，Ubuntu 零跳过验证了权限、symlink、原子重载、镜像与 Compose。尚未合并或部署，生产 reply=false。
 - sidecar 层完成不代表端到端 exactly-once。Agent 当前 debouncer 和业务处理仍是内存态；下一步必须建立 Agent 持久状态机与故障注入，之后才能申请真实被动回复验收。

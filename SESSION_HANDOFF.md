@@ -239,5 +239,5 @@
 - 新分支 `codex/higgs-official-durable-delivery-20260829` 已完成第一层协调持久化：full-mode sidecar 在 SDK 回调返回前，把严格规范化的入站事件及其被动回复授权原子写入专用私有 `0600 delivery-state.json`；文件、父目录、owner、大小、结构或 symlink 校验失败以及队列满均终止官方通道，不会静默丢弃。
 - UDS hello 现在给出匿名 ACK 游标；Agent 只有在事件处理器正常返回后才逐条提交带 generation 的显式 ACK。Agent 单独重启会从 sidecar 当前 ACK 游标继续，sidecar 重启会把仍未确认事件安全重编号后重放；ACK 前处理失败不移动游标。
 - 回复授权同时持久化请求指纹，发送回执也原子保存。若进程在领取发送权后、写入最终回执前崩溃，重启后同一请求只返回 `UNKNOWN`，不再调用平台；同一幂等键但不同目标、正文或 reply ID 继续拒绝。
-- 当前本地 Node 为 `31 passed, 5 skipped`，其中五项 POSIX 原子文件/UDS 测试等待 Ubuntu CI；Python 定向 `12 passed`、完整 `307 passed, 5 skipped`，Ruff、格式、Node 语法、发布门与 diff 检查通过。代码尚未提交或部署，生产回复仍为 false。
+- 本地 Node 为 `31 passed, 5 skipped`，Python 定向 `12 passed`、完整 `307 passed, 5 skipped`，Ruff、格式、Node 语法、发布门与 diff 检查通过。功能提交已进入 PR #38；push 与 pull request 两组 Python、Node/镜像/Compose CI 全绿，Ubuntu 零跳过覆盖了私有文件权限、原子重载和 symlink 场景。尚未合并或部署，生产回复仍为 false。
 - 这一切片只封闭 sidecar 进程崩溃窗口；Agent 的 quiet-window、模型生成与业务副作用尚未形成持久处理状态机。因此即使本 PR/CI 与 shadow 部署通过，也不得立即开启回复；下一切片需先持久化 Agent 的处理生命周期并做重启注入测试。
