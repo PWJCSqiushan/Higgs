@@ -241,3 +241,12 @@
 - 回复授权同时持久化请求指纹，发送回执也原子保存。若进程在领取发送权后、写入最终回执前崩溃，重启后同一请求只返回 `UNKNOWN`，不再调用平台；同一幂等键但不同目标、正文或 reply ID 继续拒绝。
 - 本地 Node 为 `31 passed, 5 skipped`，Python 定向 `12 passed`、完整 `307 passed, 5 skipped`，Ruff、格式、Node 语法、发布门与 diff 检查通过。功能提交已进入 PR #38；push 与 pull request 两组 Python、Node/镜像/Compose CI 全绿，Ubuntu 零跳过覆盖了私有文件权限、原子重载和 symlink 场景。尚未合并或部署，生产回复仍为 false。
 - 这一切片只封闭 sidecar 进程崩溃窗口；Agent 的 quiet-window、模型生成与业务副作用尚未形成持久处理状态机。因此即使本 PR/CI 与 shadow 部署通过，也不得立即开启回复；下一切片需先持久化 Agent 的处理生命周期并做重启注入测试。
+
+## 24. 2026-08-29 sidecar 协调持久化合并与生产 shadow 发布
+
+- PR #38 已在 push 与 pull request 两套 Python、Node/镜像/Compose CI 全绿后合并，主线提交为 `e02bbc85d04683af7e8854521117c9152ef47d96`；合并后主线 CI run `33254680991` 的两项任务再次通过，Linux 零跳过覆盖私有权限、symlink、原子重载与 Compose。
+- 只含 Git 跟踪文件的发布包为 455927 字节，SHA-256 为 `99202cf6add2d6e9939315c14e14bf6d28b99dac18bbdffb9f1a23081262e62c`；本地与服务器端大小、摘要均一致，包内不含凭据、身份、聊天正文或登录状态。
+- 首次生产脚本在镜像构建前因遗漏 official profile 安全失败，未替换容器；第二次已完成镜像构建和短暂侧车重建，但后续 `compose ps` 未携带 profile，自动回滚恢复旧 release、私有镜像标签与运行容器。两次均未重启或重新登录 NapCat，也未发送测试消息。
+- 最终脚本把 profile 固定到所有 Compose 子命令，复用已验证的新镜像后成功原子切换 release 与私有镜像标签，只依次重建 official sidecar 和 Agent。匿名验收确认新 sidecar healthy、重启计数为零、单 Gateway、Agent running、官方 reply=false，NapCat 容器身份、启动时间和 health 完全不变。
+- 独立后验从 `transport.sqlite` 确认 `qq_official` 为 `verified`，connected/authenticated、身份匹配和最近健康回执均为真，心跳新鲜且原因是 `resumed`。专用持久化目录继续为 agent 私有 `0700`；空状态尚未产生 `delivery-state.json` 属预期，首个需保存的事件、授权或回执会以 `0600` 原子物化。
+- 本次 shadow 观察从 2026-08-29 21:53（Asia/Shanghai）重新计时。正式回复仍不得开启：sidecar 崩溃窗口已封闭，但 Agent quiet-window、模型生成和业务副作用还没有持久处理生命周期；下一阶段先实现 Agent 状态机、故障注入与重启恢复，再申请真实被动回复验收。
