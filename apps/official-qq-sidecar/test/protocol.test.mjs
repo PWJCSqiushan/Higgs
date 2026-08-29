@@ -125,15 +125,15 @@ test("event queue fails closed on a cursor gap", () => {
 test("duplicate inbound events cannot renew or reset a reply authorization", () => {
   const cache = new ReplyAuthorizationCache(10, 100);
   cache.authorize(safe, "c2c", safe, 1000);
-  cache.claim(safe, "c2c", safe, "first-key", 1001);
+  cache.claim(safe, "c2c", safe, "first-key", "a".repeat(64), 1001);
   cache.authorize(safe, "c2c", safe, 1050);
   assert.throws(
-    () => cache.claim(safe, "c2c", safe, "second-key", 1051),
-    /invalid_reply_binding/,
+    () => cache.claim(safe, "c2c", safe, "second-key", "b".repeat(64), 1051),
+    /idempotency_collision/,
   );
   cache.authorize(safe, "c2c", safe, 1200);
   assert.throws(
-    () => cache.claim(safe, "c2c", safe, "first-key", 1201),
+    () => cache.claim(safe, "c2c", safe, "first-key", "a".repeat(64), 1201),
     /invalid_reply_binding/,
   );
   assert.throws(

@@ -25,6 +25,7 @@ services:
     environment:
       HIGGS_OFFICIAL_QQ_SOCKET: /run/higgs-official/sidecar.sock
       HIGGS_OFFICIAL_QQ_SESSION_FILE: /var/lib/higgs-official/session.json
+      HIGGS_OFFICIAL_QQ_DELIVERY_STATE_FILE: /var/lib/higgs-official/delivery-state.json
     networks:
       - egress
     user: "10001:10001"

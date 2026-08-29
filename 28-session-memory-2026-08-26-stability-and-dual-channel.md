@@ -238,3 +238,11 @@
 - 现场切换脚本曾因在循环/条件上下文依赖 `set -e`，没有按预期把一次旧的 `rejected/protocol_error` 读取当作失败；该次回执不能作为成功证据，后续运维脚本不得用隐式 `errexit` 代替显式返回码。独立后验核验最终确认新 sidecar healthy、零重启、connected/authenticated、ACK 新鲜，原子 session 真实以 `resumed` 恢复；Agent 将持续约十小时的旧 `protocol_error` 区间关闭并进入 `verified/resumed`，身份匹配为真。
 - 官方回复保持 false，且同 AppID 只有一个 Node Gateway。个人 QQ 当前为 `rejected/get_status_offline`、权威在线 false、身份匹配未知、无新的 kick reason；因此 Agent 综合 Docker health 仍 unhealthy，不能据此否定已独立验证的官方 transport。
 - systemd 尚未执行 `restart`：官方 unit enabled/inactive，旧基础 unit disabled/active；官方 unit 的 `ExecStop` 会停止整栈，`ExecStart --wait` 又会受个人 QQ 离线的 Agent health 牵连。下一步先用独立 PR/CI 建立不影响 NapCat 的官方 Resume 生命周期入口，并实现事件/回执协调持久化；两者完成前不得开启正式回复。
+
+## 节点 28：sidecar 入站与发送状态协调持久化完成本地收束
+
+- 新建独立分支 `codex/higgs-official-durable-delivery-20260829`。full-mode Node sidecar 新增专用私有 `delivery-state.json`，以临时文件、fsync、原子 rename、目录 fsync 和 `0600/0700` 权限门保存未确认事件、被动回复授权领取及发送回执；结构、owner、symlink、大小、权限、容量任一异常均匿名 fail-closed。capture-only 仍不保留身份或正文。
+- UDS hello 增加匿名事件基准游标，新增 generation 绑定的逐条 ACK。Python 只有在 handler 正常返回后 ACK 并推进游标；异常时保留事件，Agent 重启从 ACK 游标续读，sidecar 重启则只重放尚未确认事件。
+- 授权领取现在同时绑定完整请求指纹。首次领取先落盘再调用平台；若 sidecar 在平台调用边界崩溃且没有最终回执，重启后返回 `UNKNOWN` 而不是再次发送。已落盘回执跨进程复用，冲突请求继续拒绝。
+- 本地验证为 Node `31 passed, 5 skipped`、Python 定向 `12 passed`、完整 `307 passed, 5 skipped`，Ruff、格式、Node 语法、release gate 与 `git diff --check` 通过。Linux 的权限、symlink、原子重载、镜像与 Compose 仍由 PR Ubuntu CI 验证；尚未提交、合并或部署，生产 reply=false。
+- sidecar 层完成不代表端到端 exactly-once。Agent 当前 debouncer 和业务处理仍是内存态；下一步必须建立 Agent 持久状态机与故障注入，之后才能申请真实被动回复验收。

@@ -36,6 +36,7 @@ _SAFE_REASONS = {
     "heartbeat_ack_timeout",
     "reconnect_budget_exhausted",
     "session_store_error",
+    "delivery_store_error",
     "protocol_error",
     "stopped",
 }
@@ -44,6 +45,7 @@ _SAFE_ERROR_CODES = {
     "capture_only",
     "cursor_gap",
     "empty_body",
+    "event_queue_full",
     "gateway_unavailable",
     "idempotency_collision",
     "internal_error",
@@ -229,9 +231,13 @@ class OfficialQQSidecarAdapter:
             raise SidecarProtocolViolation("sidecar protocol version mismatch")
         return _safe_id(payload.get("generation"))
 
-    async def _hello(self) -> str:
+    async def _hello(self) -> tuple[str, int]:
         payload = await self._request("GET", "/v1/hello")
-        return self._validate_envelope(payload, set())
+        generation = self._validate_envelope(payload, {"event_cursor"})
+        cursor = payload.get("event_cursor")
+        if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+            raise SidecarProtocolViolation("sidecar event cursor is invalid")
+        return generation, cursor
 
     async def _refresh_status(self) -> TransportStatus:
         payload = await self._request("GET", "/v1/status")
@@ -347,11 +353,11 @@ class OfficialQQSidecarAdapter:
             raise TransportUnavailable("official QQ sidecar event handler is required")
         self._stop_requested.clear()
         try:
-            generation = await self._hello()
+            generation, cursor = await self._hello()
             if self._generation is not None and self._generation != generation:
                 raise SidecarProtocolViolation("sidecar generation changed")
             self._generation = generation
-            self._cursor = 0
+            self._cursor = cursor
             await self._refresh_status()
         except TransportStatePersistenceError as exc:
             self._terminal_failure = True
@@ -503,6 +509,19 @@ class OfficialQQSidecarAdapter:
             cursor, event = self._normalize_event(raw)
             if event is not None:
                 await self._event_handler(event)
+            ack_payload = await self._request(
+                "POST",
+                "/v1/events/ack",
+                json_body={
+                    "protocol_version": PROTOCOL_VERSION,
+                    "generation": self._generation,
+                    "cursor": cursor,
+                },
+            )
+            ack_generation = self._validate_envelope(ack_payload, {"event_cursor"})
+            ack_cursor = ack_payload.get("event_cursor")
+            if ack_generation != self._generation or ack_cursor != cursor:
+                raise SidecarProtocolViolation("sidecar event acknowledgement changed")
             self._cursor = cursor
 
     async def supervise(

@@ -67,6 +67,10 @@ def status_payload(*, generation: str = "generation-1") -> dict[str, object]:
     }
 
 
+def hello_payload(*, generation: str = "generation-1", cursor: int = 0) -> dict[str, object]:
+    return {"protocol_version": 1, "generation": generation, "event_cursor": cursor}
+
+
 def event_payload(
     cursor: int,
     *,
@@ -94,7 +98,7 @@ def event_payload(
 async def test_start_requires_exact_versioned_ready_status() -> None:
     client = FakeSidecarClient(
         [
-            (200, {"protocol_version": 1, "generation": "generation-1"}),
+            (200, hello_payload()),
             (200, status_payload()),
         ]
     )
@@ -120,7 +124,7 @@ async def test_start_accepts_connected_status_while_first_heartbeat_is_pending()
     }
     client = FakeSidecarClient(
         [
-            (200, {"protocol_version": 1, "generation": "generation-1"}),
+            (200, hello_payload()),
             (200, pending),
         ]
     )
@@ -139,7 +143,7 @@ async def test_start_accepts_connected_status_while_first_heartbeat_is_pending()
 async def test_capture_only_sidecar_is_rejected_from_business_pipeline() -> None:
     client = FakeSidecarClient(
         [
-            (200, {"protocol_version": 1, "generation": "generation-1"}),
+            (200, hello_payload()),
             (200, {**status_payload(), "capture_only": True, "bot_id": None}),
         ]
     )
@@ -177,7 +181,7 @@ async def test_events_route_only_owner_and_allowlisted_group() -> None:
     ]
     client = FakeSidecarClient(
         [
-            (200, {"protocol_version": 1, "generation": "generation-1"}),
+            (200, hello_payload()),
             (200, status_payload()),
             (
                 200,
@@ -187,6 +191,17 @@ async def test_events_route_only_owner_and_allowlisted_group() -> None:
                     "events": events,
                 },
             ),
+            *[
+                (
+                    200,
+                    {
+                        "protocol_version": 1,
+                        "generation": "generation-1",
+                        "event_cursor": cursor,
+                    },
+                )
+                for cursor in range(1, 5)
+            ],
         ]
     )
     adapter = OfficialQQSidecarAdapter(sidecar_config(), event_handler=capture, client=client)
@@ -200,13 +215,43 @@ async def test_events_route_only_owner_and_allowlisted_group() -> None:
     ]
     assert received[1].mentioned is True
     assert adapter._cursor == 4
+    assert [request[1] for request in client.requests].count("/v1/events/ack") == 4
+
+
+@pytest.mark.asyncio
+async def test_hello_restores_acknowledged_cursor_and_handler_failure_is_not_acked() -> None:
+    async def fail(_event: InboundEvent) -> None:
+        raise RuntimeError("processing failed")
+
+    client = FakeSidecarClient(
+        [
+            (200, hello_payload(cursor=5)),
+            (200, status_payload()),
+            (
+                200,
+                {
+                    "protocol_version": 1,
+                    "generation": "generation-1",
+                    "events": [event_payload(6)],
+                },
+            ),
+        ]
+    )
+    adapter = OfficialQQSidecarAdapter(sidecar_config(), event_handler=fail, client=client)
+
+    await adapter.start()
+    assert adapter._cursor == 5
+    with pytest.raises(RuntimeError, match="processing failed"):
+        await adapter._poll_events()
+    assert adapter._cursor == 5
+    assert all(request[1] != "/v1/events/ack" for request in client.requests)
 
 
 @pytest.mark.asyncio
 async def test_cursor_gap_and_generation_change_fail_closed() -> None:
     client = FakeSidecarClient(
         [
-            (200, {"protocol_version": 1, "generation": "generation-1"}),
+            (200, hello_payload()),
             (200, status_payload()),
             (
                 200,
@@ -242,7 +287,7 @@ async def test_cursor_gap_and_generation_change_fail_closed() -> None:
 async def test_authenticated_bot_identity_cannot_change() -> None:
     client = FakeSidecarClient(
         [
-            (200, {"protocol_version": 1, "generation": "generation-1"}),
+            (200, hello_payload()),
             (200, status_payload()),
             (200, {**status_payload(generation="generation-2"), "bot_id": "other-bot"}),
         ]
@@ -258,7 +303,7 @@ async def test_authenticated_bot_identity_cannot_change() -> None:
 async def test_new_generation_requires_verified_resume_with_same_identity() -> None:
     client = FakeSidecarClient(
         [
-            (200, {"protocol_version": 1, "generation": "generation-1"}),
+            (200, hello_payload()),
             (200, status_payload()),
             (200, {**status_payload(generation="generation-2"), "reason": "resumed"}),
         ]
@@ -284,7 +329,7 @@ async def test_transport_state_failure_is_explicit_and_terminal() -> None:
 
     client = FakeSidecarClient(
         [
-            (200, {"protocol_version": 1, "generation": "generation-1"}),
+            (200, hello_payload()),
             (200, status_payload()),
         ]
     )
@@ -307,7 +352,7 @@ async def test_transport_state_failure_is_explicit_and_terminal() -> None:
 async def test_send_is_passive_canonical_and_idempotent() -> None:
     client = FakeSidecarClient(
         [
-            (200, {"protocol_version": 1, "generation": "generation-1"}),
+            (200, hello_payload()),
             (200, status_payload()),
             (
                 200,
@@ -402,7 +447,7 @@ async def test_unknown_or_rejected_send_never_claims_sent() -> None:
     ):
         client = FakeSidecarClient(
             [
-                (200, {"protocol_version": 1, "generation": "generation-1"}),
+                (200, hello_payload()),
                 (200, status_payload()),
                 response,
             ]

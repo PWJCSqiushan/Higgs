@@ -56,6 +56,7 @@ function boundedReason(value) {
     "heartbeat_ack_timeout",
     "reconnect_budget_exhausted",
     "session_store_error",
+    "delivery_store_error",
     "owner_bind_error",
     "protocol_error",
     "stopped",
@@ -81,6 +82,7 @@ export class OfficialQQClient {
     onOwnerCandidate = null,
     onFatal = () => {},
     sessionStore = null,
+    deliveryStore = null,
   }) {
     this.appId = appId;
     this.appSecret = appSecret;
@@ -98,12 +100,13 @@ export class OfficialQQClient {
     this.onOwnerCandidate = onOwnerCandidate;
     this.onFatal = onFatal;
     this.sessionStore = sessionStore;
+    this.deliveryStore = deliveryStore;
     this.generation = newGeneration();
     this.bot = null;
     this.startTask = null;
-    this.events = new EventQueue();
-    this.receipts = new ReceiptCache();
-    this.replyAuthorizations = new ReplyAuthorizationCache();
+    this.events = deliveryStore ?? new EventQueue();
+    this.receipts = deliveryStore ?? new ReceiptCache();
+    this.replyAuthorizations = deliveryStore ?? new ReplyAuthorizationCache();
     this.pendingSends = new Map();
     this.watchdogTimer = null;
     this.observedWs = null;
@@ -338,26 +341,34 @@ export class OfficialQQClient {
       ) {
         return;
       }
-      this.events.append(
-        this.captureOnly
-          ? {
-              event_type: normalized.event_type,
-              kind: normalized.kind,
-              received_at_ms: normalized.received_at_ms,
-            }
-          : normalized,
-      );
-      if (!this.captureOnly) {
+      const storedEvent = this.captureOnly
+        ? {
+            event_type: normalized.event_type,
+            kind: normalized.kind,
+            received_at_ms: normalized.received_at_ms,
+          }
+        : normalized;
+      if (!this.captureOnly && this.deliveryStore) {
         try {
-          this.replyAuthorizations.authorize(
-            normalized.message_id,
-            normalized.kind,
-            normalized.kind === "group" ? normalized.group_id : normalized.sender_id,
-            this.now(),
-          );
+          this.deliveryStore.appendAuthorized(storedEvent, this.now());
         } catch {
-          this._failFatal("protocol_error");
+          this._failFatal("delivery_store_error");
           return;
+        }
+      } else {
+        this.events.append(storedEvent);
+        if (!this.captureOnly) {
+          try {
+            this.replyAuthorizations.authorize(
+              normalized.message_id,
+              normalized.kind,
+              normalized.kind === "group" ? normalized.group_id : normalized.sender_id,
+              this.now(),
+            );
+          } catch {
+            this._failFatal("protocol_error");
+            return;
+          }
         }
       }
       this.state.last_event_at_ms = this.now();
@@ -409,6 +420,17 @@ export class OfficialQQClient {
     return this.events.read(after, limit);
   }
 
+  eventBaseCursor() {
+    return this.events.baseCursor();
+  }
+
+  ackEvents(generation, cursor) {
+    if (generation !== this.generation) {
+      throw new ProtocolError("stale_generation", 409);
+    }
+    return this.events.ack(cursor);
+  }
+
   async send(request) {
     if (this.captureOnly) {
       throw new ProtocolError("capture_only", 403);
@@ -445,13 +467,19 @@ export class OfficialQQClient {
     ) {
       throw new ProtocolError("gateway_unavailable", 503);
     }
-    this.replyAuthorizations.claim(
+    const newlyClaimed = this.replyAuthorizations.claim(
       request.reply_message_id,
       request.kind,
       request.target_id,
       request.idempotency_key,
+      fingerprint,
       this.now(),
     );
+    if (!newlyClaimed) {
+      const receipt = Object.freeze({ state: "unknown", provider_message_id: null });
+      this.receipts.put(request.idempotency_key, fingerprint, receipt);
+      return Object.freeze({ request_id: request.request_id, ...receipt });
+    }
 
     const promise = (async () => {
       try {

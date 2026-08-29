@@ -62,17 +62,37 @@ test("socket preparation rejects unsafe parent modes and non-socket paths", () =
 });
 
 test("status and events expose only versioned protocol envelopes", async () => {
+  let acknowledged = null;
   const client = {
     generation: "generation",
+    eventBaseCursor: () => 0,
     status: () => ({ configured: false, reason: "disabled" }),
     readEvents: () => [],
+    ackEvents: (generation, cursor) => {
+      assert.equal(generation, "generation");
+      acknowledged = cursor;
+      return cursor;
+    },
   };
   await withServer(client, async (base) => {
     const hello = await (await fetch(`${base}/v1/hello`)).json();
     assert.equal(hello.protocol_version, 1);
     assert.equal(hello.generation, "generation");
+    assert.equal(hello.event_cursor, 0);
     const events = await (await fetch(`${base}/v1/events?after=0&limit=1`)).json();
     assert.deepEqual(events.events, []);
+    const ack = await fetch(`${base}/v1/events/ack`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        protocol_version: 1,
+        generation: "generation",
+        cursor: 0,
+      }),
+    });
+    assert.equal(ack.status, 200);
+    assert.equal((await ack.json()).event_cursor, 0);
+    assert.equal(acknowledged, 0);
   });
 });
 
@@ -80,6 +100,7 @@ test("health requires authenticated gateway and a fresh heartbeat ACK", () => {
   const status = {
     protocol_version: 1,
     generation: "generation",
+    eventBaseCursor: () => 0,
     configured: true,
     gateway_connected: true,
     authenticated: true,

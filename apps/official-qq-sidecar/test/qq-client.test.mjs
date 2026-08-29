@@ -296,7 +296,15 @@ test("full mode drops and never authorizes non-owner or non-allowlisted events",
   });
   assert.equal(client.readEvents(0, 10).length, 0);
   assert.throws(
-    () => client.replyAuthorizations.claim(safe, "c2c", "not-the-owner", safe, 1234),
+    () =>
+      client.replyAuthorizations.claim(
+        safe,
+        "c2c",
+        "not-the-owner",
+        safe,
+        "a".repeat(64),
+        1234,
+      ),
     /invalid_reply_binding/,
   );
   await client.stop();
@@ -426,6 +434,29 @@ test("provider timeout returns UNKNOWN without hanging or retrying", async () =>
   assert.equal(receipt.state, "unknown");
   const repeated = await client.send(sendRequest(client));
   assert.deepEqual(repeated, receipt);
+  await client.stop();
+});
+
+test("a durable pre-crash send claim is recovered as UNKNOWN without another provider call", async () => {
+  const storedReceipts = new Map();
+  const deliveryStore = {
+    appendAuthorized() {},
+    read: () => [],
+    baseCursor: () => 0,
+    ack: (cursor) => cursor,
+    get: (key) => storedReceipts.get(key) ?? null,
+    put: (key, _fingerprint, receipt) => storedReceipts.set(key, receipt),
+    claim: () => false,
+  };
+  const client = newClient({ deliveryStore });
+  await client.start();
+  const bot = FakeBot.instances[0];
+  readyForSend(bot);
+
+  const receipt = await client.send(sendRequest(client));
+
+  assert.equal(receipt.state, "unknown");
+  assert.equal(bot.sent.length, 0);
   await client.stop();
 });
 
