@@ -293,3 +293,11 @@
 - 匿名固定模型探针确认生产模型配置、鉴权、网络和基础生成正常。进一步的内容无关结构检查显示，测试正文仅 2 个字符，但官方平台消息标识较长，使旧 `channel:account_id:message_id` 召回审计键达到 150 字符，超过 `RecallLedger` 的 128 字符上限；召回审计未落库，请求也从未到达模型服务。这是两次 `model_failed` 的确定根因。
 - 独立分支 `codex/higgs-official-recall-id-fix-20260830` 将召回 `turn_id` 改为带版本前缀的 SHA-256 固定长度键。它仍绑定 channel、account 和 message，保持去重与冲突检测语义，同时不再泄露平台标识，也不会受不同平台 ID 长度影响。新增 160 字符平台消息 ID 回归，证明键长固定为 77、原标识不出现在审计键且 owner recall 可读取。
 - 本地 release gate、秘密边界、Shell LF/语法、Ruff、格式均通过；Python 完整 `331 passed, 5 skipped`，Node `31 passed, 7 skipped`（Windows 既有 Linux 专用跳过）。下一步是提交独立 PR、等待 Ubuntu CI 零跳过，合并后生成不可变发布并只重建 Agent；旧失败批次保持终态，不得重放。生产修复部署后再请主人发送一条新测试完成真实 SENT 验收。
+
+## 30. 2026-08-30 官方 QQ Bot 首次真实端到端回复通过
+
+- 超长官方消息标识修复经 PR #44 的 push 与 pull request 两组 Python、Node/镜像/Compose CI 全绿后合并，主线提交为 `6a95312bc3bf935295f9d9ff199c577baa7ae31d`；没有直接推送 `main`。
+- 仅含 Git 跟踪文件的完整发布包为 475980 字节、267 个成员，SHA-256 为 `58723a985a1f3775669126395e0efe39b0cd093069b24fd4d6f8a6f8a2ac0551`。本地与服务器发布链路使用不可变 release；发布只构建并重建 Agent，official sidecar 和 NapCat 的容器身份、启动时间与重启计数均未改变。
+- 部署后匿名门控确认 Agent、official sidecar 与 NapCat 容器均 healthy，官方 Gateway 单实例，官方 transport 保持 `verified`，reply=true，活动 durable 批次为零。先前两个 `complete/model_failed` 批次保持终态，未重放。
+- 主人随后从官方入口发送一条新消息。脱敏验收显示 durable batch 进入 `complete`，处理生命周期出现预期的三个转换节点，最终发送结果与回复审计均为 `sent`，活动批次回归零；官方 transport 仍 verified，三个容器仍 healthy，Gateway 仍为一个。
+- 这是 Higgs 官方 QQ Bot 的首次真实“平台入站 → 持久处理 → 模型回复 → 平台发送 → 审计收敛”端到端验收。当前已正式开放 owner 官方 C2C 被动回复 MVP；提醒仍由 NapCat 发送，不做跨通道自动转发或透明故障切换。下一阶段是 72 小时官方通道观察，然后再以单个测试群、仅 `@` 触发的方式灰度。
