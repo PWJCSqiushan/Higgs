@@ -55,14 +55,30 @@ class ConversationCircuitBreaker:
                 CREATE TABLE IF NOT EXISTS conversation_guard_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     conversation_id TEXT NOT NULL,
+                    idempotency_hash TEXT,
                     created_at_ms INTEGER NOT NULL
                 )
                 """
             )
+            columns = {
+                str(row[1])
+                for row in conn.execute("PRAGMA table_info(conversation_guard_events)").fetchall()
+            }
+            if "idempotency_hash" not in columns:
+                conn.execute(
+                    "ALTER TABLE conversation_guard_events ADD COLUMN idempotency_hash TEXT"
+                )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_guard_conversation_time
                 ON conversation_guard_events(conversation_id, created_at_ms)
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_guard_idempotency
+                ON conversation_guard_events(idempotency_hash)
+                WHERE idempotency_hash IS NOT NULL
                 """
             )
             conn.execute(
@@ -81,6 +97,7 @@ class ConversationCircuitBreaker:
         *,
         is_owner: bool,
         source_id: str | None = None,
+        idempotency_key: str | None = None,
         now_ms: int | None = None,
     ) -> GuardDecision:
         if is_owner:
@@ -88,16 +105,41 @@ class ConversationCircuitBreaker:
         now = int(time.time() * 1000) if now_ms is None else now_ms
         with sqlite3.connect(self.path) as conn:
             conn.execute("BEGIN IMMEDIATE")
-            scope = conversation_id
-            if source_id is not None:
+            salt: str | None = None
+            if source_id is not None or idempotency_key is not None:
                 salt = str(
                     conn.execute(
                         "SELECT value FROM conversation_guard_meta WHERE key='hash_salt'"
                     ).fetchone()[0]
                 )
+            scope = conversation_id
+            if source_id is not None:
+                assert salt is not None
                 scope = hashlib.sha256(
                     f"{salt}:group-source\x00{conversation_id}\x00{source_id}".encode()
                 ).hexdigest()
+            idempotency_hash: str | None = None
+            if idempotency_key is not None:
+                clean_key = idempotency_key.strip()
+                if not clean_key or len(clean_key) > 200:
+                    raise ValueError("guard idempotency key is invalid")
+                assert salt is not None
+                idempotency_hash = hashlib.sha256(
+                    f"{salt}:guard-idempotency\x00{clean_key}".encode()
+                ).hexdigest()
+                prior = conn.execute(
+                    """
+                    SELECT conversation_id FROM conversation_guard_events
+                    WHERE idempotency_hash=?
+                    """,
+                    (idempotency_hash,),
+                ).fetchone()
+                if prior is not None:
+                    if str(prior[0]) != scope:
+                        raise ValueError(
+                            "guard idempotency key conflicts with another conversation"
+                        )
+                    return GuardDecision(True)
             row = conn.execute(
                 "SELECT until_ms FROM conversation_guard_cooldowns WHERE conversation_id = ?",
                 (scope,),
@@ -127,8 +169,12 @@ class ConversationCircuitBreaker:
                 )
                 return GuardDecision(False, self.cooldown_ms // 1000)
             conn.execute(
-                "INSERT INTO conversation_guard_events(conversation_id, created_at_ms) VALUES (?, ?)",
-                (scope, now),
+                """
+                INSERT INTO conversation_guard_events(
+                    conversation_id, idempotency_hash, created_at_ms
+                ) VALUES (?, ?, ?)
+                """,
+                (scope, idempotency_hash, now),
             )
         return GuardDecision(True)
 

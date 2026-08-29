@@ -108,6 +108,7 @@ class RiskLedger:
                     account_hash TEXT,
                     conversation_hash TEXT,
                     source_hash TEXT,
+                    idempotency_hash TEXT,
                     reason_code TEXT,
                     client_version TEXT,
                     transport_version TEXT,
@@ -121,6 +122,8 @@ class RiskLedger:
             }
             if "source_hash" not in columns:
                 conn.execute("ALTER TABLE risk_events ADD COLUMN source_hash TEXT")
+            if "idempotency_hash" not in columns:
+                conn.execute("ALTER TABLE risk_events ADD COLUMN idempotency_hash TEXT")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_risk_time
@@ -137,6 +140,13 @@ class RiskLedger:
                 """
                 CREATE INDEX IF NOT EXISTS idx_risk_source_time
                 ON risk_events(source_hash, created_at_ms, event_type)
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_risk_active_idempotency
+                ON risk_events(idempotency_hash)
+                WHERE idempotency_hash IS NOT NULL AND outcome='reserved'
                 """
             )
             conn.execute(
@@ -393,6 +403,7 @@ class RiskLedger:
         account_id: str,
         conversation_id: str,
         source_id: str | None = None,
+        idempotency_key: str | None = None,
         now_ms: int | None = None,
     ) -> BudgetDecision:
         if event_type not in {"reply", "reminder", "proactive"}:
@@ -403,6 +414,12 @@ class RiskLedger:
         conversation_hash = self._hash(conversation_id)
         source_hash = self._source_hash(conversation_id, source_id)
         account_hash = self._hash(account_id)
+        idempotency_hash: str | None = None
+        if idempotency_key is not None:
+            clean_key = idempotency_key.strip()
+            if not clean_key or len(clean_key) > 200:
+                raise ValueError("send idempotency key is invalid")
+            idempotency_hash = self._hash(f"send-idempotency\0{clean_key}")
         assert conversation_hash is not None
         actor_budget = "owner" if actor_class == "owner" else "non_owner"
         limits = self.limits
@@ -450,6 +467,28 @@ class RiskLedger:
         )
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if idempotency_hash is not None:
+                prior = conn.execute(
+                    """
+                    SELECT id, event_type, actor_class, account_hash,
+                           conversation_hash, source_hash
+                    FROM risk_events
+                    WHERE idempotency_hash=? AND outcome='reserved'
+                    """,
+                    (idempotency_hash,),
+                ).fetchone()
+                if prior is not None:
+                    expected = (
+                        event_type,
+                        actor_budget,
+                        account_hash,
+                        conversation_hash,
+                        source_hash,
+                    )
+                    actual = tuple(prior[index] for index in range(1, 6))
+                    if actual != expected:
+                        raise ValueError("send idempotency key conflicts with another reservation")
+                    return BudgetDecision(True, "reserved_reused", int(prior[0]))
             if actor_budget == "non_owner":
                 source = conn.execute(
                     """
@@ -505,8 +544,8 @@ class RiskLedger:
                 """
                 INSERT INTO risk_events(
                     event_type, outcome, actor_class, account_hash,
-                    conversation_hash, source_hash, created_at_ms
-                ) VALUES (?, 'reserved', ?, ?, ?, ?, ?)
+                    conversation_hash, source_hash, idempotency_hash, created_at_ms
+                ) VALUES (?, 'reserved', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_type,
@@ -514,6 +553,7 @@ class RiskLedger:
                     account_hash,
                     conversation_hash,
                     source_hash,
+                    idempotency_hash,
                     now,
                 ),
             )

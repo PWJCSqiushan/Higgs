@@ -250,3 +250,15 @@
 - 最终脚本把 profile 固定到所有 Compose 子命令，复用已验证的新镜像后成功原子切换 release 与私有镜像标签，只依次重建 official sidecar 和 Agent。匿名验收确认新 sidecar healthy、重启计数为零、单 Gateway、Agent running、官方 reply=false，NapCat 容器身份、启动时间和 health 完全不变。
 - 独立后验从 `transport.sqlite` 确认 `qq_official` 为 `verified`，connected/authenticated、身份匹配和最近健康回执均为真，心跳新鲜且原因是 `resumed`。专用持久化目录继续为 agent 私有 `0700`；空状态尚未产生 `delivery-state.json` 属预期，首个需保存的事件、授权或回执会以 `0600` 原子物化。
 - 本次 shadow 观察从 2026-08-29 21:53（Asia/Shanghai）重新计时。正式回复仍不得开启：sidecar 崩溃窗口已封闭，但 Agent quiet-window、模型生成和业务副作用还没有持久处理生命周期；下一阶段先实现 Agent 状态机、故障注入与重启恢复，再申请真实被动回复验收。
+
+## 25. 2026-08-29 Agent 官方消息持久处理完成本地收束
+
+- 独立分支 `codex/higgs-agent-durable-processing-20260829` 新增 `official_processing.sqlite`。官方入站在 sidecar ACK 前先事务式进入 Agent 队列；同发送者的私聊/群聊连续片段以持久 quiet-window 合并，源事件以通道、账号和消息 ID 去重。OneBot 仍使用原内存 debouncer，不受本切片改变。
+- 状态机固定为 `pending → preparing → prepared → sending → finalizing → complete`。准确回复文本、风险预留和最终结果在跨越 provider 边界前后分别持久化；重启时 `preparing` 回到待准备，`sending` 回到已准备并复用同一文本和幂等键，`finalizing` 只重做幂等审计与会话落库。
+- `RiskLedger` 与非主人会话熔断预留均新增内容无关的幂等哈希，Agent 在模型准备阶段崩溃后复用同一 reservation 和来源计数，不重复占用预算或误触发冷却。已完成记录仍按原 sent/failed/unknown 语义结算。
+- 官方真实回复被配置层和运行时共同限制为启用的 durable sidecar；直连 Python SDK 不得开启回复。ACK 响应丢失后，Python 会从 sidecar 权威游标重新同步，避免把已提交 ACK 误判为 cursor 协议终止。
+- 官方 MVP 在任何副作用发生前跳过日计划与提醒，只允许主人执行精确 `/higgs status`（含中文状态别名）；其他 `/higgs` 命令被固定拒绝，普通对话仍可进入模型。官方输出在持久化前限制为 sidecar 的 2000 字符上限。
+- 新数据库已纳入一致性备份，运行时数据库总数为 13；完成项按既有 journal retention 清理。备份原子目录发布对短暂 Windows 句柄竞争增加有界重试，不改变 Linux 原子 rename 语义。
+- 故障测试覆盖日志已写但队列缺失、队列去重、持久 private/group debounce 与发送者隔离、`preparing/sending` 重启、发送中取消、准确文本重放、reply=false 不发送、最终化重复执行、风险预留跨重启复用、ACK 响应丢失游标重同步和 SDK 回复路径拒绝。
+- 本地门禁：Python `320 passed, 5 skipped`（Windows 仅跳过 Linux 权限/UDS 项）、Ruff 与格式通过；Node `31 passed, 5 skipped`、语法检查和 registry signature 通过；发布门确认 244 个跟踪文件、265 个归档成员、秘密模式与 Shell LF 均通过。Linux 零跳过与镜像/Compose 尚待 PR CI。
+- 当前只完成本地代码与测试，尚未提交、推送、创建 PR、合并或部署。生产仍为上一主线 release、reply=false；没有发送测试消息、修改私有配置、重建容器或触碰 NapCat。下一步为提交、PR/CI；CI 全绿后需单独确认 reply=false 生产部署与恢复验收，完成后再单独确认是否打开真实回复。

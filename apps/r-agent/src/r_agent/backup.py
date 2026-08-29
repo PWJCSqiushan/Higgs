@@ -6,6 +6,7 @@ import asyncio
 import json
 import sqlite3
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from contextlib import closing
@@ -35,6 +36,7 @@ class BackupManager:
         "skills.sqlite",
         "transport.sqlite",
         "tool_audit.sqlite",
+        "official_processing.sqlite",
     )
 
     def __init__(
@@ -90,7 +92,7 @@ class BackupManager:
                     json.dumps(metadata, ensure_ascii=False, indent=2),
                     encoding="utf-8",
                 )
-                temporary.rename(destination)
+                self._rename_snapshot(temporary, destination)
             except Exception as exc:
                 move_to_trash(temporary, trash_root=self.backup_dir / ".trash")
                 if isinstance(exc, BackupError):
@@ -98,6 +100,18 @@ class BackupManager:
                 raise BackupError("backup creation failed") from exc
             self._prune()
             return destination
+
+    @staticmethod
+    def _rename_snapshot(temporary: Path, destination: Path) -> None:
+        """Retry only transient directory-handle contention before atomic publish."""
+        for attempt in range(5):
+            try:
+                temporary.rename(destination)
+                return
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                time.sleep(0.05 * (2**attempt))
 
     @staticmethod
     def _sqlite_backup(source: Path, target: Path) -> None:

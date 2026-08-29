@@ -39,6 +39,10 @@ class OfficialQQConfig:
     sidecar_socket_path: str = "/run/higgs-official/sidecar.sock"
     reply_enabled: bool = False
 
+    def __post_init__(self) -> None:
+        if self.reply_enabled and (not self.enabled or self.transport != "sidecar"):
+            raise ConfigError("official QQ replies require the enabled durable sidecar transport")
+
     @property
     def active_owner_openid(self) -> str | None:
         return self.owner_openid if self.enabled else None
@@ -111,6 +115,8 @@ class OfficialQQConfig:
             raise ConfigError("sidecar official QQ forbids App credentials in the Agent process")
         if reply_enabled and not enabled:
             raise ConfigError("official QQ replies require the official transport to be enabled")
+        if reply_enabled and transport != "sidecar":
+            raise ConfigError("official QQ replies require the durable sidecar transport")
         return cls(
             enabled=enabled,
             app_id=app_id,

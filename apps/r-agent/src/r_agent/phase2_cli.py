@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -32,7 +33,7 @@ from r_agent.health import HealthReporter
 from r_agent.identity import IdentityStore, Principal
 from r_agent.ingest import IngestResult, IngestService
 from r_agent.journal import Journal
-from r_agent.memory import MemoryError, MemoryStore
+from r_agent.memory import MemoryStore
 from r_agent.memory_v2 import MemoryObservationStore, MemoryReconciler
 from r_agent.model_client import ModelConfig, ModelError, OpenAICompatibleClient
 from r_agent.model_memory_candidates import (
@@ -40,6 +41,7 @@ from r_agent.model_memory_candidates import (
     ModelCandidateExtractor,
     ModelCandidateShadowStore,
 )
+from r_agent.official_processing import OfficialDurableProcessor, OfficialProcessingStore
 from r_agent.official_qq import (
     OfficialQQAdapter,
     OfficialQQConfig,
@@ -56,7 +58,14 @@ from r_agent.phase2_outbound import (
     get_onebot_account_status,
     get_onebot_message_sender,
 )
-from r_agent.phase2_reply import PersonaBrain, ReplyAudit, ReplyDecision, ReplyPlan, ReplyPolicy
+from r_agent.phase2_reply import (
+    PersonaBrain,
+    PreparedReply,
+    ReplyAudit,
+    ReplyDecision,
+    ReplyPlan,
+    ReplyPolicy,
+)
 from r_agent.qq_text import QqTextError, to_qq_plain_text
 from r_agent.recall import RecallLedger
 from r_agent.reminders import DueOccurrence, ReminderStore
@@ -333,6 +342,107 @@ def _safety_policy(phase: Phase2Settings) -> OutboundSafetyPolicy | None:
         raise ConfigError(f"invalid outbound safety configuration: {exc}") from exc
 
 
+async def prepare_reply(
+    *,
+    event: InboundEvent,
+    result: IngestResult,
+    policy: ReplyPolicy,
+    brain: PersonaBrain,
+    safety: OutboundSafetyPolicy | None = None,
+    breaker: ConversationCircuitBreaker | None = None,
+    owner_qq: str | None = None,
+    qq_online: bool = True,
+    risk_ledger: RiskLedger | None = None,
+    risk_idempotency_key: str | None = None,
+) -> PreparedReply:
+    """Prepare an exact reply without crossing the outbound provider boundary."""
+    decision = policy.gate(event, result)
+    if decision not in {ReplyDecision.DRAFTED, ReplyDecision.SENT}:
+        return PreparedReply(decision)
+    if not qq_online:
+        return PreparedReply(ReplyDecision.QQ_OFFLINE)
+    source_id = event.sender_id if event.conversation_kind is ConversationKind.GROUP else None
+    if breaker is not None:
+        guard = await asyncio.to_thread(
+            breaker.check_and_reserve,
+            event.conversation_id,
+            is_owner=event.sender_id == owner_qq,
+            source_id=source_id,
+            idempotency_key=risk_idempotency_key,
+        )
+        if not guard.allowed:
+            return PreparedReply(ReplyDecision.CIRCUIT_BREAKER)
+    reservation_id: int | None = None
+    if decision is ReplyDecision.SENT and risk_ledger is not None:
+        budget = await asyncio.to_thread(
+            risk_ledger.reserve_send,
+            event_type="reply",
+            actor_class="owner" if event.sender_id == owner_qq else "non_owner",
+            account_id=event.account_id,
+            conversation_id=event.conversation_id,
+            source_id=source_id,
+            idempotency_key=risk_idempotency_key,
+        )
+        if not budget.allowed:
+            return PreparedReply(ReplyDecision.GLOBAL_RATE_LIMITED)
+        reservation_id = budget.reservation_id
+    try:
+        text = to_qq_plain_text(await brain.draft(event))
+    except (ModelError, QqTextError):
+        if risk_ledger is not None and reservation_id is not None:
+            await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="failed")
+        return PreparedReply(ReplyDecision.MODEL_FAILED)
+
+    if safety is not None and not safety.evaluate(text).allowed:
+        if risk_ledger is not None and reservation_id is not None:
+            await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="failed")
+        return PreparedReply(ReplyDecision.SENSITIVE_BLOCKED)
+    policy.mark_generated(event)
+    if decision is ReplyDecision.DRAFTED:
+        return PreparedReply(ReplyDecision.DRAFTED, text)
+    return PreparedReply(ReplyDecision.SENT, text, reservation_id)
+
+
+async def deliver_prepared_reply(
+    *,
+    event: InboundEvent,
+    prepared: PreparedReply,
+    sender: Callable[[InboundEvent, str], Awaitable[DeliveryReceipt]],
+    risk_ledger: RiskLedger | None = None,
+    retry_transport_unavailable: bool = False,
+) -> ReplyPlan:
+    """Deliver one persisted preparation; the transport owns provider idempotency."""
+    if not prepared.requires_delivery:
+        return ReplyPlan(prepared.decision, prepared.text)
+    if prepared.text is None:
+        raise RuntimeError("a sendable prepared reply requires text")
+    try:
+        receipt = await sender(event, prepared.text)
+        if receipt.state is not DeliveryState.SENT:
+            raise OutboundError(
+                "transport delivery was not acknowledged",
+                delivery_unknown=receipt.state is DeliveryState.UNKNOWN,
+            )
+    except OutboundError as exc:
+        if risk_ledger is not None and prepared.reservation_id is not None:
+            outcome = "unknown" if exc.delivery_unknown else "failed"
+            await asyncio.to_thread(
+                risk_ledger.finish_send, prepared.reservation_id, outcome=outcome
+            )
+        return ReplyPlan(ReplyDecision.SEND_FAILED, prepared.text)
+    except TransportUnavailable:
+        if retry_transport_unavailable:
+            raise
+        if risk_ledger is not None and prepared.reservation_id is not None:
+            await asyncio.to_thread(
+                risk_ledger.finish_send, prepared.reservation_id, outcome="failed"
+            )
+        return ReplyPlan(ReplyDecision.SEND_FAILED, prepared.text)
+    if risk_ledger is not None and prepared.reservation_id is not None:
+        await asyncio.to_thread(risk_ledger.finish_send, prepared.reservation_id, outcome="sent")
+    return ReplyPlan(ReplyDecision.SENT, prepared.text)
+
+
 async def process_reply(
     *,
     event: InboundEvent,
@@ -345,69 +455,27 @@ async def process_reply(
     owner_qq: str | None = None,
     qq_online: bool = True,
     risk_ledger: RiskLedger | None = None,
+    risk_idempotency_key: str | None = None,
 ) -> ReplyPlan:
-    """Create one auditable outcome without letting provider errors stop the listener."""
-    decision = policy.gate(event, result)
-    if decision not in {ReplyDecision.DRAFTED, ReplyDecision.SENT}:
-        return ReplyPlan(decision)
-    if not qq_online:
-        return ReplyPlan(ReplyDecision.QQ_OFFLINE)
-    source_id = event.sender_id if event.conversation_kind is ConversationKind.GROUP else None
-    if breaker is not None:
-        guard = await asyncio.to_thread(
-            breaker.check_and_reserve,
-            event.conversation_id,
-            is_owner=event.sender_id == owner_qq,
-            source_id=source_id,
-        )
-        if not guard.allowed:
-            return ReplyPlan(ReplyDecision.CIRCUIT_BREAKER)
-    reservation_id: int | None = None
-    if decision is ReplyDecision.SENT and risk_ledger is not None:
-        budget = await asyncio.to_thread(
-            risk_ledger.reserve_send,
-            event_type="reply",
-            actor_class="owner" if event.sender_id == owner_qq else "non_owner",
-            account_id=event.account_id,
-            conversation_id=event.conversation_id,
-            source_id=source_id,
-        )
-        if not budget.allowed:
-            return ReplyPlan(ReplyDecision.GLOBAL_RATE_LIMITED)
-        reservation_id = budget.reservation_id
-    try:
-        text = to_qq_plain_text(await brain.draft(event))
-    except (ModelError, QqTextError):
-        if risk_ledger is not None and reservation_id is not None:
-            await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="failed")
-        return ReplyPlan(ReplyDecision.MODEL_FAILED)
-
-    if safety is not None and not safety.evaluate(text).allowed:
-        if risk_ledger is not None and reservation_id is not None:
-            await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="failed")
-        return ReplyPlan(ReplyDecision.SENSITIVE_BLOCKED)
-    policy.mark_generated(event)
-    if decision is ReplyDecision.DRAFTED:
-        return ReplyPlan(ReplyDecision.DRAFTED, text)
-    try:
-        receipt = await sender(event, text)
-        if receipt.state is not DeliveryState.SENT:
-            raise OutboundError(
-                "transport delivery was not acknowledged",
-                delivery_unknown=receipt.state is DeliveryState.UNKNOWN,
-            )
-    except OutboundError as exc:
-        if risk_ledger is not None and reservation_id is not None:
-            outcome = "unknown" if exc.delivery_unknown else "failed"
-            await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome=outcome)
-        return ReplyPlan(ReplyDecision.SEND_FAILED, text)
-    except TransportUnavailable:
-        if risk_ledger is not None and reservation_id is not None:
-            await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="failed")
-        return ReplyPlan(ReplyDecision.SEND_FAILED, text)
-    if risk_ledger is not None and reservation_id is not None:
-        await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="sent")
-    return ReplyPlan(ReplyDecision.SENT, text)
+    """Backward-compatible one-shot pipeline used by the OneBot listener."""
+    prepared = await prepare_reply(
+        event=event,
+        result=result,
+        policy=policy,
+        brain=brain,
+        safety=safety,
+        breaker=breaker,
+        owner_qq=owner_qq,
+        qq_online=qq_online,
+        risk_ledger=risk_ledger,
+        risk_idempotency_key=risk_idempotency_key,
+    )
+    return await deliver_prepared_reply(
+        event=event,
+        prepared=prepared,
+        sender=sender,
+        risk_ledger=risk_ledger,
+    )
 
 
 def _onebot_reminder_target(occurrence: DueOccurrence) -> OutboundTarget | None:
@@ -546,6 +614,12 @@ async def listen() -> None:
     )
     transport_state = TransportStateStore(settings.data_dir / "transport.sqlite")
     transport_state.initialize()
+    official_processing = OfficialProcessingStore(settings.data_dir / "official_processing.sqlite")
+    official_processing.initialize()
+    await asyncio.to_thread(
+        official_processing.purge_completed,
+        before_ms=int(time.time() * 1000) - settings.journal_retention_days * 86_400_000,
+    )
     tool_governance = ToolGovernance(audit_path=settings.data_dir / "tool_audit.sqlite")
     server_status = ServerStatusCommand(tool_governance, ServerStatusReader())
     policy = ReplyPolicy(
@@ -721,6 +795,7 @@ async def listen() -> None:
 
     official_adapter: OfficialQQAdapter | OfficialQQSidecarAdapter | None = None
     official_supervisor_task: asyncio.Task[None] | None = None
+    official_processing_task: asyncio.Task[None] | None = None
 
     async def sender(event: InboundEvent, text: str) -> DeliveryReceipt:
         if event.channel == "qq_official":
@@ -742,21 +817,72 @@ async def listen() -> None:
             )
         return await onebot_adapter.send_reply(event, text)
 
-    async def handle_event(event: InboundEvent, result: IngestResult) -> None:
-        """Finish one logical message after the group quiet-window has closed."""
-        try:
-            if event.channel == "qq_official" and official_adapter is not None:
-                official_status = await official_adapter.status()
-                channel_online = (
-                    official_config.reply_enabled
-                    and official_status.connected
-                    and official_status.authenticated
-                )
-            else:
-                channel_online = online.snapshot().qq_online
-            owner_sender_id = (
-                official_owner_openid if event.channel == "qq_official" else settings.owner_qq
+    async def finalize_event(event: InboundEvent, plan: ReplyPlan) -> None:
+        """Persist idempotent audit/history after an outbound outcome is durable."""
+        await asyncio.to_thread(audit.record, event, plan)
+        principal = None
+        if plan.decision in {
+            ReplyDecision.DRAFTED,
+            ReplyDecision.SENT,
+            ReplyDecision.MODEL_FAILED,
+            ReplyDecision.SEND_FAILED,
+        } or (
+            passive_learner is not None
+            and plan.decision
+            in {
+                ReplyDecision.MENTION_REQUIRED,
+                ReplyDecision.GROUP_TRIGGER_REQUIRED,
+                ReplyDecision.RATE_LIMITED,
+                ReplyDecision.GLOBAL_RATE_LIMITED,
+                ReplyDecision.SENSITIVE_BLOCKED,
+            }
+        ):
+            principal = await asyncio.to_thread(
+                service.identities.resolve,
+                event.channel,
+                event.sender_id,
             )
+        if principal is not None and plan.decision in {
+            ReplyDecision.DRAFTED,
+            ReplyDecision.SENT,
+            ReplyDecision.MODEL_FAILED,
+            ReplyDecision.SEND_FAILED,
+        }:
+            await asyncio.to_thread(
+                history.record,
+                event,
+                principal_id=principal.principal_id,
+                outcome=plan.decision.value,
+                assistant_text=plan.text,
+            )
+        if (
+            passive_learner is not None
+            and principal is not None
+            and plan.decision
+            in {
+                ReplyDecision.MENTION_REQUIRED,
+                ReplyDecision.GROUP_TRIGGER_REQUIRED,
+                ReplyDecision.RATE_LIMITED,
+                ReplyDecision.GLOBAL_RATE_LIMITED,
+                ReplyDecision.SENSITIVE_BLOCKED,
+            }
+        ):
+            learned = await passive_learner.observe(
+                event,
+                principal_id=principal.principal_id,
+            )
+            if learned.candidate is not None:
+                _log.info(
+                    "phase2_memory_candidate embedded=%s auto_review=%s evidence=%s",
+                    learned.embedded,
+                    learned.auto_review_decision,
+                    learned.evidence_count,
+                )
+        _log.info("phase2_event decision=%s", plan.decision)
+
+    async def handle_event(event: InboundEvent, result: IngestResult) -> None:
+        """Finish one OneBot logical message after the quiet-window has closed."""
+        try:
             plan = await process_reply(
                 event=event,
                 result=result,
@@ -765,72 +891,61 @@ async def listen() -> None:
                 sender=sender,
                 safety=safety,
                 breaker=breaker,
-                owner_qq=owner_sender_id,
-                qq_online=channel_online,
+                owner_qq=settings.owner_qq,
+                qq_online=online.snapshot().qq_online,
                 risk_ledger=risk_ledger,
             )
-            await asyncio.to_thread(audit.record, event, plan)
-            principal = None
-            if plan.decision in {
-                ReplyDecision.DRAFTED,
-                ReplyDecision.SENT,
-                ReplyDecision.MODEL_FAILED,
-                ReplyDecision.SEND_FAILED,
-            } or (
-                passive_learner is not None
-                and plan.decision
-                in {
-                    ReplyDecision.MENTION_REQUIRED,
-                    ReplyDecision.GROUP_TRIGGER_REQUIRED,
-                    ReplyDecision.RATE_LIMITED,
-                    ReplyDecision.GLOBAL_RATE_LIMITED,
-                    ReplyDecision.SENSITIVE_BLOCKED,
-                }
-            ):
-                principal = await asyncio.to_thread(
-                    service.identities.resolve,
-                    event.channel,
-                    event.sender_id,
-                )
-            if principal is not None and plan.decision in {
-                ReplyDecision.DRAFTED,
-                ReplyDecision.SENT,
-                ReplyDecision.MODEL_FAILED,
-                ReplyDecision.SEND_FAILED,
-            }:
-                await asyncio.to_thread(
-                    history.record,
-                    event,
-                    principal_id=principal.principal_id,
-                    outcome=plan.decision.value,
-                    assistant_text=plan.text,
-                )
-            if (
-                passive_learner is not None
-                and principal is not None
-                and plan.decision
-                in {
-                    ReplyDecision.MENTION_REQUIRED,
-                    ReplyDecision.GROUP_TRIGGER_REQUIRED,
-                    ReplyDecision.RATE_LIMITED,
-                    ReplyDecision.GLOBAL_RATE_LIMITED,
-                    ReplyDecision.SENSITIVE_BLOCKED,
-                }
-            ):
-                learned = await passive_learner.observe(
-                    event,
-                    principal_id=principal.principal_id,
-                )
-                if learned.candidate is not None:
-                    _log.info(
-                        "phase2_memory_candidate embedded=%s auto_review=%s evidence=%s",
-                        learned.embedded,
-                        learned.auto_review_decision,
-                        learned.evidence_count,
-                    )
-            _log.info("phase2_event decision=%s", plan.decision)
-        except (MemoryError, Exception) as exc:
+            await finalize_event(event, plan)
+        except Exception as exc:
             _log.error("phase2_handler_failed type=%s", type(exc).__name__)
+
+    async def prepare_official_event(event: InboundEvent, result: IngestResult) -> PreparedReply:
+        if not official_config.reply_enabled:
+            channel_online = False
+        elif official_adapter is None:
+            raise TransportUnavailable("official QQ adapter is unavailable")
+        else:
+            official_status = await official_adapter.status()
+            if not (official_status.connected and official_status.authenticated):
+                raise TransportUnavailable("official QQ transport is not authenticated")
+            channel_online = True
+        prepared = await prepare_reply(
+            event=event,
+            result=result,
+            policy=policy,
+            brain=brain,
+            safety=safety,
+            breaker=breaker,
+            owner_qq=official_owner_openid,
+            qq_online=channel_online,
+            risk_ledger=risk_ledger,
+            risk_idempotency_key=(f"reply:{event.channel}:{event.account_id}:{event.message_id}"),
+        )
+        if prepared.text is not None and len(prepared.text) > 2_000:
+            return replace(prepared, text=prepared.text[:2_000])
+        return prepared
+
+    async def deliver_official_event(event: InboundEvent, prepared: PreparedReply) -> ReplyPlan:
+        if not official_config.reply_enabled:
+            if prepared.reservation_id is not None:
+                await asyncio.to_thread(
+                    risk_ledger.finish_send,
+                    prepared.reservation_id,
+                    outcome="failed",
+                )
+            return ReplyPlan(ReplyDecision.QQ_OFFLINE)
+        if official_adapter is None:
+            raise TransportUnavailable("official QQ adapter is unavailable")
+        official_status = await official_adapter.status()
+        if not (official_status.connected and official_status.authenticated):
+            raise TransportUnavailable("official QQ transport is not authenticated")
+        return await deliver_prepared_reply(
+            event=event,
+            prepared=prepared,
+            sender=sender,
+            risk_ledger=risk_ledger,
+            retry_transport_unavailable=True,
+        )
 
     debouncer = GroupMessageDebouncer(
         quiet_seconds=phase.group_debounce_seconds,
@@ -845,16 +960,6 @@ async def listen() -> None:
         resolve_onebot_reply: bool,
     ) -> None:
         owner_ids = {value for value in (settings.owner_qq, official_owner_openid) if value}
-        learning_allowed = await asyncio.to_thread(
-            risk_ledger.note_inbound,
-            event.conversation_id,
-            actor_class="owner" if event.sender_id in owner_ids else "non_owner",
-            account_id=event.account_id,
-            source_id=(
-                event.sender_id if event.conversation_kind is ConversationKind.GROUP else None
-            ),
-            now_ms=event.occurred_at_ms,
-        )
         if (
             resolve_onebot_reply
             and event.group_id in phase.natural_trigger_groups
@@ -872,6 +977,18 @@ async def listen() -> None:
                 if replied_sender == event.account_id:
                     event = replace(event, replied_to_account=True)
         result = await asyncio.to_thread(service.ingest, event)
+        learning_allowed = False
+        if result.stored:
+            learning_allowed = await asyncio.to_thread(
+                risk_ledger.note_inbound,
+                event.conversation_id,
+                actor_class="owner" if event.sender_id in owner_ids else "non_owner",
+                account_id=event.account_id,
+                source_id=(
+                    event.sender_id if event.conversation_kind is ConversationKind.GROUP else None
+                ),
+                now_ms=event.occurred_at_ms,
+            )
         if result.stored and learning_allowed:
             principal = await asyncio.to_thread(
                 service.identities.resolve,
@@ -884,6 +1001,19 @@ async def listen() -> None:
                 principal_id=principal.principal_id,
                 principal_role=principal.role,
             )
+        if event.channel == "qq_official":
+            quiet_seconds = (
+                phase.private_debounce_seconds
+                if event.conversation_kind is ConversationKind.PRIVATE
+                else phase.group_debounce_seconds
+            )
+            await asyncio.to_thread(
+                official_processing.enqueue,
+                event,
+                result,
+                quiet_seconds=quiet_seconds,
+            )
+            return
         await debouncer.submit(event, result)
 
     async def route_official_event(event: InboundEvent) -> None:
@@ -902,6 +1032,16 @@ async def listen() -> None:
             _log.error("official_qq_start_failed type=%s", type(exc).__name__)
         official_supervisor_task = asyncio.create_task(official_adapter.supervise())
         official_supervisor_task.add_done_callback(
+            lambda task: task.exception() if not task.cancelled() else None
+        )
+        official_processor = OfficialDurableProcessor(
+            store=official_processing,
+            prepare=prepare_official_event,
+            deliver=deliver_official_event,
+            finalize=finalize_event,
+        )
+        official_processing_task = asyncio.create_task(official_processor.run())
+        official_processing_task.add_done_callback(
             lambda task: task.exception() if not task.cancelled() else None
         )
     backup_task = asyncio.create_task(backup.run_periodically())
@@ -1087,6 +1227,7 @@ async def listen() -> None:
         reminder_task,
         candidate_notification_task,
         *((official_supervisor_task,) if official_supervisor_task is not None else ()),
+        *((official_processing_task,) if official_processing_task is not None else ()),
     )
     for background_task in background_tasks:
         background_task.add_done_callback(

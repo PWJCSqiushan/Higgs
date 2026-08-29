@@ -204,6 +204,7 @@ class OfficialQQSidecarAdapter:
         self._receipt_fingerprints: dict[str, str] = {}
         self._last_persisted: tuple[object, ...] | None = None
         self._last_persisted_at_ms = 0
+        self._cursor_resync_required = False
 
     def _get_client(self) -> SidecarClient:
         if self._client is None:
@@ -358,6 +359,7 @@ class OfficialQQSidecarAdapter:
                 raise SidecarProtocolViolation("sidecar generation changed")
             self._generation = generation
             self._cursor = cursor
+            self._cursor_resync_required = False
             await self._refresh_status()
         except TransportStatePersistenceError as exc:
             self._terminal_failure = True
@@ -388,6 +390,7 @@ class OfficialQQSidecarAdapter:
         self._expected_account_id = None
         self._generation = None
         self._cursor = 0
+        self._cursor_resync_required = False
         self._reason = "stopped"
 
     async def status(self) -> TransportStatus:
@@ -509,20 +512,35 @@ class OfficialQQSidecarAdapter:
             cursor, event = self._normalize_event(raw)
             if event is not None:
                 await self._event_handler(event)
-            ack_payload = await self._request(
-                "POST",
-                "/v1/events/ack",
-                json_body={
-                    "protocol_version": PROTOCOL_VERSION,
-                    "generation": self._generation,
-                    "cursor": cursor,
-                },
-            )
+            try:
+                ack_payload = await self._request(
+                    "POST",
+                    "/v1/events/ack",
+                    json_body={
+                        "protocol_version": PROTOCOL_VERSION,
+                        "generation": self._generation,
+                        "cursor": cursor,
+                    },
+                )
+            except Exception:
+                # The sidecar may have committed the ACK before its HTTP response
+                # was lost.  Re-read the authoritative cursor before polling again.
+                self._cursor_resync_required = True
+                raise
             ack_generation = self._validate_envelope(ack_payload, {"event_cursor"})
             ack_cursor = ack_payload.get("event_cursor")
             if ack_generation != self._generation or ack_cursor != cursor:
                 raise SidecarProtocolViolation("sidecar event acknowledgement changed")
             self._cursor = cursor
+
+    async def _resync_cursor(self) -> None:
+        if not self._cursor_resync_required:
+            return
+        generation, cursor = await self._hello()
+        if generation != self._generation or cursor < self._cursor:
+            raise SidecarProtocolViolation("sidecar acknowledgement cursor regressed")
+        self._cursor = cursor
+        self._cursor_resync_required = False
 
     async def supervise(
         self,
@@ -543,6 +561,7 @@ class OfficialQQSidecarAdapter:
         while not self._stop_requested.is_set() and not self._terminal_failure:
             try:
                 await self._refresh_status()
+                await self._resync_cursor()
                 await self._poll_events()
             except asyncio.CancelledError:
                 raise

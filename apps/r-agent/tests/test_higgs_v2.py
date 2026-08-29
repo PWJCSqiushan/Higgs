@@ -156,6 +156,39 @@ def test_non_owner_circuit_breaker_and_owner_bypass(tmp_path: Path) -> None:
     assert guard.check_and_reserve("c1", is_owner=True, now_ms=4_000).allowed
 
 
+def test_circuit_breaker_reservation_is_idempotent_across_restart(tmp_path: Path) -> None:
+    path = tmp_path / "guard.sqlite"
+    guard = ConversationCircuitBreaker(path, limit=1, window_seconds=60, cooldown_seconds=30)
+    guard.initialize()
+    first = guard.check_and_reserve(
+        "conversation",
+        is_owner=False,
+        source_id="member",
+        idempotency_key="reply:message-1",
+        now_ms=1_000,
+    )
+    restarted = ConversationCircuitBreaker(path, limit=1, window_seconds=60, cooldown_seconds=30)
+    restarted.initialize()
+    repeated = restarted.check_and_reserve(
+        "conversation",
+        is_owner=False,
+        source_id="member",
+        idempotency_key="reply:message-1",
+        now_ms=2_000,
+    )
+    blocked = restarted.check_and_reserve(
+        "conversation",
+        is_owner=False,
+        source_id="member",
+        idempotency_key="reply:message-2",
+        now_ms=3_000,
+    )
+
+    assert first.allowed
+    assert repeated.allowed
+    assert not blocked.allowed
+
+
 def test_group_circuit_breaker_isolated_per_sender_and_hashed(tmp_path: Path) -> None:
     path = tmp_path / "guard.sqlite"
     guard = ConversationCircuitBreaker(path, limit=2, window_seconds=60, cooldown_seconds=30)

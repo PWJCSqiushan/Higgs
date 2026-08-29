@@ -19,7 +19,10 @@ from r_agent.transport import DeliveryState, OutboundTarget, TransportUnavailabl
 
 
 class FakeSidecarClient:
-    def __init__(self, responses: list[tuple[int, Mapping[str, Any]]]) -> None:
+    def __init__(
+        self,
+        responses: list[tuple[int, Mapping[str, Any]] | Exception],
+    ) -> None:
         self.responses = list(responses)
         self.requests: list[tuple[str, str, Mapping[str, object] | None]] = []
         self.closed = False
@@ -34,7 +37,10 @@ class FakeSidecarClient:
         self.requests.append((method, path, json_body))
         if not self.responses:
             raise AssertionError("unexpected sidecar request")
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
     async def close(self) -> None:
         self.closed = True
@@ -245,6 +251,49 @@ async def test_hello_restores_acknowledged_cursor_and_handler_failure_is_not_ack
         await adapter._poll_events()
     assert adapter._cursor == 5
     assert all(request[1] != "/v1/events/ack" for request in client.requests)
+
+
+@pytest.mark.asyncio
+async def test_lost_ack_response_resynchronizes_authoritative_cursor() -> None:
+    received: list[InboundEvent] = []
+
+    async def capture(item: InboundEvent) -> None:
+        received.append(item)
+
+    client = FakeSidecarClient(
+        [
+            (200, hello_payload()),
+            (200, status_payload()),
+            (
+                200,
+                {
+                    "protocol_version": 1,
+                    "generation": "generation-1",
+                    "events": [event_payload(1)],
+                },
+            ),
+            OSError("simulated lost ACK response"),
+            (200, hello_payload(cursor=1)),
+            (
+                200,
+                {
+                    "protocol_version": 1,
+                    "generation": "generation-1",
+                    "events": [],
+                },
+            ),
+        ]
+    )
+    adapter = OfficialQQSidecarAdapter(sidecar_config(), event_handler=capture, client=client)
+    await adapter.start()
+
+    with pytest.raises(OSError, match="lost ACK"):
+        await adapter._poll_events()
+    assert adapter._cursor == 0
+    await adapter._resync_cursor()
+    assert adapter._cursor == 1
+    await adapter._poll_events()
+    assert len(received) == 1
 
 
 @pytest.mark.asyncio

@@ -50,7 +50,39 @@ def test_initialize_migrates_existing_risk_events_for_source_hash(tmp_path: Path
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(risk_events)")}
         indexes = {str(row[1]) for row in conn.execute("PRAGMA index_list(risk_events)")}
     assert "source_hash" in columns
+    assert "idempotency_hash" in columns
     assert "idx_risk_source_time" in indexes
+    assert "idx_risk_active_idempotency" in indexes
+
+
+def test_active_send_reservation_is_idempotent_across_restart(tmp_path: Path) -> None:
+    risk = ledger(tmp_path)
+    first = risk.reserve_send(
+        event_type="reply",
+        actor_class="owner",
+        account_id="bot",
+        conversation_id="qq_official:private:bot:owner",
+        idempotency_key="reply:qq_official:bot:message",
+        now_ms=1_000,
+    )
+    restarted = ledger(tmp_path)
+    second = restarted.reserve_send(
+        event_type="reply",
+        actor_class="owner",
+        account_id="bot",
+        conversation_id="qq_official:private:bot:owner",
+        idempotency_key="reply:qq_official:bot:message",
+        now_ms=2_000,
+    )
+
+    assert first.reservation_id is not None
+    assert second.reservation_id == first.reservation_id
+    assert second.reason == "reserved_reused"
+    with sqlite3.connect(tmp_path / "risk.sqlite") as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM risk_events WHERE outcome='reserved'").fetchone()[0]
+            == 1
+        )
 
 
 def test_persistent_send_budget_is_shared_and_content_free(tmp_path: Path) -> None:

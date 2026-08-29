@@ -68,6 +68,19 @@ class ReplyPlan:
     text: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedReply:
+    """A reply decision whose exact outbound text is safe to persist before delivery."""
+
+    decision: ReplyDecision
+    text: str | None = None
+    reservation_id: int | None = None
+
+    @property
+    def requires_delivery(self) -> bool:
+        return self.decision is ReplyDecision.SENT
+
+
 class ReplyPolicy:
     def __init__(
         self,
@@ -232,12 +245,29 @@ class PersonaBrain:
                 event.channel,
                 event.sender_id,
             )
-            if self.daily_plans is not None:
+            official_channel = event.channel.casefold() == "qq_official"
+            clean = event.text.strip()
+            official_status_command = clean.casefold() in {
+                "/higgs status",
+                "/higgs 状态",
+            }
+            if official_channel and clean.casefold().startswith("/higgs"):
+                if not official_status_command:
+                    return "官方 QQ 通道当前仅开放 /higgs status 状态查询。"
+                if self.owner_commands is None:
+                    return "状态查询当前不可用。"
+                command_reply = await asyncio.to_thread(
+                    self.owner_commands.handle,
+                    clean,
+                    actor=principal,
+                    surface=event.conversation_kind.value,
+                )
+                return command_reply or "状态查询当前不可用。"
+            if not official_channel and self.daily_plans is not None:
                 plan_reply = await self.daily_plans.handle_event(event, principal)
                 if plan_reply is not None:
                     return plan_reply
-            if self.reminders is not None and principal.role == "owner":
-                clean = event.text.strip()
+            if not official_channel and self.reminders is not None and principal.role == "owner":
                 try:
                     if clean in {"\u786e\u8ba4", "\u786e\u8ba4\u63d0\u9192"}:
                         pending = await asyncio.to_thread(
@@ -284,8 +314,6 @@ class PersonaBrain:
                         )
                     parsed = parse_reminder_intent(clean)
                     if parsed is not None:
-                        if event.channel.casefold() == "qq_official":
-                            return "官方 QQ 通道暂不支持主动提醒，请在 NapCat 私聊中创建提醒。"
                         due_at_ms, content = parsed
                         pending = await asyncio.to_thread(
                             self.reminders.create_pending,
@@ -309,7 +337,7 @@ class PersonaBrain:
                         )
                 except ReminderError as exc:
                     return f"\u63d0\u9192\u6ca1\u6709\u521b\u5efa\uff1a{exc}"
-            if self.owner_commands is not None:
+            if not official_channel and self.owner_commands is not None:
                 command_reply = await asyncio.to_thread(
                     self.owner_commands.handle,
                     event.text,
