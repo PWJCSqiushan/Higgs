@@ -52,6 +52,7 @@ function boundedReason(value) {
     "gateway_error",
     "gateway_reconnecting",
     "gateway_stopped",
+    "heartbeat_pending",
     "heartbeat_ack_timeout",
     "reconnect_budget_exhausted",
     "session_store_error",
@@ -107,6 +108,7 @@ export class OfficialQQClient {
     this.watchdogTimer = null;
     this.observedWs = null;
     this.readyAtMs = null;
+    this.pendingAuthReason = null;
     this.connectDeadlineAtMs = null;
     this.closeTimes = [];
     this.fatal = false;
@@ -137,6 +139,7 @@ export class OfficialQQClient {
     this.fatal = true;
     this.state.gateway_connected = false;
     this.state.authenticated = false;
+    this.pendingAuthReason = null;
     this.state.reason = boundedReason(reason);
     this.bot?.stop();
     this.onFatal(this.state.reason);
@@ -152,6 +155,7 @@ export class OfficialQQClient {
     this.state.authenticated = false;
     this.state.last_heartbeat_ack_at_ms = null;
     this.state.heartbeat_ack_observable = true;
+    this.pendingAuthReason = null;
     ws.on("message", (data) => {
       let payload;
       try {
@@ -167,6 +171,16 @@ export class OfficialQQClient {
           this.sessionStore?.touch();
         } catch {
           this._failFatal("session_store_error");
+          return;
+        }
+        if (
+          this.pendingAuthReason &&
+          this.state.gateway_connected &&
+          isSafeId(this.state.bot_id)
+        ) {
+          this.state.authenticated = true;
+          this.state.reason = this.pendingAuthReason;
+          this.pendingAuthReason = null;
         }
       } else if (payload?.op === INVALID_SESSION && typeof payload?.d !== "boolean") {
         this._failFatal("protocol_error");
@@ -178,6 +192,7 @@ export class OfficialQQClient {
       this.state.authenticated = false;
       this.state.reason = "gateway_reconnecting";
       this.readyAtMs = null;
+      this.pendingAuthReason = null;
       this.connectDeadlineAtMs = this.now() + 120_000;
       const cutoff = this.now() - this.reconnectWindowMs;
       this.closeTimes = this.closeTimes.filter((value) => value >= cutoff);
@@ -207,6 +222,12 @@ export class OfficialQQClient {
       this.now() > this.connectDeadlineAtMs
     ) {
       this._failFatal("gateway_error");
+      return;
+    }
+    if (!this.state.authenticated && this.readyAtMs !== null) {
+      if (this.now() - this.readyAtMs > this.heartbeatAckTimeoutMs) {
+        this._failFatal("heartbeat_ack_timeout");
+      }
       return;
     }
     if (!this.state.authenticated || this.readyAtMs === null) return;
@@ -255,7 +276,7 @@ export class OfficialQQClient {
         return;
       }
       this.state.gateway_connected = true;
-      this.state.authenticated = true;
+      this.state.authenticated = false;
       this.state.bot_id = botId;
       try {
         this.sessionStore?.saveBotId(botId);
@@ -263,7 +284,8 @@ export class OfficialQQClient {
         this._failFatal("session_store_error");
         return;
       }
-      this.state.reason = "ready";
+      this.state.reason = "heartbeat_pending";
+      this.pendingAuthReason = "ready";
       this.readyAtMs = this.now();
       this.connectDeadlineAtMs = null;
     });
@@ -278,9 +300,10 @@ export class OfficialQQClient {
         return;
       }
       this.state.gateway_connected = true;
-      this.state.authenticated = true;
+      this.state.authenticated = false;
       this.state.bot_id = restoredBotId;
-      this.state.reason = "resumed";
+      this.state.reason = "heartbeat_pending";
+      this.pendingAuthReason = "resumed";
       this.readyAtMs = this.now();
       this.connectDeadlineAtMs = null;
     });
@@ -289,6 +312,7 @@ export class OfficialQQClient {
       this.state.authenticated = false;
       this.state.reason = "gateway_error";
       this.readyAtMs = null;
+      this.pendingAuthReason = null;
       this.connectDeadlineAtMs = this.now() + 30_000;
     });
     bot.on("message", (_context, message) => {
@@ -377,6 +401,7 @@ export class OfficialQQClient {
     this.state.bot_id = null;
     this.state.reason = "stopped";
     this.readyAtMs = null;
+    this.pendingAuthReason = null;
     this.connectDeadlineAtMs = null;
   }
 

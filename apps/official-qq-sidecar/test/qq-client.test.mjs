@@ -93,6 +93,7 @@ test("capture-only mode retains no identity or message content and disables send
   await client.start();
   const bot = FakeBot.instances[0];
   bot.emit("ready", { user: { id: safe } });
+  bot.gateway.currentWs.emit("message", Buffer.from('{"op":11}'));
   bot.emit("message", {}, {
     rawEventType: "C2C_MESSAGE_CREATE",
     kind: "c2c",
@@ -132,6 +133,7 @@ test("owner binding callback receives only an authenticated C2C sender", async (
       timestamp: "2026-08-29T01:00:00Z",
     });
     bot.emit("ready", { user: { id: safe } });
+    bot.gateway.currentWs.emit("message", Buffer.from('{"op":11}'));
     bot.emit("message", {}, {
       rawEventType: "GROUP_AT_MESSAGE_CREATE",
       kind: "group",
@@ -170,6 +172,7 @@ test("owner binding callback failure stops the client fail-closed", async () => 
     await client.start();
     const bot = FakeBot.instances[0];
     bot.emit("ready", { user: { id: safe } });
+    bot.gateway.currentWs.emit("message", Buffer.from('{"op":11}'));
     bot.emit("message", {}, {
       rawEventType: "C2C_MESSAGE_CREATE",
       kind: "c2c",
@@ -226,38 +229,54 @@ test("SDK is configured with exact intent and silent logger", async () => {
 
 test("READY identity is mandatory before events or sends", async () => {
   const client = newClient();
-  await client.start();
-  const bot = FakeBot.instances[0];
-  bot.emit("message", {}, {
-    rawEventType: "C2C_MESSAGE_CREATE",
-    kind: "c2c",
-    senderId: senderSafe,
-    messageId: safe,
-    content: "before-ready",
-    timestamp: "2026-08-28T10:00:00Z",
-  });
-  assert.equal(client.readEvents(0, 10).length, 0);
-  await assert.rejects(client.send(sendRequest(client)), /gateway_unavailable/);
+  try {
+    await client.start();
+    const bot = FakeBot.instances[0];
+    bot.emit("message", {}, {
+      rawEventType: "C2C_MESSAGE_CREATE",
+      kind: "c2c",
+      senderId: senderSafe,
+      messageId: safe,
+      content: "before-ready",
+      timestamp: "2026-08-28T10:00:00Z",
+    });
+    assert.equal(client.readEvents(0, 10).length, 0);
+    await assert.rejects(client.send(sendRequest(client)), /gateway_unavailable/);
 
-  bot.emit("ready", { user: { id: safe } });
-  bot.emit("message", {}, {
-    rawEventType: "C2C_MESSAGE_CREATE",
-    kind: "c2c",
-    senderId: senderSafe,
-    messageId: safe,
-    content: "after-ready",
-    timestamp: "2026-08-28T10:00:00Z",
-  });
-  assert.equal(client.status().authenticated, true);
-  assert.equal(client.readEvents(0, 10).length, 1);
-  await client.stop();
+    bot.emit("ready", { user: { id: safe } });
+    assert.equal(client.status().authenticated, false);
+    assert.equal(client.status().reason, "heartbeat_pending");
+    bot.emit("message", {}, {
+      rawEventType: "C2C_MESSAGE_CREATE",
+      kind: "c2c",
+      senderId: senderSafe,
+      messageId: safe,
+      content: "after-ready",
+      timestamp: "2026-08-28T10:00:00Z",
+    });
+    assert.equal(client.readEvents(0, 10).length, 0);
+    bot.gateway.currentWs.emit("message", Buffer.from('{"op":11}'));
+    bot.emit("message", {}, {
+      rawEventType: "C2C_MESSAGE_CREATE",
+      kind: "c2c",
+      senderId: senderSafe,
+      messageId: safe,
+      content: "after-heartbeat",
+      timestamp: "2026-08-28T10:00:00Z",
+    });
+    assert.equal(client.status().authenticated, true);
+    assert.equal(client.status().reason, "ready");
+    assert.equal(client.readEvents(0, 10).length, 1);
+  } finally {
+    await client.stop();
+  }
 });
 
 test("full mode drops and never authorizes non-owner or non-allowlisted events", async () => {
   const client = newClient();
   await client.start();
   const bot = FakeBot.instances[0];
-  bot.emit("ready", { user: { id: safe } });
+  readyForSend(bot);
   bot.emit("message", {}, {
     rawEventType: "C2C_MESSAGE_CREATE",
     kind: "c2c",
@@ -371,6 +390,31 @@ test("send requires a fresh observable heartbeat ACK", async () => {
   await client.stop();
 });
 
+test("READY without a first heartbeat ACK stays pending and times out fail-closed", async () => {
+  let now = 1000;
+  let fatalReason = null;
+  const client = newClient({
+    now: () => now,
+    heartbeatAckTimeoutMs: 100,
+    watchdogIntervalMs: 60_000,
+    onFatal: (reason) => {
+      fatalReason = reason;
+    },
+  });
+  await client.start();
+  const bot = FakeBot.instances[0];
+  bot.emit("ready", { user: { id: safe } });
+  assert.equal(client.status().authenticated, false);
+  assert.equal(client.status().reason, "heartbeat_pending");
+
+  now = 1101;
+  client._watchGateway();
+
+  assert.equal(fatalReason, "heartbeat_ack_timeout");
+  assert.equal(client.status().authenticated, false);
+  await client.stop();
+});
+
 test("provider timeout returns UNKNOWN without hanging or retrying", async () => {
   const client = newClient({ sendTimeoutMs: 5 });
   await client.start();
@@ -459,13 +503,20 @@ test("RESUMED authenticates only with the bot identity bound to persisted sessio
     clear() {},
   };
   const client = newClient({ sessionStore });
-  await client.start();
-  const bot = FakeBot.instances[0];
-  assert.equal(bot.options.sessionPersistence, sessionStore);
-  bot.emit("resumed");
-  assert.equal(client.status().authenticated, true);
-  assert.equal(client.status().bot_id, safe);
-  await client.stop();
+  try {
+    await client.start();
+    const bot = FakeBot.instances[0];
+    assert.equal(bot.options.sessionPersistence, sessionStore);
+    bot.emit("resumed");
+    assert.equal(client.status().authenticated, false);
+    assert.equal(client.status().reason, "heartbeat_pending");
+    assert.equal(client.status().bot_id, safe);
+    bot.gateway.currentWs.emit("message", Buffer.from('{"op":11}'));
+    assert.equal(client.status().authenticated, true);
+    assert.equal(client.status().reason, "resumed");
+  } finally {
+    await client.stop();
+  }
 });
 
 test("malformed INVALID_SESSION payload stops the pinned SDK wrapper fail-closed", async () => {

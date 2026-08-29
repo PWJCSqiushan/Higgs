@@ -32,6 +32,7 @@ _SAFE_REASONS = {
     "gateway_error",
     "gateway_reconnecting",
     "gateway_stopped",
+    "heartbeat_pending",
     "heartbeat_ack_timeout",
     "reconnect_budget_exhausted",
     "session_store_error",

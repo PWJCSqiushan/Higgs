@@ -214,3 +214,18 @@
 - 新的一次性 Node 绑定器只在“平台测试用户恰为主人一人”的显式确认下运行，只接收 READY 后首个 C2C sender，并以 create-once、fsync、`0600` 文件直接落入私有挂载；不输出或记录身份、正文、消息 ID、附件与凭据，成功即停止 Gateway。
 - 包装脚本保证无并发官方 Gateway、Python 官方关闭、目录权限/UID 正确；更新两份私有环境前创建 `0600` 备份，任一更新或后验检查失败即恢复，成功后把中间身份文件移入 `/srv/trash`，官方摄取仍保持关闭。
 - 当前本地验证为 Node `29 passed, 2 skipped`、Python `305 passed, 5 skipped`，Ruff、格式、发布门、秘密边界、Shell LF 与 diff 检查通过。功能提交 `24296a1` 已进入 PR #35；push 与 pull request 两套 Python、Node/镜像/Compose CI 全绿，Ubuntu 已覆盖 Bash 语法和 Linux 零跳过测试。待文档检查点 CI 后合并，再部署绑定器并只请主人从官方入口发送一次；绑定成功后才进入回复关闭的 shadow 部署。
+
+## 节点 25：主人私有绑定完成与官方 shadow 上线暂停
+
+- PR #35 已在全部 CI 通过后合并为主线 `635045d30cf6f02970ddbbb464afd165f220459e`，合并后主线 Python 与 Node/镜像/Compose CI 继续全绿。
+- 前一晚的绑定尝试安全超时；恢复会话并由主人扫码后，受控 Node 绑定器从首个合法官方 C2C 事件完成主人 OpenID 私有绑定。两份 `0600` 配置事务式更新，中间身份文件移入 `/srv/trash`；没有回显或记录身份、正文、消息 ID、附件或凭据，官方回复仍关闭。
+- 同一主线提交的不可变 release、Agent 镜像与 official sidecar 镜像完成双端校验和生产切换。匿名部署回执确认 NapCat 未改变且 healthy、Agent running、sidecar healthy、官方摄取 enabled、回复 disabled、旧基础 unit disabled、官方 unit enabled。
+- 这代表官方 Bot 已达到“平台在线、摄取开启、回复关闭”的 shadow 状态，不代表正式对话上线。协调持久化、崩溃恢复、systemd 重启 Resume、72 小时在线和真实回复均尚未验收。
+- 主人要求关机时，进一步的匿名运行时核验命令仅停留在未执行输入行，随后已安全取消。续接先只读核验 release/镜像、唯一 Gateway、重启次数、sidecar health、`qq_official` transport 状态、reply=false 与 NapCat 不变性；再决定 Resume 测试，不得直接打开回复。
+
+## 节点 26：shadow 重连竞态收敛与首 ACK 认证修复
+
+- 匿名现场核验确认 release/镜像精确、唯一 official sidecar 当前在线且 ACK 新鲜，NapCat healthy、Agent running、reply=false；但 `qq_official` transport 已持续 `rejected/protocol_error`，业务摄取没有随 sidecar 恢复。官方 unit enabled/inactive，旧基础 unit disabled/active，systemd Resume 门尚未执行。
+- 脱敏时序为 `pending/startup → verified/ready → pending/gateway_reconnecting（约 2.5 秒）→ rejected/protocol_error`。sidecar 自动恢复后保持健康数小时，Agent terminal failure 不会自愈。诊断未读取日志、聊天正文、身份、消息 ID 或凭据。
+- 根因是 READY/RESUMED 与首个新 heartbeat ACK 之间的合法窗口被错误表达为 authenticated。修复新增 `heartbeat_pending`：身份校验与 session bot id 可先完成，但直到 ACK 可观测、session touch 成功后才公开 authenticated 和 `ready/resumed`；期间事件与发送拒绝，90 秒无 ACK 仍以 `heartbeat_ack_timeout` fail-closed。
+- 独立工作树 `Higgs-wt-official-heartbeat-auth`、分支 `codex/higgs-official-heartbeat-auth-20260829` 已完成本地代码与回归。Node `30 passed, 2 skipped`，Python 定向 `11 passed`、完整 `306 passed, 5 skipped`，Ruff、格式、Node 语法与 diff 检查通过。下一步是发布门、秘密扫描、提交、PR/Ubuntu CI；全绿前不部署、不重启生产，也不打开回复。
