@@ -119,6 +119,11 @@ def test_official_qq_sidecar_is_opt_in_and_isolated_from_agent_data() -> None:
     assert "official-qq-runtime:/run/higgs-official:ro" in compose
     assert "R_AGENT_OFFICIAL_QQ_TRANSPORT: sidecar" in compose
     assert "R_AGENT_OFFICIAL_QQ_SIDECAR_SOCKET: /run/higgs-official/sidecar.sock" in compose
+    agent_overlay = compose.split("\n  official-qq-sidecar:\n", 1)[0]
+    assert "r_agent.health_probe" in agent_overlay
+    assert '"--max-age"' in agent_overlay
+    assert '"90"' in agent_overlay
+    assert "--require-qq-online" not in agent_overlay
     assert "QQBOT_APP_SECRET" not in compose
     assert "HIGGS_OFFICIAL_QQ_NODE_IMAGE=node:22-bookworm-slim@sha256:" in stack_env
     node_image = next(

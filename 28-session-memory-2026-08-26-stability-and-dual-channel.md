@@ -273,3 +273,10 @@
 - 新增 SQLite enqueue 故障注入和监督循环 ACK 响应丢失恢复测试；新增 Linux `SecureDeliveryStore` 真 claim/receipt 进程替换测试，分别要求预领取无回执时 provider 调用为零、已有回执时跨实例总调用为一。Windows 本地按平台约束跳过，必须由 PR Ubuntu CI 零跳过解除。
 - adapter 纵深门控补齐：公开发送接口自身检查 reply 开关；直接构造 sidecar 配置也拒绝 Agent 内 App 凭据和缺失 owner。当前本地 Python `330 passed, 5 skipped`、Node `31 passed, 7 skipped`，Ruff、格式、Node 语法与发布门通过；修正尚待提交并更新 PR #40。
 - 用户已明确允许上传和部署。本轮授权只用于 PR 合并后的 reply=false 不可变生产发布与匿名恢复验收；不得据此直接打开真实回复。reply=true 仍需 Linux CI、reply=false 生产验收及跨语言发送边界证据后再单独确认。
+
+## 节点 32：Agent 持久处理发布与双通道 healthcheck 修复中
+
+- PR #40 已合并为主线 `9e55b8293a45feac3d89c8b5f32f1d94c9077185`；合并后 CI run `33259705508` 两项任务通过，Linux 对权限、UDS 和真实进程替换测试零跳过。发布包为 470185 字节、267 个成员，双端 SHA-256 一致，不含凭据、身份、聊天正文或登录状态。
+- 首次执行因归档刻意不保留 executable 位，在调用激活脚本前安全退出；显式用 Bash 调用后完成不可变 release 与两镜像切换，只重建 official sidecar 和 Agent。匿名后验确认 sidecar healthy、零重启、单 Gateway，Agent durable 库已创建，reply=false；NapCat 容器仍 running/healthy、零重启且未参与重建。
+- Agent Docker health 未通过不是官方 Gateway 故障，而是基础探针强制要求个人 QQ 权威在线。现场只有 `get_status_offline`、OneBot 可达、账号匹配未知，没有账号不匹配证据；禁止自动重启或反复登录 NapCat。
+- 新分支 `codex/higgs-dual-channel-health-20260830` 让 official overlay 覆盖 Agent healthcheck，移除 `--require-qq-online`，仍检查新鲜心跳、OneBot 可达和 NapCat 容器 marker。定向测试 `6 passed`，Ruff/格式通过；完整 Python `330 passed, 5 skipped`，Node `31 passed, 7 skipped`。待 PR/Ubuntu CI、合并与只重建 Agent 的生产验收后，再单独申请开启真实回复。
