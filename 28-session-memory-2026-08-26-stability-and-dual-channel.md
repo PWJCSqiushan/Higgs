@@ -280,3 +280,11 @@
 - 首次执行因归档刻意不保留 executable 位，在调用激活脚本前安全退出；显式用 Bash 调用后完成不可变 release 与两镜像切换，只重建 official sidecar 和 Agent。匿名后验确认 sidecar healthy、零重启、单 Gateway，Agent durable 库已创建，reply=false；NapCat 容器仍 running/healthy、零重启且未参与重建。
 - Agent Docker health 未通过不是官方 Gateway 故障，而是基础探针强制要求个人 QQ 权威在线。现场只有 `get_status_offline`、OneBot 可达、账号匹配未知，没有账号不匹配证据；禁止自动重启或反复登录 NapCat。
 - 新分支 `codex/higgs-dual-channel-health-20260830` 让 official overlay 覆盖 Agent healthcheck，移除 `--require-qq-online`，仍检查新鲜心跳、OneBot 可达和 NapCat 容器 marker。定向测试 `6 passed`，Ruff/格式通过；完整 Python `330 passed, 5 skipped`，Node `31 passed, 7 skipped`。待 PR/Ubuntu CI、合并与只重建 Agent 的生产验收后，再单独申请开启真实回复。
+
+## 节点 33：双通道健康修复合并并通过 reply=false 生产门
+
+- PR #41 的 push 与 pull request 两组 CI 全绿后合并为主线 `a0f32c49db88318c696f22b4b9d345312557f465`；合并 tree 与本地 `330 passed, 5 skipped`、Node `31 passed, 7 skipped`、Ruff、格式、秘密扫描、Shell LF 和发布门所验收 tree 一致。
+- 完整 Git 发布包在本地生成并通过门禁，但 OrcaTerm 文件选择器不可用且完整分块传输超过平台等待上限，未完成的归档没有被执行。生产改为克隆上一已验收不可变 release，只替换本次唯一运行时差异 `compose.official-qq.yml`；overlay 在本地和服务器以同一 SHA-256 校验，新目录继续不可变。GitHub 合并提交是测试和文档权威，该最小运行目录不冒充完整 Git 归档。
+- 部署只强制重建 Agent。受控脚本要求 Agent 90 秒内达到 healthy、reply=false、NapCat 与 official sidecar 的容器身份/启动时间/重启计数前后一致，否则恢复旧 `current`。本次部署与独立验收均成功；没有重启 sidecar、重启或重登 NapCat，也没有发送测试消息。
+- 最终匿名状态：Agent healthy、official sidecar healthy、官方 Gateway 单实例、`qq_official` 为 `verified` 且连接/认证/身份匹配/新鲜健康回执均通过、reply=false；NapCat 容器自身运行健康但个人 QQ 在线状态仍与官方通道独立。
+- 下一门是主人单独批准官方被动回复 true。批准前不得修改私有回复开关；批准后只重建 Agent，并只让主人从官方入口发送一条测试消息，验收真实回复及 durable processing/UNKNOWN/幂等审计。提醒仍留在 NapCat，禁止跨通道透明故障切换。
