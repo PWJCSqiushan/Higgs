@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from r_agent.conversation import ConversationStore
@@ -23,6 +24,13 @@ class ContextBuilder:
     """Build one bounded context after deterministic scope/status filtering."""
 
     POLICY_VERSION = "owner-reviewed-scope-first-hybrid-vector-v2"
+
+    @staticmethod
+    def _recall_turn_id(event: InboundEvent) -> str:
+        """Return a bounded, non-identifying key for one platform event."""
+        material = "\0".join((event.channel, event.account_id, event.message_id))
+        digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+        return f"event-sha256:{digest}"
 
     def __init__(
         self,
@@ -93,7 +101,7 @@ class ContextBuilder:
             if self.memory_limit
             else []
         )
-        turn_id = f"{event.channel}:{event.account_id}:{event.message_id}"
+        turn_id = self._recall_turn_id(event)
         self.recall.record(
             turn_id=turn_id,
             conversation_key=event.conversation_id,

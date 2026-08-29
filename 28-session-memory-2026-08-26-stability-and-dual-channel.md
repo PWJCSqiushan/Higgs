@@ -295,3 +295,10 @@
 - 私有 `higgs.env` 先以 `0600` 备份到 `/srv/trash` 的 `0700` 目录，再以 fsync 和原子 replace 把回复开关从 false 更新为 true；没有回显凭据、身份或聊天数据。部署脚本带显式回滚，后验任一失败会恢复配置并重建旧 Agent。
 - 生产只重建 Agent。最终匿名状态为 Agent healthy、`R_AGENT_OFFICIAL_QQ_REPLY_ENABLED=true`、官方 transport verified、Gateway 单实例；official sidecar 与 NapCat 的容器身份、启动时间和重启计数未变，全程没有重启/重登 NapCat，也没有运维侧测试消息。
 - 当前正式状态是“被动回复已开启、首条真实消息尚未验收”。下一动作仅由主人从官方入口发送一条“测试”；随后匿名核对 durable batch 终态、发送结果类别、风险/审计收敛和 provider 调用不重复。UNKNOWN 不得自动重发，提醒仍由 NapCat 承担。
+
+## 节点 35：超长官方消息标识根因确认与修复待 PR
+
+- 主人连续两次从官方入口发送测试消息。两条消息均被唯一 Gateway 接收并由 durable processor 收敛为 `complete/model_failed`；平台发送接口没有被调用，活动批次为零，因此不存在 UNKNOWN、重复发送或旧批次重放风险。Agent、official sidecar、NapCat 均保持 healthy，官方 transport 持续 verified，reply=true。
+- 匿名固定模型探针确认生产模型配置、鉴权、网络和基础生成正常。进一步的内容无关结构检查显示，测试正文仅 2 个字符，但官方平台消息标识较长，使旧 `channel:account_id:message_id` 召回审计键达到 150 字符，超过 `RecallLedger` 的 128 字符上限；召回审计未落库，请求也从未到达模型服务。这是两次 `model_failed` 的确定根因。
+- 独立分支 `codex/higgs-official-recall-id-fix-20260830` 将召回 `turn_id` 改为带版本前缀的 SHA-256 固定长度键。它仍绑定 channel、account 和 message，保持去重与冲突检测语义，同时不再泄露平台标识，也不会受不同平台 ID 长度影响。新增 160 字符平台消息 ID 回归，证明键长固定为 77、原标识不出现在审计键且 owner recall 可读取。
+- 本地 release gate、秘密边界、Shell LF/语法、Ruff、格式均通过；Python 完整 `331 passed, 5 skipped`，Node `31 passed, 7 skipped`（Windows 既有 Linux 专用跳过）。下一步是提交独立 PR、等待 Ubuntu CI 零跳过，合并后生成不可变发布并只重建 Agent；旧失败批次保持终态，不得重放。生产修复部署后再请主人发送一条新测试完成真实 SENT 验收。
