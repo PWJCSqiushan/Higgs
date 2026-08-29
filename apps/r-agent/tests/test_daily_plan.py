@@ -213,7 +213,10 @@ async def test_official_channel_cannot_create_plan_or_reminders(tmp_path: Path) 
 @pytest.mark.asyncio
 async def test_map_is_not_called_before_explicit_and_unambiguous_consent(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    freeze_morning(monkeypatch)
+
     class FakeAmap:
         calls = 0
 

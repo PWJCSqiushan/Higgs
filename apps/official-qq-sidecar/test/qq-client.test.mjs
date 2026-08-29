@@ -1,11 +1,43 @@
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
+import { SecureDeliveryStore } from "../src/delivery-store.mjs";
 import { OfficialQQClient, PINNED_SDK_VERSION } from "../src/qq-client.mjs";
-import { GROUP_AND_C2C_INTENT, PROTOCOL_VERSION } from "../src/protocol.mjs";
+import {
+  GROUP_AND_C2C_INTENT,
+  PROTOCOL_VERSION,
+  requestFingerprint,
+} from "../src/protocol.mjs";
 
 const safe = "A123_safe-value";
 const senderSafe = "B456_sender-value";
+const unixOnly = { skip: process.platform === "win32" };
+
+function durableStore(prefix) {
+  const directory = mkdtempSync(join(tmpdir(), prefix));
+  chmodSync(directory, 0o700);
+  return new SecureDeliveryStore(join(directory, "delivery-state.json"), {
+    now: () => 1234,
+  });
+}
+
+function durableInbound() {
+  return {
+    event_type: "C2C_MESSAGE_CREATE",
+    kind: "c2c",
+    bot_id: safe,
+    sender_id: safe,
+    group_id: null,
+    message_id: safe,
+    occurred_at_ms: 1000,
+    received_at_ms: 1001,
+    text: "private test payload",
+    attachments: [],
+  };
+}
 
 class FakeWs {
   constructor() {
@@ -459,6 +491,67 @@ test("a durable pre-crash send claim is recovered as UNKNOWN without another pro
   assert.equal(bot.sent.length, 0);
   await client.stop();
 });
+
+test(
+  "a real durable claim survives process replacement as UNKNOWN with zero provider calls",
+  unixOnly,
+  async () => {
+    const firstStore = durableStore("higgs-official-claim-crash-");
+    firstStore.appendAuthorized(durableInbound(), 1234);
+    const firstClient = newClient({ deliveryStore: firstStore });
+    await firstClient.start();
+    const request = sendRequest(firstClient);
+    firstStore.claim(
+      request.reply_message_id,
+      request.kind,
+      request.target_id,
+      request.idempotency_key,
+      requestFingerprint(request),
+      1234,
+    );
+    await firstClient.stop();
+
+    const restoredStore = new SecureDeliveryStore(firstStore.path, { now: () => 1235 });
+    const restoredClient = newClient({ deliveryStore: restoredStore, now: () => 1235 });
+    await restoredClient.start();
+    const restoredBot = FakeBot.instances[0];
+    readyForSend(restoredBot);
+    const receipt = await restoredClient.send(sendRequest(restoredClient));
+
+    assert.equal(receipt.state, "unknown");
+    assert.equal(restoredBot.sent.length, 0);
+    await restoredClient.stop();
+  },
+);
+
+test(
+  "a real durable receipt is reused after process replacement with one provider call total",
+  unixOnly,
+  async () => {
+    const firstStore = durableStore("higgs-official-receipt-crash-");
+    firstStore.appendAuthorized(durableInbound(), 1234);
+    const firstClient = newClient({ deliveryStore: firstStore });
+    await firstClient.start();
+    const firstBot = FakeBot.instances[0];
+    readyForSend(firstBot);
+    const firstReceipt = await firstClient.send(sendRequest(firstClient));
+    assert.equal(firstReceipt.state, "sent");
+    assert.equal(firstBot.sent.length, 1);
+    await firstClient.stop();
+
+    const restoredStore = new SecureDeliveryStore(firstStore.path, { now: () => 1235 });
+    const restoredClient = newClient({ deliveryStore: restoredStore, now: () => 1235 });
+    await restoredClient.start();
+    const restoredBot = FakeBot.instances[0];
+    readyForSend(restoredBot);
+    const restoredReceipt = await restoredClient.send(sendRequest(restoredClient));
+
+    assert.equal(restoredReceipt.state, "sent");
+    assert.equal(restoredReceipt.provider_message_id, firstReceipt.provider_message_id);
+    assert.equal(restoredBot.sent.length, 0);
+    await restoredClient.stop();
+  },
+);
 
 test("gateway close clears authentication and heartbeat timeout is fatal", async () => {
   let now = 1000;

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from r_agent.access import IngressDecision
 from r_agent.events import ConversationKind, InboundEvent
+from r_agent.identity import Principal
 from r_agent.ingest import IngestResult
 from r_agent.model_client import ModelError
 from r_agent.phase2_cli import process_reply
@@ -35,6 +36,25 @@ def event(
 
 def accepted() -> IngestResult:
     return IngestResult(IngressDecision.ACCEPT, stored=True)
+
+
+class _OfficialIdentities:
+    def resolve(self, channel: str, sender_id: str) -> Principal:
+        return Principal("owner-principal", "owner")
+
+
+class _ForbiddenFeature:
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError("official MVP must not enter a mutating feature")
+
+
+class _OwnerCommands:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def handle(self, text: str, *, actor: Principal, surface: str) -> str:
+        self.calls.append(text)
+        return "状态正常"
 
 
 def test_draft_requires_mention_for_group() -> None:
@@ -162,6 +182,78 @@ async def test_model_failure_becomes_auditable_decision() -> None:
     assert plan.text is None
 
 
+async def test_official_mvp_allows_only_owner_status_command() -> None:
+    commands = _OwnerCommands()
+    brain = PersonaBrain(
+        None,
+        "test",
+        identities=_OfficialIdentities(),  # type: ignore[arg-type]
+        context_builder=SimpleNamespace(),  # type: ignore[arg-type]
+        owner_commands=commands,  # type: ignore[arg-type]
+        reminders=_ForbiddenFeature(),  # type: ignore[arg-type]
+        daily_plans=_ForbiddenFeature(),  # type: ignore[arg-type]
+    )
+    base = event(text="/higgs status")
+    official = InboundEvent(
+        channel="qq_official",
+        account_id=base.account_id,
+        sender_id=base.sender_id,
+        message_id=base.message_id,
+        occurred_at_ms=base.occurred_at_ms,
+        conversation_kind=base.conversation_kind,
+        conversation_id="qq_official:private:bot:owner",
+        group_id=None,
+        text=base.text,
+        mentioned=False,
+    )
+
+    assert await brain.draft(official) == "状态正常"
+    assert commands.calls == ["/higgs status"]
+
+    blocked = InboundEvent(
+        channel=official.channel,
+        account_id=official.account_id,
+        sender_id=official.sender_id,
+        message_id="2",
+        occurred_at_ms=official.occurred_at_ms,
+        conversation_kind=official.conversation_kind,
+        conversation_id=official.conversation_id,
+        group_id=None,
+        text="/higgs enable",
+        mentioned=False,
+    )
+    assert await brain.draft(blocked) == "官方 QQ 通道当前仅开放 /higgs status 状态查询。"
+    assert commands.calls == ["/higgs status"]
+
+
+async def test_official_dialogue_skips_plan_and_reminder_mutations() -> None:
+    brain = PersonaBrain(
+        None,
+        "test",
+        identities=_OfficialIdentities(),  # type: ignore[arg-type]
+        context_builder=SimpleNamespace(),  # type: ignore[arg-type]
+        reminders=_ForbiddenFeature(),  # type: ignore[arg-type]
+        daily_plans=_ForbiddenFeature(),  # type: ignore[arg-type]
+    )
+    base = event(text="明天提醒我写计划")
+    official = InboundEvent(
+        channel="qq_official",
+        account_id=base.account_id,
+        sender_id=base.sender_id,
+        message_id=base.message_id,
+        occurred_at_ms=base.occurred_at_ms,
+        conversation_kind=base.conversation_kind,
+        conversation_id="qq_official:private:bot:owner",
+        group_id=None,
+        text=base.text,
+        mentioned=False,
+    )
+
+    assert (
+        await brain.draft(official) == "我已收到。当前处于受控测试阶段，请告诉我需要协助处理什么。"
+    )
+
+
 async def test_send_failure_becomes_auditable_decision() -> None:
     async def broken_sender(item: InboundEvent, text: str) -> None:
         raise OutboundError("rejected")
@@ -214,8 +306,10 @@ async def test_group_reply_passes_sender_scope_to_both_risk_guards() -> None:
             *,
             is_owner: bool,
             source_id: str | None = None,
+            idempotency_key: str | None = None,
         ) -> SimpleNamespace:
             assert not is_owner
+            assert idempotency_key is None
             self.source_ids.append(source_id)
             return SimpleNamespace(allowed=True)
 
