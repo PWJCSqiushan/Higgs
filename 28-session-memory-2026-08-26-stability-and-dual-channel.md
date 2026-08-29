@@ -288,3 +288,10 @@
 - 部署只强制重建 Agent。受控脚本要求 Agent 90 秒内达到 healthy、reply=false、NapCat 与 official sidecar 的容器身份/启动时间/重启计数前后一致，否则恢复旧 `current`。本次部署与独立验收均成功；没有重启 sidecar、重启或重登 NapCat，也没有发送测试消息。
 - 最终匿名状态：Agent healthy、official sidecar healthy、官方 Gateway 单实例、`qq_official` 为 `verified` 且连接/认证/身份匹配/新鲜健康回执均通过、reply=false；NapCat 容器自身运行健康但个人 QQ 在线状态仍与官方通道独立。
 - 下一门是主人单独批准官方被动回复 true。批准前不得修改私有回复开关；批准后只重建 Agent，并只让主人从官方入口发送一条测试消息，验收真实回复及 durable processing/UNKNOWN/幂等审计。提醒仍留在 NapCat，禁止跨通道透明故障切换。
+
+## 节点 34：官方被动回复已开启，真实消息验收待执行
+
+- 主人单独明确批准开启官方被动回复并只重建 Agent。切换前确认官方 transport verified、单 Gateway、Agent/sidecar/NapCat 容器健康，且 `official_processing.sqlite` 的非完成批次为零，避免 shadow 历史消息在开关打开后被恢复发送。
+- 私有 `higgs.env` 先以 `0600` 备份到 `/srv/trash` 的 `0700` 目录，再以 fsync 和原子 replace 把回复开关从 false 更新为 true；没有回显凭据、身份或聊天数据。部署脚本带显式回滚，后验任一失败会恢复配置并重建旧 Agent。
+- 生产只重建 Agent。最终匿名状态为 Agent healthy、`R_AGENT_OFFICIAL_QQ_REPLY_ENABLED=true`、官方 transport verified、Gateway 单实例；official sidecar 与 NapCat 的容器身份、启动时间和重启计数未变，全程没有重启/重登 NapCat，也没有运维侧测试消息。
+- 当前正式状态是“被动回复已开启、首条真实消息尚未验收”。下一动作仅由主人从官方入口发送一条“测试”；随后匿名核对 durable batch 终态、发送结果类别、风险/审计收敛和 provider 调用不重复。UNKNOWN 不得自动重发，提醒仍由 NapCat 承担。

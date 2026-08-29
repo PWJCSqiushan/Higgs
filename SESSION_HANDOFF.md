@@ -279,3 +279,10 @@
 - 切换脚本显式验证 overlay 摘要、Compose 配置、新旧 release 链接和回复开关；仅 `--force-recreate agent`，不重建镜像，不操作 official sidecar 或 NapCat。若 Agent 未在 90 秒内健康或任一旁路容器身份改变，脚本会恢复旧 `current` 并重建旧 Agent。本次回执为成功。
 - 匿名生产验收为：新运行目录生效；Agent `healthy`；official sidecar `healthy`；同 AppID 只有一个 official Gateway；`transport.sqlite` 的 `qq_official` 为 `verified`，连接、认证、身份匹配和新鲜健康回执均通过；`R_AGENT_OFFICIAL_QQ_REPLY_ENABLED=false`。NapCat 容器运行且健康，部署前后容器身份、启动时间和重启计数未改变；没有自动重登、重启 NapCat 或发送测试消息。
 - 这解除的是个人 QQ 离线拖累官方双通道整体健康的问题，不代表个人 QQ 已恢复，也不是正式回复验收。下一动作必须由主人单独确认把官方被动回复从 false 切为 true；获准后只原子更新服务器私有配置并重建 Agent，随后由主人从官方入口发送一条测试消息，验证真实回复、持久状态机、审计和 UNKNOWN/幂等边界。NapCat 提醒与个人 QQ 通道继续保持独立。
+
+## 28. 2026-08-30 官方被动回复已获准并开启，等待首条真实验收
+
+- 主人明确授权“允许开启官方被动回复并只重建 Agent”。切换前匿名门控确认 Agent、official sidecar 与 NapCat 容器均健康，官方 Gateway 单实例，`qq_official` 为 `verified` 且健康回执新鲜；`official_processing.sqlite` 不存在任何非 `complete` 批次，因此不会把 shadow 期间的旧消息作为待回复恢复。
+- 服务器私有 `higgs.env` 在 `/srv/trash` 创建权限收紧的可恢复备份后，以临时文件、文件 fsync、原子 replace 和目录 fsync 将唯一回复开关从 false 改为 true；没有回显或记录凭据、身份或聊天数据。切换脚本的本地与服务器 SHA-256 一致，任一后验门控失败都会恢复私有配置并重建旧 Agent。
+- 生产只执行 `--no-deps --no-build --force-recreate agent`。匿名回执确认新 Agent healthy 且实际环境为 `R_AGENT_OFFICIAL_QQ_REPLY_ENABLED=true`；官方 transport 继续 verified、Gateway 仍为一个。official sidecar 与 NapCat 的容器身份、启动时间和重启计数前后完全一致，没有重启 sidecar、重启或重登 NapCat，也没有由运维侧发送测试消息。
+- 官方 Bot 现在进入真实被动回复开启态，但端到端真实回复尚待主人从官方入口发送一条“测试”验收。下一步只观察匿名处理状态、发送结果类别、幂等与重复调用计数，不读取或记录身份、正文、消息 ID 或平台回执 ID；若出现 UNKNOWN 或失败，不得盲目补发，先按 durable processing 状态机诊断。
