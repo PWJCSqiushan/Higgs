@@ -231,3 +231,13 @@
 - 根因是重连 READY 先于新 WebSocket 的首个 heartbeat ACK：旧 Node 状态在 READY 回调立即公开 authenticated，而 Python 看到 authenticated 但 ACK 为空，按协议矛盾永久熔断。该结论由匿名时序与源码状态机共同支持，没有读取聊天正文、身份、消息 ID 或 sidecar 日志。
 - 新分支把 authenticated 语义收紧为“READY/RESUMED 身份有效且首个 ACK 已成功触达并刷新私有 session”；此前保持 `heartbeat_pending`，事件和发送均拒绝。若首个 ACK 在 90 秒内不到达，watchdog 继续以 `heartbeat_ack_timeout` fail-closed。Python 接受该明确 pending 状态而不误判协议破坏。
 - 本地 Node 为 `30 passed, 2 skipped`，新增 READY/RESUMED 前后门控和首 ACK 超时回归；Python 定向 `11 passed`、完整 `306 passed, 5 skipped`，Ruff、格式和 Node 语法检查通过。尚未提交功能、创建 PR、运行 Ubuntu Linux UDS/session CI 或部署；生产 reply 继续为 false。
+
+## 23. 2026-08-29 首 ACK 修复上线与 sidecar 持久化本地收束
+
+- 首 ACK 修复由 PR #36 合并为主线 `f18ff1b8b4a86845316f960fdb7b8a350e5a2eec`，随后完成不可变 Agent/sidecar 生产发布。只重建这两个服务，NapCat 身份、启动时间和 health 未改变；独立后验确认官方通道 connected、authenticated、ACK 新鲜并以 `resumed` 恢复，`transport.sqlite` 进入 `verified/resumed`。回复仍为 false。
+- 交接文档经 PR #37 合并为主线 `a3178122ec17e05c8215278ab3167d2936778ab1`，合并后 Python 与 Node/镜像/Compose CI 全绿。个人 QQ 当前离线导致 Agent 综合 health 为 unhealthy，但不影响已独立验证的官方 transport；不得为此自动重登或重启 NapCat。
+- 新分支 `codex/higgs-official-durable-delivery-20260829` 已完成第一层协调持久化：full-mode sidecar 在 SDK 回调返回前，把严格规范化的入站事件及其被动回复授权原子写入专用私有 `0600 delivery-state.json`；文件、父目录、owner、大小、结构或 symlink 校验失败以及队列满均终止官方通道，不会静默丢弃。
+- UDS hello 现在给出匿名 ACK 游标；Agent 只有在事件处理器正常返回后才逐条提交带 generation 的显式 ACK。Agent 单独重启会从 sidecar 当前 ACK 游标继续，sidecar 重启会把仍未确认事件安全重编号后重放；ACK 前处理失败不移动游标。
+- 回复授权同时持久化请求指纹，发送回执也原子保存。若进程在领取发送权后、写入最终回执前崩溃，重启后同一请求只返回 `UNKNOWN`，不再调用平台；同一幂等键但不同目标、正文或 reply ID 继续拒绝。
+- 本地 Node 为 `31 passed, 5 skipped`，Python 定向 `12 passed`、完整 `307 passed, 5 skipped`，Ruff、格式、Node 语法、发布门与 diff 检查通过。功能提交已进入 PR #38；push 与 pull request 两组 Python、Node/镜像/Compose CI 全绿，Ubuntu 零跳过覆盖了私有文件权限、原子重载和 symlink 场景。尚未合并或部署，生产回复仍为 false。
+- 这一切片只封闭 sidecar 进程崩溃窗口；Agent 的 quiet-window、模型生成与业务副作用尚未形成持久处理状态机。因此即使本 PR/CI 与 shadow 部署通过，也不得立即开启回复；下一切片需先持久化 Agent 的处理生命周期并做重启注入测试。

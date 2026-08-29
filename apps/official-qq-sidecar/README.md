@@ -15,8 +15,9 @@ confirmation.
 
 The sidecar is not the Higgs brain. It must not receive identity, memory,
 journal, model, tool, Docker Socket, NapCat, or host filesystem access. Its
-only persistent authority is the official platform credential supplied through
-the dedicated private `official-qq.env` file.
+only persistent filesystem access is the dedicated private credential file and
+the sidecar-owned session/delivery state directory; neither is shared with the
+Agent.
 
 ## Safety boundary
 
@@ -31,7 +32,10 @@ the dedicated private `official-qq.env` file.
   contain only the event type, conversation kind, receive time, and cursor.
   Identity, message IDs, content, group IDs, and attachment metadata are not
   retained or returned, and sending is disabled.
-- Accepts only C2C and group-at events and keeps a bounded in-memory queue.
+- Accepts only C2C and group-at events. In full mode it atomically stores a
+  bounded event queue and the matching passive-reply authorization before the
+  SDK callback returns. Queue saturation or a persistence error stops the
+  channel fail-closed instead of discarding an event.
 - In full mode the sidecar independently enforces the private owner and group
   allowlist before queueing an event or creating a reply authorization. The
   Python process applies the same policy again.
@@ -39,6 +43,11 @@ the dedicated private `official-qq.env` file.
   payload fields are strictly validated, and a bounded authorization cache
   binds that message ID to its original conversation. Concurrent identical
   sends collapse to one provider call; idempotency collisions are rejected.
+- The Agent acknowledges each event only after its handler returns. The
+  sidecar deletes acknowledged queue entries, exposes the current ACK cursor
+  during the versioned hello, and safely rebases unacknowledged entries after
+  a sidecar restart. A claimed send without a durable receipt is recovered as
+  `unknown` and is never issued to the provider a second time.
 - An HTTP success without a non-empty platform message ID is `unknown`, never
   `sent`.
 - SDK 1.0.4 does not expose close or heartbeat-ACK callbacks through `QQBot`.
@@ -53,13 +62,13 @@ the dedicated private `official-qq.env` file.
   sidecar-only `0600` state file with a five-minute freshness window. The Agent
   cannot mount this directory. A sidecar generation change is terminal to an
   already-running Agent instead of silently resetting cursors; a coordinated
-  process restart can Resume from the fresh private state. The event queue and
-  send receipt cache are still in-memory, and the pinned SDK advances its
-  Gateway sequence before the sidecar callback. Therefore replies must remain
-  disabled until coordinated crash recovery is implemented and a real
-  supervised restart/Resume test passes. Higgs' persistent inbound journal and
-  deterministic request identity prevent automatic resend after an `unknown`
-  outcome once an event has reached the Agent.
+  process restart can Resume from the fresh private state. The sidecar's event
+  queue, passive authorization claims, and delivery receipts share a separate
+  atomic `0600` file in the same private directory. The pinned SDK still
+  advances its Gateway sequence before the sidecar callback, and the Agent's
+  debounce/processing state is not yet crash-durable. Therefore replies remain
+  disabled until the Agent-side state machine is implemented and a real
+  supervised restart/Resume test passes.
 
 ## Local verification
 

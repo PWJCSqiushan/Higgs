@@ -4,12 +4,14 @@ import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { OfficialQQClient } from "./qq-client.mjs";
+import { SecureDeliveryStore } from "./delivery-store.mjs";
 import { SecureOfficialQQSessionStore } from "./session-store.mjs";
 import {
   MAX_BODY_BYTES,
   PROTOCOL_VERSION,
   ProtocolError,
   isSafeId,
+  normalizeEventAck,
   normalizeSendRequest,
 } from "./protocol.mjs";
 
@@ -38,6 +40,13 @@ export function loadConfig(env = process.env) {
     throw new Error("invalid session file configuration");
   }
   const sessionFile = resolve(sessionValue);
+  const deliveryValue =
+    env.HIGGS_OFFICIAL_QQ_DELIVERY_STATE_FILE ??
+    "/var/lib/higgs-official/delivery-state.json";
+  if (!isAbsolute(deliveryValue) || basename(deliveryValue) !== "delivery-state.json") {
+    throw new Error("invalid delivery state configuration");
+  }
+  const deliveryStateFile = resolve(deliveryValue);
   if (enabled) {
     if (!/^\d{5,32}$/u.test(appId)) throw new Error("invalid AppID configuration");
     if (appSecret.length < 16 || appSecret.length > 512) {
@@ -59,6 +68,7 @@ export function loadConfig(env = process.env) {
     allowedGroupOpenIds,
     socketPath,
     sessionFile,
+    deliveryStateFile,
   });
 }
 
@@ -143,6 +153,7 @@ export function createHandler(client) {
         return jsonResponse(response, 200, {
           protocol_version: PROTOCOL_VERSION,
           generation: client.generation,
+          event_cursor: client.eventBaseCursor(),
         });
       }
       if (request.method === "GET" && url.pathname === "/v1/status") {
@@ -169,6 +180,15 @@ export function createHandler(client) {
           receipt,
         });
       }
+      if (request.method === "POST" && url.pathname === "/v1/events/ack") {
+        const payload = normalizeEventAck(await readJson(request));
+        const cursor = client.ackEvents(payload.generation, payload.cursor);
+        return jsonResponse(response, 200, {
+          protocol_version: PROTOCOL_VERSION,
+          generation: client.generation,
+          event_cursor: cursor,
+        });
+      }
       return jsonResponse(response, 404, { error: "not_found" });
     } catch (error) {
       if (error instanceof ProtocolError) {
@@ -191,9 +211,15 @@ export async function run(env = process.env) {
         onFailure: () => clientReference?._failFatal("session_store_error"),
       })
     : null;
+  const deliveryStore = config.enabled && !config.captureOnly
+    ? new SecureDeliveryStore(config.deliveryStateFile, {
+        onFailure: () => clientReference?._failFatal("delivery_store_error"),
+      })
+    : null;
   const client = new OfficialQQClient({
     ...config,
     sessionStore,
+    deliveryStore,
     onFatal: () => {
       fatalRequested = true;
       process.exitCode = 1;

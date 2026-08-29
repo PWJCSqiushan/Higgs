@@ -82,6 +82,24 @@ export function normalizeSendRequest(value) {
   });
 }
 
+export function normalizeEventAck(value) {
+  exactKeys(value, new Set(["protocol_version", "generation", "cursor"]));
+  if (value.protocol_version !== PROTOCOL_VERSION) {
+    throw new ProtocolError("protocol_version_mismatch", 409);
+  }
+  if (!isSafeId(value.generation)) {
+    throw new ProtocolError("invalid_request_identity");
+  }
+  if (!Number.isSafeInteger(value.cursor) || value.cursor < 0) {
+    throw new ProtocolError("invalid_cursor");
+  }
+  return Object.freeze({
+    protocol_version: PROTOCOL_VERSION,
+    generation: value.generation,
+    cursor: value.cursor,
+  });
+}
+
 export function requestFingerprint(request) {
   return createHash("sha256")
     .update(
@@ -206,6 +224,19 @@ export class EventQueue {
     }
     return this.events.filter((event) => event.cursor > after).slice(0, limit);
   }
+
+  baseCursor() {
+    const first = this.events[0];
+    return first ? first.cursor - 1 : this.cursor;
+  }
+
+  ack(cursor) {
+    if (!Number.isSafeInteger(cursor) || cursor < this.baseCursor() || cursor > this.cursor) {
+      throw new ProtocolError("invalid_cursor");
+    }
+    this.events = this.events.filter((event) => event.cursor > cursor);
+    return cursor;
+  }
 }
 
 export class ReceiptCache {
@@ -249,24 +280,35 @@ export class ReplyAuthorizationCache {
       // the idempotency key that already claimed it.
       return;
     }
-    this.items.set(messageId, { kind, targetId, expiresAt: now + this.ttlMs, claimedBy: null });
+    this.items.set(messageId, {
+      kind,
+      targetId,
+      expiresAt: now + this.ttlMs,
+      claimedBy: null,
+      claimedFingerprint: null,
+    });
     while (this.items.size > this.limit) {
       this.items.delete(this.items.keys().next().value);
     }
   }
 
-  claim(messageId, kind, targetId, idempotencyKey, now = Date.now()) {
+  claim(messageId, kind, targetId, idempotencyKey, fingerprint, now = Date.now()) {
     const item = this.items.get(messageId);
-    if (!item || item.expiresAt < now) {
+    if (!item || item.expiresAt < now || !/^[0-9a-f]{64}$/u.test(fingerprint)) {
       throw new ProtocolError("invalid_reply_binding", 403);
     }
     if (item.kind !== kind || item.targetId !== targetId) {
       throw new ProtocolError("invalid_reply_binding", 403);
     }
-    if (item.claimedBy !== null && item.claimedBy !== idempotencyKey) {
-      throw new ProtocolError("invalid_reply_binding", 403);
+    if (item.claimedBy !== null) {
+      if (item.claimedBy !== idempotencyKey || item.claimedFingerprint !== fingerprint) {
+        throw new ProtocolError("idempotency_collision", 409);
+      }
+      return false;
     }
     item.claimedBy = idempotencyKey;
+    item.claimedFingerprint = fingerprint;
+    return true;
   }
 }
 
