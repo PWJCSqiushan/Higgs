@@ -11,7 +11,10 @@ from r_agent.conversation import ConversationStore
 from r_agent.events import ConversationKind, InboundEvent
 from r_agent.ingest import IngestResult
 from r_agent.official_processing import OfficialDurableProcessor, OfficialProcessingStore
+from r_agent.phase2_cli import deliver_prepared_reply
 from r_agent.phase2_reply import PreparedReply, ReplyAudit, ReplyDecision, ReplyPlan
+from r_agent.risk_ledger import RiskLedger
+from r_agent.transport import DeliveryReceipt, DeliveryState
 
 
 def event(
@@ -235,6 +238,24 @@ async def test_offline_preparation_completes_without_outbound_delivery(tmp_path:
     assert store.purge_completed(before_ms=2**62) == 1
     assert store.state_counts() == {}
 
+    # A completed source remains a compact hashed tombstone after batch cleanup,
+    # so an upstream replay after a long outage cannot produce a second reply.
+    assert not store.enqueue(
+        event("m1", "输入"),
+        accepted(stored=False, duplicate=True),
+        quiet_seconds=0.5,
+        now_ms=2**62,
+    )
+    with sqlite3.connect(store.path) as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM official_processing_tombstones").fetchone()[0] == 1
+        )
+        tombstone = conn.execute(
+            "SELECT source_hash FROM official_processing_tombstones"
+        ).fetchone()[0]
+    assert len(tombstone) == 64
+    assert "m1" not in tombstone
+
 
 @pytest.mark.asyncio
 async def test_finalizing_recovery_keeps_audit_and_history_single_row(tmp_path: Path) -> None:
@@ -295,3 +316,150 @@ async def test_finalizing_recovery_keeps_audit_and_history_single_row(tmp_path: 
     with sqlite3.connect(history.path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM conversation_turns").fetchone()[0] == 1
     assert store.state_counts() == {"complete": 1}
+
+
+@pytest.mark.asyncio
+async def test_unknown_receipt_finishes_risk_audit_history_and_never_retries(
+    tmp_path: Path,
+) -> None:
+    store = OfficialProcessingStore(tmp_path / "official_processing.sqlite")
+    store.initialize(now_ms=1_000)
+    inbound = event("unknown-boundary", "输入")
+    store.enqueue(inbound, accepted(), quiet_seconds=0.5, now_ms=1_000)
+    preparing = store.claim_ready(now_ms=1_500)
+    assert preparing is not None
+
+    risk = RiskLedger(tmp_path / "risk.sqlite")
+    risk.initialize()
+    budget = risk.reserve_send(
+        event_type="reply",
+        actor_class="owner",
+        account_id=inbound.account_id,
+        conversation_id=inbound.conversation_id,
+        idempotency_key="reply:unknown-boundary",
+        now_ms=1_500,
+    )
+    assert budget.allowed and budget.reservation_id is not None
+    store.mark_prepared(
+        preparing.batch_id,
+        PreparedReply(ReplyDecision.SENT, "固定回复", budget.reservation_id),
+        now_ms=1_600,
+    )
+
+    audit = ReplyAudit(tmp_path / "reply_audit.sqlite")
+    audit.initialize()
+    history = ConversationStore(tmp_path / "conversation.sqlite")
+    history.initialize()
+    provider_calls = 0
+
+    async def prepare_never(_event: InboundEvent, _result: IngestResult) -> PreparedReply:
+        raise AssertionError("persisted preparation must not be regenerated")
+
+    async def sender(item: InboundEvent, _text: str) -> DeliveryReceipt:
+        nonlocal provider_calls
+        provider_calls += 1
+        return DeliveryReceipt(
+            channel=item.channel,
+            state=DeliveryState.UNKNOWN,
+            idempotency_key="reply:unknown-boundary",
+        )
+
+    async def deliver(item: InboundEvent, prepared: PreparedReply) -> ReplyPlan:
+        return await deliver_prepared_reply(
+            event=item,
+            prepared=prepared,
+            sender=sender,
+            risk_ledger=risk,
+            retry_transport_unavailable=True,
+        )
+
+    async def finalize(item: InboundEvent, plan: ReplyPlan) -> None:
+        audit.record(item, plan)
+        history.record(
+            item,
+            principal_id="owner-principal",
+            outcome=plan.decision.value,
+            assistant_text=plan.text,
+        )
+
+    processor = OfficialDurableProcessor(
+        store=store,
+        prepare=prepare_never,
+        deliver=deliver,
+        finalize=finalize,
+    )
+    assert await processor.process_one()
+    assert await processor.process_one()
+    assert not await processor.process_one()
+    assert provider_calls == 1
+    assert store.state_counts() == {"complete": 1}
+    with sqlite3.connect(risk.path) as conn:
+        assert (
+            conn.execute(
+                "SELECT outcome FROM risk_events WHERE id=?", (budget.reservation_id,)
+            ).fetchone()[0]
+            == "unknown"
+        )
+    with sqlite3.connect(audit.path) as conn:
+        assert conn.execute("SELECT decision FROM reply_audit").fetchone()[0] == "send_failed"
+    with sqlite3.connect(history.path) as conn:
+        assert conn.execute("SELECT outcome FROM conversation_turns").fetchone()[0] == "send_failed"
+
+
+@pytest.mark.asyncio
+async def test_prepare_crash_reuses_one_real_risk_reservation(tmp_path: Path) -> None:
+    store = OfficialProcessingStore(tmp_path / "official_processing.sqlite")
+    store.initialize(now_ms=1_000)
+    inbound = event("prepare-crash", "输入")
+    store.enqueue(inbound, accepted(), quiet_seconds=0.5, now_ms=1_000)
+    risk = RiskLedger(tmp_path / "risk.sqlite")
+    risk.initialize()
+    prepare_calls = 0
+
+    async def prepare(item: InboundEvent, _result: IngestResult) -> PreparedReply:
+        nonlocal prepare_calls
+        prepare_calls += 1
+        budget = risk.reserve_send(
+            event_type="reply",
+            actor_class="owner",
+            account_id=item.account_id,
+            conversation_id=item.conversation_id,
+            idempotency_key="reply:prepare-crash",
+            now_ms=1_500 + prepare_calls,
+        )
+        assert budget.allowed and budget.reservation_id is not None
+        if prepare_calls == 1:
+            raise RuntimeError("simulated crash after reservation")
+        return PreparedReply(ReplyDecision.SENT, "第二次生成", budget.reservation_id)
+
+    async def deliver(_event: InboundEvent, prepared: PreparedReply) -> ReplyPlan:
+        assert prepared.text == "第二次生成"
+        assert prepared.reservation_id is not None
+        risk.finish_send(prepared.reservation_id, outcome="sent")
+        return ReplyPlan(ReplyDecision.SENT, prepared.text)
+
+    async def finalize(_event: InboundEvent, _plan: ReplyPlan) -> None:
+        return None
+
+    processor = OfficialDurableProcessor(
+        store=store,
+        prepare=prepare,
+        deliver=deliver,
+        finalize=finalize,
+    )
+    assert await processor.process_one()
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("UPDATE official_processing_batches SET retry_at_ms=0 WHERE state='pending'")
+    assert await processor.process_one()
+    assert await processor.process_one()
+    assert await processor.process_one()
+    assert prepare_calls == 2
+    with sqlite3.connect(risk.path) as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM risk_events WHERE event_type='reply'").fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute("SELECT outcome FROM risk_events WHERE event_type='reply'").fetchone()[0]
+            == "sent"
+        )

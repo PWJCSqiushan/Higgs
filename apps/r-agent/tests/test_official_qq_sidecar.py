@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from r_agent.access import IngressDecision
 from r_agent.events import ConversationKind, InboundEvent
+from r_agent.ingest import IngestResult
+from r_agent.official_processing import OfficialProcessingStore
 from r_agent.official_qq import OfficialQQConfig
 from r_agent.official_qq_sidecar import (
     OfficialQQSidecarAdapter,
@@ -54,6 +59,7 @@ def sidecar_config() -> OfficialQQConfig:
         owner_openid="owner-id",
         allowed_group_openids=frozenset({"allowed-group"}),
         transport="sidecar",
+        reply_enabled=True,
     )
 
 
@@ -254,6 +260,65 @@ async def test_hello_restores_acknowledged_cursor_and_handler_failure_is_not_ack
 
 
 @pytest.mark.asyncio
+async def test_ack_waits_for_real_durable_enqueue_and_replay_creates_one_batch(
+    tmp_path: Path,
+) -> None:
+    store = OfficialProcessingStore(tmp_path / "official_processing.sqlite")
+    store.initialize(now_ms=1_000)
+    attempts = 0
+
+    async def durable_handler(item: InboundEvent) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("simulated database commit failure")
+        assert store.enqueue(
+            item,
+            IngestResult(IngressDecision.ACCEPT, stored=True),
+            quiet_seconds=0.5,
+            now_ms=1_000,
+        )
+
+    events_payload = {
+        "protocol_version": 1,
+        "generation": "generation-1",
+        "events": [event_payload(1)],
+    }
+    client = FakeSidecarClient(
+        [
+            (200, hello_payload()),
+            (200, status_payload()),
+            (200, events_payload),
+            (200, events_payload),
+            (
+                200,
+                {
+                    "protocol_version": 1,
+                    "generation": "generation-1",
+                    "event_cursor": 1,
+                },
+            ),
+        ]
+    )
+    adapter = OfficialQQSidecarAdapter(
+        sidecar_config(),
+        event_handler=durable_handler,
+        client=client,
+    )
+    await adapter.start()
+
+    with pytest.raises(OSError, match="database commit failure"):
+        await adapter._poll_events()
+    assert all(request[1] != "/v1/events/ack" for request in client.requests)
+    assert store.state_counts() == {}
+
+    await adapter._poll_events()
+    assert adapter._cursor == 1
+    assert [request[1] for request in client.requests].count("/v1/events/ack") == 1
+    assert store.state_counts() == {"pending": 1}
+
+
+@pytest.mark.asyncio
 async def test_lost_ack_response_resynchronizes_authoritative_cursor() -> None:
     received: list[InboundEvent] = []
 
@@ -294,6 +359,87 @@ async def test_lost_ack_response_resynchronizes_authoritative_cursor() -> None:
     assert adapter._cursor == 1
     await adapter._poll_events()
     assert len(received) == 1
+
+
+@pytest.mark.asyncio
+async def test_supervisor_recovers_lost_ack_response_without_reprocessing(
+    tmp_path: Path,
+) -> None:
+    store = OfficialProcessingStore(tmp_path / "official_processing.sqlite")
+    store.initialize(now_ms=1_000)
+    handler_calls = 0
+
+    async def durable_handler(item: InboundEvent) -> None:
+        nonlocal handler_calls
+        handler_calls += 1
+        store.enqueue(
+            item,
+            IngestResult(IngressDecision.ACCEPT, stored=True),
+            quiet_seconds=0.5,
+            now_ms=1_000,
+        )
+
+    client = FakeSidecarClient(
+        [
+            (200, hello_payload()),
+            (200, status_payload()),
+            (200, status_payload()),
+            (
+                200,
+                {
+                    "protocol_version": 1,
+                    "generation": "generation-1",
+                    "events": [event_payload(1)],
+                },
+            ),
+            OSError("simulated lost ACK response"),
+            (200, status_payload()),
+            (200, hello_payload(cursor=1)),
+            (
+                200,
+                {
+                    "protocol_version": 1,
+                    "generation": "generation-1",
+                    "events": [],
+                },
+            ),
+        ]
+    )
+    adapter = OfficialQQSidecarAdapter(
+        sidecar_config(),
+        event_handler=durable_handler,
+        client=client,
+    )
+    recovered = asyncio.Event()
+    original_request = client.request
+
+    async def observe_recovery(
+        method: str,
+        path: str,
+        *,
+        json_body: Mapping[str, object] | None = None,
+    ) -> tuple[int, Mapping[str, Any]]:
+        response = await original_request(method, path, json_body=json_body)
+        if path == "/v1/events?after=1&limit=32":
+            recovered.set()
+        return response
+
+    client.request = observe_recovery  # type: ignore[method-assign]
+    await adapter.start()
+    task = asyncio.create_task(
+        adapter.supervise(
+            poll_interval_seconds=0.1,
+            base_delay_seconds=0.1,
+            max_delay_seconds=0.1,
+        )
+    )
+    await asyncio.wait_for(recovered.wait(), timeout=2)
+    await adapter.stop()
+    await asyncio.wait_for(task, timeout=2)
+
+    assert handler_calls == 1
+    assert store.state_counts() == {"pending": 1}
+    assert adapter._terminal_failure is False
 
 
 @pytest.mark.asyncio
@@ -475,6 +621,75 @@ async def test_send_is_passive_canonical_and_idempotent() -> None:
     assert collision_status.authenticated is True
     with pytest.raises(TransportUnavailable, match="passive"):
         await adapter.send_text(target, "reply", idempotency_key="new-key")
+
+
+@pytest.mark.asyncio
+async def test_reply_gate_is_enforced_inside_the_transport() -> None:
+    client = FakeSidecarClient(
+        [
+            (200, hello_payload()),
+            (200, status_payload()),
+        ]
+    )
+    adapter = OfficialQQSidecarAdapter(
+        replace(sidecar_config(), reply_enabled=False),
+        event_handler=_discard,
+        client=client,
+    )
+    await adapter.start()
+    target = OutboundTarget(
+        channel="qq_official",
+        conversation_kind=ConversationKind.PRIVATE,
+        conversation_id="qq_official:private:bot-id:owner-id",
+    )
+
+    with pytest.raises(TransportUnavailable, match="disabled"):
+        await adapter.send_text(
+            target,
+            "reply",
+            idempotency_key="reply-key",
+            reply_message_id="incoming-id",
+        )
+    assert all(request[0] != "POST" for request in client.requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "code",
+    ["capture_only", "idempotency_collision", "invalid_reply_binding", "sidecar_not_configured"],
+)
+async def test_permanent_sidecar_send_rejection_is_a_terminal_failed_receipt(code: str) -> None:
+    client = FakeSidecarClient(
+        [
+            (200, hello_payload()),
+            (200, status_payload()),
+            (403, {"error": code}),
+        ]
+    )
+    adapter = OfficialQQSidecarAdapter(sidecar_config(), event_handler=_discard, client=client)
+    await adapter.start()
+    target = OutboundTarget(
+        channel="qq_official",
+        conversation_kind=ConversationKind.PRIVATE,
+        conversation_id="qq_official:private:bot-id:owner-id",
+    )
+
+    receipt = await adapter.send_text(
+        target,
+        "reply",
+        idempotency_key="reply-key",
+        reply_message_id="incoming-id",
+    )
+    repeated = await adapter.send_text(
+        target,
+        "reply",
+        idempotency_key="reply-key",
+        reply_message_id="incoming-id",
+    )
+
+    assert receipt.state is DeliveryState.FAILED
+    assert repeated == receipt
+    assert len([request for request in client.requests if request[0] == "POST"]) == 1
 
 
 @pytest.mark.asyncio

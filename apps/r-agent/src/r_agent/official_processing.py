@@ -162,6 +162,14 @@ class OfficialProcessingStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS official_processing_tombstones (
+                    source_hash TEXT PRIMARY KEY,
+                    completed_at_ms INTEGER NOT NULL
+                )
+                """
+            )
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """
@@ -188,6 +196,10 @@ class OfficialProcessingStore:
             (event.channel, event.account_id, event.conversation_id, event.sender_id)
         )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _source_hash(source_key: tuple[str, str, str]) -> str:
+        return hashlib.sha256("\0".join(source_key).encode("utf-8")).hexdigest()
 
     def enqueue(
         self,
@@ -220,6 +232,14 @@ class OfficialProcessingStore:
                 """,
                 event.source_key,
             ).fetchone()
+            if duplicate is None:
+                duplicate = conn.execute(
+                    """
+                    SELECT 1 FROM official_processing_tombstones
+                    WHERE source_hash=?
+                    """,
+                    (self._source_hash(event.source_key),),
+                ).fetchone()
             if duplicate is not None:
                 return False
             row = conn.execute(
@@ -439,6 +459,33 @@ class OfficialProcessingStore:
                 ).fetchall()
             )
             for batch_id in batch_ids:
+                sources = conn.execute(
+                    """
+                    SELECT channel, account_id, message_id
+                    FROM official_processing_events WHERE batch_id=?
+                    """,
+                    (batch_id,),
+                ).fetchall()
+                conn.executemany(
+                    """
+                    INSERT INTO official_processing_tombstones(source_hash, completed_at_ms)
+                    VALUES (?, ?)
+                    ON CONFLICT(source_hash) DO NOTHING
+                    """,
+                    [
+                        (
+                            self._source_hash(
+                                (
+                                    str(row["channel"]),
+                                    str(row["account_id"]),
+                                    str(row["message_id"]),
+                                )
+                            ),
+                            before_ms,
+                        )
+                        for row in sources
+                    ],
+                )
                 conn.execute(
                     "DELETE FROM official_processing_events WHERE batch_id=?",
                     (batch_id,),

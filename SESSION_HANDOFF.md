@@ -251,7 +251,7 @@
 - 独立后验从 `transport.sqlite` 确认 `qq_official` 为 `verified`，connected/authenticated、身份匹配和最近健康回执均为真，心跳新鲜且原因是 `resumed`。专用持久化目录继续为 agent 私有 `0700`；空状态尚未产生 `delivery-state.json` 属预期，首个需保存的事件、授权或回执会以 `0600` 原子物化。
 - 本次 shadow 观察从 2026-08-29 21:53（Asia/Shanghai）重新计时。正式回复仍不得开启：sidecar 崩溃窗口已封闭，但 Agent quiet-window、模型生成和业务副作用还没有持久处理生命周期；下一阶段先实现 Agent 状态机、故障注入与重启恢复，再申请真实被动回复验收。
 
-## 25. 2026-08-29 Agent 官方消息持久处理完成本地收束
+## 25. 2026-08-29 Agent 官方消息持久处理进入 PR 验收
 
 - 独立分支 `codex/higgs-agent-durable-processing-20260829` 新增 `official_processing.sqlite`。官方入站在 sidecar ACK 前先事务式进入 Agent 队列；同发送者的私聊/群聊连续片段以持久 quiet-window 合并，源事件以通道、账号和消息 ID 去重。OneBot 仍使用原内存 debouncer，不受本切片改变。
 - 状态机固定为 `pending → preparing → prepared → sending → finalizing → complete`。准确回复文本、风险预留和最终结果在跨越 provider 边界前后分别持久化；重启时 `preparing` 回到待准备，`sending` 回到已准备并复用同一文本和幂等键，`finalizing` 只重做幂等审计与会话落库。
@@ -259,6 +259,7 @@
 - 官方真实回复被配置层和运行时共同限制为启用的 durable sidecar；直连 Python SDK 不得开启回复。ACK 响应丢失后，Python 会从 sidecar 权威游标重新同步，避免把已提交 ACK 误判为 cursor 协议终止。
 - 官方 MVP 在任何副作用发生前跳过日计划与提醒，只允许主人执行精确 `/higgs status`（含中文状态别名）；其他 `/higgs` 命令被固定拒绝，普通对话仍可进入模型。官方输出在持久化前限制为 sidecar 的 2000 字符上限。
 - 新数据库已纳入一致性备份，运行时数据库总数为 13；完成项按既有 journal retention 清理。备份原子目录发布对短暂 Windows 句柄竞争增加有界重试，不改变 Linux 原子 rename 语义。
-- 故障测试覆盖日志已写但队列缺失、队列去重、持久 private/group debounce 与发送者隔离、`preparing/sending` 重启、发送中取消、准确文本重放、reply=false 不发送、最终化重复执行、风险预留跨重启复用、ACK 响应丢失游标重同步和 SDK 回复路径拒绝。
-- 本地门禁：Python `320 passed, 5 skipped`（Windows 仅跳过 Linux 权限/UDS 项）、Ruff 与格式通过；Node `31 passed, 5 skipped`、语法检查和 registry signature 通过；发布门确认 244 个跟踪文件、265 个归档成员、秘密模式与 Shell LF 均通过。Linux 零跳过与镜像/Compose 尚待 PR CI。
-- 当前只完成本地代码与测试，尚未提交、推送、创建 PR、合并或部署。生产仍为上一主线 release、reply=false；没有发送测试消息、修改私有配置、重建容器或触碰 NapCat。下一步为提交、PR/CI；CI 全绿后需单独确认 reply=false 生产部署与恢复验收，完成后再单独确认是否打开真实回复。
+- 首轮故障审计发现两个上线阻断并已修复：授权过期、配置错误或幂等冲突等不可恢复的 sidecar 拒绝现在产生终态 `FAILED` 并结算风险预留，不再无限重试；已清理完成批次的源消息改存内容无关的 SHA-256 tombstone，长期停机后上游重投仍不能产生第二次回复。
+- 故障测试进一步覆盖真实 `RiskLedger` 的 prepare 崩溃预留复用、`UNKNOWN → P.complete/R.unknown/A+C.send_failed` 且不重发、ACK 仅在 SQLite durable enqueue 后提交、监督循环对 ACK 响应丢失的权威游标恢复，以及 Linux `SecureDeliveryStore` 的真实 claim/receipt 跨进程替换与 provider 调用计数。adapter 自身也强制执行 reply 开关和 sidecar 凭据隔离。
+- 本地门禁：Python `330 passed, 5 skipped`（Windows 仅跳过 Linux 权限/UDS 项）、Ruff 与格式通过；Node `31 passed, 7 skipped`（新增两项真实 POSIX 持久化测试交由 Ubuntu CI）、语法检查通过；发布门确认 244 个跟踪文件、267 个归档成员、秘密模式与 Shell LF 均通过。
+- 功能提交 `33b34eb` 的等价远端提交已进入 PR #40；首轮 push/PR 两套 Python 与 Node/镜像/Compose CI 全绿。当前正在把上述审计修正追加到同一 PR 并等待 Ubuntu 零跳过复验。生产仍为上一主线 release、reply=false；没有发送测试消息、修改私有配置、重建容器或触碰 NapCat。用户已单独批准后续上传与 reply=false 部署；真实回复仍须在合并、生产恢复验收后再次确认。

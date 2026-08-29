@@ -42,6 +42,12 @@ class OfficialQQConfig:
     def __post_init__(self) -> None:
         if self.reply_enabled and (not self.enabled or self.transport != "sidecar"):
             raise ConfigError("official QQ replies require the enabled durable sidecar transport")
+        if self.enabled and self.transport == "sidecar" and self.owner_openid is None:
+            raise ConfigError("enabled official QQ requires an explicit owner OpenID")
+        if self.transport == "sidecar" and (
+            self.app_id is not None or self.client_secret is not None
+        ):
+            raise ConfigError("sidecar official QQ forbids App credentials in the Agent process")
 
     @property
     def active_owner_openid(self) -> str | None:

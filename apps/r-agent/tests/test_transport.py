@@ -105,6 +105,25 @@ def test_official_reply_gate_requires_durable_sidecar(
         )
 
 
+def test_direct_sidecar_config_keeps_credentials_and_missing_owner_out_of_agent() -> None:
+    with pytest.raises(ConfigError, match="explicit owner"):
+        OfficialQQConfig(
+            enabled=True,
+            app_id=None,
+            client_secret=None,
+            transport="sidecar",
+        )
+
+    with pytest.raises(ConfigError, match="forbids App credentials"):
+        OfficialQQConfig(
+            enabled=True,
+            app_id="123456",
+            client_secret=None,
+            owner_openid="owner-openid",
+            transport="sidecar",
+        )
+
+
 def test_official_qq_repr_never_contains_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     secret = "this-secret-must-not-leak"  # pragma: allowlist secret
     monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ENABLED", "true")

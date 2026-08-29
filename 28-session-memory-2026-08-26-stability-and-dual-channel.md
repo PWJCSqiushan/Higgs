@@ -264,3 +264,12 @@
 - reply=true 现在强制要求 durable Node sidecar，直连 Python SDK fail-closed。sidecar ACK 提交后 HTTP 响应若丢失，Agent 会重新读取权威 ACK cursor 后续跑，避免 `invalid_cursor` 终止摄取。
 - 官方 MVP 明确只开放普通对话和主人 `/higgs status`；日计划、提醒及其他 owner 命令在副作用前拒绝。输出在持久化前收敛到 2000 字符协议上限。
 - 本地 Python `320 passed, 5 skipped`，Node `31 passed, 5 skipped`；Ruff、格式、Node 语法、registry signature、发布门、秘密边界、Shell LF 与 diff 检查通过。尚未提交、PR、CI 或部署，生产继续 reply=false；下一步是独立 PR/Ubuntu 零跳过，再申请 reply=false 部署和重启恢复验收，最后另行确认真实回复开关。
+
+## 节点 31：PR #40 首轮全绿与故障审计补强
+
+- Agent 持久处理功能以本地提交 `33b34eb`、等价远端提交进入 PR #40；首轮 push 与 pull request 两套 Python、Node/镜像/Compose CI 全绿，分支可合并。生产尚未改变，reply 仍为 false。
+- 上线前独立故障审计发现并修复两项 P1：不可恢复的 sidecar 发送拒绝现在收敛为终态 `FAILED`，不会让过期被动授权无限重试并永久占用风险预留；完成批次清理时为每个源消息留下内容无关的 SHA-256 tombstone，长停机后上游重投不能产生第二次回复。
+- 新增真实风险账本与最终落库测试，证明 provider `UNKNOWN` 后处理状态完成、风险结果为 unknown、审计与会话均为 send_failed 且不再发送；prepare 在 reservation 后崩溃允许重新生成模型文本，但只复用一条 reservation，平台发送边界仍保持单次。
+- 新增 SQLite enqueue 故障注入和监督循环 ACK 响应丢失恢复测试；新增 Linux `SecureDeliveryStore` 真 claim/receipt 进程替换测试，分别要求预领取无回执时 provider 调用为零、已有回执时跨实例总调用为一。Windows 本地按平台约束跳过，必须由 PR Ubuntu CI 零跳过解除。
+- adapter 纵深门控补齐：公开发送接口自身检查 reply 开关；直接构造 sidecar 配置也拒绝 Agent 内 App 凭据和缺失 owner。当前本地 Python `330 passed, 5 skipped`、Node `31 passed, 7 skipped`，Ruff、格式、Node 语法与发布门通过；修正尚待提交并更新 PR #40。
+- 用户已明确允许上传和部署。本轮授权只用于 PR 合并后的 reply=false 不可变生产发布与匿名恢复验收；不得据此直接打开真实回复。reply=true 仍需 Linux CI、reply=false 生产验收及跨语言发送边界证据后再单独确认。

@@ -613,6 +613,8 @@ class OfficialQQSidecarAdapter:
         idempotency_key: str,
         reply_message_id: str | None = None,
     ) -> DeliveryReceipt:
+        if not self.config.reply_enabled:
+            raise TransportUnavailable("official QQ replies are disabled")
         if target.channel.casefold() != self.channel:
             raise TransportUnavailable("official QQ target channel mismatch")
         try:
@@ -717,21 +719,28 @@ class OfficialQQSidecarAdapter:
                 else:
                     raise SidecarProtocolViolation("sidecar receipt state is invalid")
             except SidecarResponseError as exc:
-                if exc.code == "idempotency_collision":
-                    raise TransportUnavailable("official QQ sidecar idempotency collision") from exc
                 if exc.code in {
                     "capture_only",
-                    "gateway_unavailable",
+                    "idempotency_collision",
                     "invalid_reply_binding",
                     "sidecar_not_configured",
+                }:
+                    receipt = DeliveryReceipt(
+                        self.channel,
+                        DeliveryState.FAILED,
+                        normalized_key,
+                    )
+                elif exc.code in {
+                    "gateway_unavailable",
                     "stale_generation",
                 }:
                     raise TransportUnavailable("official QQ sidecar rejected the send") from exc
-                receipt = DeliveryReceipt(
-                    self.channel,
-                    DeliveryState.UNKNOWN,
-                    normalized_key,
-                )
+                else:
+                    receipt = DeliveryReceipt(
+                        self.channel,
+                        DeliveryState.UNKNOWN,
+                        normalized_key,
+                    )
             except SidecarProtocolViolation as exc:
                 self._terminal_failure = True
                 self._connected = False
