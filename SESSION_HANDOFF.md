@@ -6,12 +6,12 @@
 
 - 本地统一项目根：`D:\丘山\R\_Higgs`；主仓库在 `source`，阶段工作树在 `worktrees`，私有归档和发布包分别在 `archives`、`artifacts`。
 - 本地权威集成工作树：`D:\丘山\R\_Higgs\worktrees\R_Higgs-takeover-20260826`，分支 `codex/higgs-integration-20260826`。
-- PR/生产验收工作树：`D:\丘山\R\_Higgs\worktrees\Higgs-wt-pr-stack`；当前记录分支为 `codex/higgs-recovery-and-local-consolidation-20260827`。
-- 官方 QQ 硬化已由 PR #21 合并到 GitHub `main` 的 `aa877df`。2026-08-28 已创建独立官方机器人并生成新凭据；AppID/AppSecret 仅写入服务器 `0600` 私有环境文件，未进入聊天、日志或项目记忆。官方代码现已随禁用态生产发布部署，但主人 OpenID 尚未绑定，官方通道继续关闭。
+- 当前官方 QQ 修复工作树：`D:\丘山\R\_Higgs\worktrees\Higgs-wt-official-heartbeat-auth`；分支为 `codex/higgs-official-heartbeat-auth-20260829`，基于 `origin/main` 的 `635045d30cf6f02970ddbbb464afd165f220459e`。
+- 官方 Node UDS 运行时与一次性主人绑定器已经分别完成独立 PR/CI。主人 OpenID 已由首个合法官方 C2C 事件私有绑定到两份 `0600` 服务器配置；身份值从未回显，也未进入聊天、日志或项目记忆。
 - 群聊风控误判修复已由 PR #23 合并到 GitHub `main` 的 `38a5ddc`，合并后主线 CI 通过；该修复现已随 Agent-only 发布进入生产。
-- 生产源码/Agent 镜像现为 `d2d40a7e47618022e258d3a534f62aab68b04833`；官方通道仍关闭，个人 QQ 权威状态仍离线。GitHub 文档主线与生产运行提交必须继续明确区分。
+- 生产源码、Agent 与官方 sidecar 镜像现为主线合并提交 `635045d30cf6f02970ddbbb464afd165f220459e`；平台 Gateway 在线且心跳健康，但 Agent 的官方传输已因 READY/首个 ACK 竞态进入 `protocol_error`，所以业务摄取当前不可用。回复开关仍为 false，NapCat healthy 且未在切换中重建。
 - GitHub 已按批准顺序合并 PR #7–#17；所有功能、迁移和 OpenCloudOS 离线构建修复均通过分支、PR 与合并后主线 CI，没有直接向 `main` 推送。
-- 已按主人确认完成本阶段生产部署，并保持既有 `live` 回复模式；官方 QQ 和模型记忆候选仍显式关闭。
+- 已按主人确认完成官方回复关闭的 shadow 部署；现场核验发现摄取竞态后，已在独立分支完成离线修复和回归，尚未走 PR/CI 或生产发布。官方 Bot 当前不会回复，模型记忆候选仍显式关闭。
 - 开放官方主人沙箱、加入测试群、启用模型候选或改变 live 状态仍必须获得单独确认。
 
 上述生产提交与健康结论来自 2026-08-26 的实时发布验收；后续继续操作仍须重新核对主线、镜像和匿名 transport 状态，不能把本次结果当作永久在线保证。
@@ -85,10 +85,11 @@
 
 ## 6. 下一步顺序
 
-1. 禁用态生产发布与 Agent-only 切换已完成；NapCat 容器身份和启动时间保持不变。个人 QQ 仍为持续离线，不自动重启、重复登录或把容器健康误报为 QQ 在线。
-2. 官方机器人、新凭据私有落盘、主人测试用户登记和官方适配器禁用态部署已完成；平台确认 IP 白名单为空时不限制请求来源。一次性捕获切片已由 PR #25 合并并随不可变发布进入生产，下一步在动作时确认平台仍只有主人一个测试用户，然后运行五分钟捕获窗口并私有绑定主人 OpenID；之后另行申请官方主人沙箱启用确认。生产模式在当前适配器中显式拒绝。
-3. 官方灰度固定为：假 Gateway → 主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大；提醒仍只走 NapCat。
-4. 观察任务保留到原定截止时间并生成匿名结论；已经捕获两次快速 `KickedOffLine`，结论必须为失败，不以再次人工恢复重置证据。
+1. 完成 `codex/higgs-official-heartbeat-auth-20260829` 的发布门、秘密扫描、提交、PR 与 Ubuntu CI；修复只允许在首个可观测且新鲜的心跳 ACK 到达后公开 authenticated，ACK 超时仍 fail-closed。
+2. CI 通过后构建同提交不可变 release/镜像，只重建 official sidecar 和 Agent；必须保持 reply=false，前后证明 NapCat 容器身份、启动时间和健康均不变。随后观察 `qq_official` 从 pending 转为 verified。
+3. 再设计并执行受控的 systemd 进程重启与 Resume 验收；不得让 Python 与 Node 官方 Gateway 并发，也不得触发 NapCat 重启。当前官方 unit 已 enabled 但 inactive，旧基础 unit 已 disabled 但仍 active，真实重启恢复尚未验收。
+4. 在事件/回执协调持久化和崩溃恢复方案完成前，不得开启官方回复。之后灰度顺序仍为主人沙箱私聊 → 72 小时与进程重启 Resume → 一个仅 `@` 测试群 → 再评估扩大；提醒继续只走 NapCat。
+5. NapCat 的原 48 小时观察已以多次快速 `KickedOffLine` 判定失败并停止；不自动重启、重复登录或把容器健康误报为 QQ 在线。
 
 ## 7. 本地目录结构（2026-08-27）
 
@@ -100,8 +101,8 @@
 
 ## 8. 明确未完成事项
 
-- 48 小时观察尚未结束，且已捕获两次明确 `KickedOffLine`；不能宣称长期在线问题已解决。人工恢复后的连续在线时长需重新累计，同时保留原观察窗口的失败证据。
-- 官方 QQ Bot 应用、服务器私有凭据、主人测试用户登记及禁用态适配器部署已具备，但主人 OpenID 尚未私有绑定；尚无真实 Gateway、沙箱私聊或 72 小时 Resume 证据。官方通道仍关闭。
+- NapCat 的 48 小时观察已失败并结束；捕获到多次明确 `KickedOffLine`，不能宣称个人 QQ 长期在线问题已解决。
+- 官方 QQ Bot 应用、私有凭据、主人测试用户、主人 OpenID 私有绑定及回复关闭 shadow 已具备；真实 Gateway 已在线，但尚无 systemd 重启 Resume、72 小时连续在线或真实回复证据。
 - 官方硬化已经 PR #21 合并并随禁用态 Agent 部署；`TransportRegistry` 仍未成为运行时统一编排入口，主人状态命令也尚未汇总官方通道。官方发送的同进程并发幂等已封闭，但跨进程回执持久化和已知失败/未知回执细分仍待后续独立切片。
 - 群聊风控按成员隔离修复已由 PR #23 合并并随 Agent-only 发布进入生产；没有发送真实群聊测试消息，因此当前只有代码、CI 与部署证据，尚无真实普通成员回归验收。
 - 阶段 3 的 systemd timer 与宿主状态 JSON 已部署验收；模型仅允许 shadow 建议，真实工具调用仍受 owner、显式命令和治理边界限制。
@@ -212,3 +213,20 @@
 - 新分支 `codex/higgs-official-node-owner-bind-20260829` 实现一次性 Node 绑定器：只有在平台测试用户恰为主人一人的人工确认短语下运行；只接受 READY 后首个合法 C2C sender，直接写入私有 `0600` create-once 文件，不输出身份、消息 ID、正文、附件或凭据，成功后立即停止 Gateway。
 - 服务器包装脚本要求 Python 官方通道关闭、没有其他官方 Gateway、专用目录为 `0700` 且 UID/GID 正确；私有环境先备份，双文件更新失败会事务式恢复，临时身份文件只移入 `/srv/trash`。绑定完成后再次证明官方摄取仍关闭，正式回复始终保持关闭。
 - 当前本地 Node 为 `29 passed, 2 skipped`，Python 为 `305 passed, 5 skipped`；Ruff、格式、发布包、秘密边界、Shell LF 与 `git diff --check` 均通过。功能提交 `24296a1` 已创建 PR #35，push 与 pull request 两套 Python、Node/镜像/Compose CI 全绿，Ubuntu 同时验证新增绑定脚本的 Bash 语法与 Linux 零跳过测试。待文档检查点 CI 后合并；随后只部署绑定器，主人从官方入口发送一次完成私有绑定，再重试回复关闭的 shadow 上线。
+
+## 21. 2026-08-29 关机暂停：主人绑定与官方 shadow 已上线
+
+- PR #35 的文档检查点 CI 通过后已合并为主线 `635045d30cf6f02970ddbbb464afd165f220459e`，合并后主线 Python 与 Node/镜像/Compose CI 均通过。
+- 前一晚的一次绑定窗口在超时后安全退出，未写入身份、未开启官方通道。恢复腾讯云会话并由主人完成扫码后，再运行一次受控绑定；首个合法官方 C2C 事件完成私有绑定，两份环境文件事务式更新成功，中间身份文件按约定移入 `/srv/trash`，全程没有回显任何身份、正文、消息 ID 或凭据。
+- 已生成并双端校验只含跟踪文件的主线发布包，构建相同 40 位提交标签的 Agent 与 official sidecar 镜像；`current` 原子切换到不可变发布，旧链接和替换前 unit 均进入 `/srv/trash`。
+- shadow 部署回执为：NapCat 容器未改变且 healthy、Agent running、official sidecar healthy、官方摄取 enabled、官方回复 disabled、旧基础 unit disabled、官方 unit enabled。平台 Gateway 因而可显示在线，但机器人当前按设计不会回复。
+- 关机前原计划补做镜像、唯一 Gateway、重启次数和 `transport.sqlite` 的匿名深层核验。命令只被输入，尚未执行；收到关机通知后已用中断键清空命令行，没有产生服务器状态变更或新测试消息。
+- 恢复点：重新登录腾讯云终端后先执行上述匿名只读核验；通过后再单独设计并申请 systemd 重启/Resume 验收。内存事件队列与 Gateway sequence 的崩溃窗口尚未封闭，正式回复必须继续保持 false。
+
+## 22. 2026-08-29 shadow 现场竞态与本地修复
+
+- 恢复 MFA 后执行匿名只读核验：不可变 release 和两镜像精确匹配；唯一 official sidecar 在线、authenticated、心跳 ACK 新鲜且 Docker health 通过；Agent 与 NapCat 均 running，NapCat healthy、两者重启计数为零，reply=false。sidecar 曾自动重启一次；官方 unit enabled 但 inactive，旧基础 unit disabled 但仍 active。
+- `transport.sqlite` 显示官方通道启动后先 `pending/startup`，约 0.7 秒进入 `verified/ready`；约 29 分钟后经历约 2.5 秒 `pending/gateway_reconnecting`，随即进入持续的 `rejected/protocol_error`。sidecar 后续恢复并连续健康约 8 小时，但 Agent 的 terminal fail-closed 状态不会自愈，业务摄取因此实际中断。
+- 根因是重连 READY 先于新 WebSocket 的首个 heartbeat ACK：旧 Node 状态在 READY 回调立即公开 authenticated，而 Python 看到 authenticated 但 ACK 为空，按协议矛盾永久熔断。该结论由匿名时序与源码状态机共同支持，没有读取聊天正文、身份、消息 ID 或 sidecar 日志。
+- 新分支把 authenticated 语义收紧为“READY/RESUMED 身份有效且首个 ACK 已成功触达并刷新私有 session”；此前保持 `heartbeat_pending`，事件和发送均拒绝。若首个 ACK 在 90 秒内不到达，watchdog 继续以 `heartbeat_ack_timeout` fail-closed。Python 接受该明确 pending 状态而不误判协议破坏。
+- 本地 Node 为 `30 passed, 2 skipped`，新增 READY/RESUMED 前后门控和首 ACK 超时回归；Python 定向 `11 passed`、完整 `306 passed, 5 skipped`，Ruff、格式和 Node 语法检查通过。尚未提交功能、创建 PR、运行 Ubuntu Linux UDS/session CI 或部署；生产 reply 继续为 false。

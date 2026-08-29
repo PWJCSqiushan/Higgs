@@ -111,6 +111,31 @@ async def test_start_requires_exact_versioned_ready_status() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_accepts_connected_status_while_first_heartbeat_is_pending() -> None:
+    pending = {
+        **status_payload(),
+        "authenticated": False,
+        "last_heartbeat_ack_at_ms": None,
+        "reason": "heartbeat_pending",
+    }
+    client = FakeSidecarClient(
+        [
+            (200, {"protocol_version": 1, "generation": "generation-1"}),
+            (200, pending),
+        ]
+    )
+    adapter = OfficialQQSidecarAdapter(sidecar_config(), event_handler=_discard, client=client)
+
+    await adapter.start()
+
+    status = await adapter.status()
+    assert status.connected is True
+    assert status.authenticated is False
+    assert status.account_id == "bot-id"
+    assert status.reason == "heartbeat_pending"
+
+
+@pytest.mark.asyncio
 async def test_capture_only_sidecar_is_rejected_from_business_pipeline() -> None:
     client = FakeSidecarClient(
         [
