@@ -459,3 +459,5 @@
 - 同主体、同会话、同通道最近十分钟内至多两条 `model_failed` 用户问题会以无 assistant 的短期上下文补回；催答时先补原问，不再误称对方没问。该恢复不扩大长期记忆或跨用户范围。
 - 回归与人工评阅清单从 55/50 扩展为统一 67 条。定向 50 项、完整 Python `451 passed, 5 skipped`、Node `47 passed, 9 skipped`、Ruff、格式、release gate、秘密模式、Shell LF 与 diff 检查均通过；Ubuntu 零跳过与 Shell/Node POSIX 仍待 PR CI。
 - 本节点未改变生产 Persona 2.1、配置、数据库、容器或消息流，也未干扰正在进行的 24 小时观察。下一步同步远端主线、独立 PR/CI；生产部署仍需单独确认并只重建 Agent。
+- PR #62 已从最新 main `30f615e6c7bff1489405171bc298cc8f437240c4` 建立。`github.com` Git smart HTTP 暂时不可达时改用 GitHub Git Data API，远端 tree `45d1b25ceebe04c3be2840f309c958604aa5d862` 与本地逐字节一致；仍是普通阶段分支，没有直接推送 main。
+- push/pull_request runs `33323748799`、`33323762741` 四项任务全绿；Ubuntu Python 零跳过，并通过 Shell、秘密/发布包、Node POSIX/UDS/进程替换、npm 签名、镜像和 Compose。当前只追加 CI 证据并复验 PR，生产不变。

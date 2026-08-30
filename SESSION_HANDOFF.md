@@ -460,3 +460,5 @@
 - 短期历史会在同主体、同会话、同通道范围内补入十分钟内 `model_failed` 的至多两条未回答问题；催答时提示先承认漏问并补答，不得声称对方没有问。失败内容仍不跨主体、群或 Bot 召回。
 - 自动人格回归与人工评分清单均扩展到 67 条，覆盖日常短答、自然 furry 语气、长度分流和漏答追问。定向 50 项通过；完整 Windows Python `451 passed, 5 skipped`，Node `47 passed, 9 skipped`，Ruff、格式、release gate、秘密模式、Shell LF 与 diff 检查通过。Windows 跳过项仍由 Ubuntu CI 收口。
 - 本节点只完成离线代码、测试和文档；没有连接生产、部署、改开关、迁移数据库、重建容器、发送消息或改变 Persona 2.1 的 24 小时观察。必须先同步最新远端主线、独立 PR/CI 全绿，再由主人单独确认 Persona 2.2 的 Agent-only 部署。
+- Persona 2.2 已进入 PR #62，基线为最新主线 `30f615e6c7bff1489405171bc298cc8f437240c4`。因 `github.com` Git 传输端点持续超时，使用 GitHub Git Data API 上传，并在建分支前逐层验证远端 tree 与本地 tree 完全一致；没有绕过分支或直接更新 main。
+- push run `33323748799` 与 pull_request run `33323762741` 均成功；Ubuntu 完成 Python 零跳过、Shell 语法、秘密/发布边界、格式、Ruff，以及 Node POSIX/UDS/进程替换、npm 签名、镜像和 Compose 验收。下一步只追加本证据并复验 PR；生产仍保持 Persona 2.1。
