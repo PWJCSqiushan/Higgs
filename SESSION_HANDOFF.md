@@ -430,3 +430,23 @@
 - 自动回归集从 50 条扩展到 55 条，加入身份追问、摄影经历、自我介绍、长期关系和疲惫交流。Windows 完整 Python 为 `439 passed, 5 skipped`，Node 为 `47 passed, 9 skipped`；Ruff 格式/检查、release gate、秘密边界、Shell LF 与 `git diff --check` 通过。本机无 Bash，Shell `bash -n` 和 Linux 零跳过仍由 PR CI 验收。
 - 当前只完成代码、测试和文档，不修改生产配置、不重建容器、不发送消息，也不改变正在进行的 24 小时观察。下一步走独立分支、PR 与 CI；合并后仍需主人单独确认，才可部署 Persona 2.1 并只重建 Agent。
 - 修复已提交到 PR #60。push run `33312732031` 与 pull_request run `33312743071` 的 Python、official sidecar 四项检查全部通过；Ubuntu 完成 Python 零跳过、Shell 语法、Node POSIX/UDS/进程替换、npm 签名、镜像与 Compose 验收。当前只追加 CI 证据并复验同一 PR，仍未部署生产。
+
+## 45. 2026-08-30 Persona 2.1 部署准备关机检查点
+
+- PR #60 已合并为主线 `f8354699fb84f61e1d30a64ca229d03232ded1a4`，合并后的 main CI run `33312844875` 两项任务全绿。主人已明确授权部署 Persona 2.1 并且只重建 Agent。
+- 发布前匿名观察健康：三容器 healthy/零重启，单官方 Gateway、reply=true、transport verified/connected/authenticated/account-match/ok，健康回执新鲜，rejected/fatal/active batches 均为零。该检查只读且未发送消息。
+- 首次非切换准备尝试因服务器到 GitHub 的连接中断退出；失败暂存目录被 trap 移入 `/srv/trash`，current release、私有配置、镜像标签和所有运行容器均未改变。
+- 改由本机 GitHub API取得同一合并提交，重新封装的 604685 字节发布包含 303 个成员，SHA-256 为 `558e9b17f3e20ff85e03be35aee57869a1d6321bb0bf56d6a4fbb73d61158d74`，内含 Persona `2.1.0`；发布包已上传到服务器 `/root`，不含凭据、聊天、数据库或运行状态。
+- 关机时云端第二次准备任务仍在运行，仅执行归档摘要/路径/版本校验、构建 `higgs-agent:f835...` 和成功后安装不可变 release；最长 600 秒。该任务没有切换 current、没有修改 `stack.env`、没有执行 Compose 或重建容器。失败时 staging 会移入 `/srv/trash`；成功时也只留下待激活 release 和镜像。
+- 恢复顺序：①只读确认该云任务终态；②重新运行匿名生产健康门并核对 current 仍为旧 release、Sidecar/NapCat 指纹未变；③若准备成功，执行带回滚的原子 current/`HIGGS_IMAGE` 切换并仅 `--force-recreate agent`；④验证 Persona 2.1、其他新开关不变、单 Gateway、transport 和零活动批次；⑤更新本记录并走独立生产记录 PR。不得盲目重复准备任务，不得重建 Sidecar 或 NapCat。
+
+## 46. 2026-08-30 Persona 2.1 已受控部署生产
+
+- 关机后的只读恢复检查确认旧生产仍为 `e60afd6b0347ed79e2308b64a26d8bb476f21049`，Agent、official sidecar、NapCat 均 healthy 且重启计数为零；待激活镜像和 immutable release 均存在，镜像内 Persona Bundle 可独立加载为 `2.1.0`。
+- 新 Agent 镜像以已验收的旧 Agent 镜像为基座，只覆盖 PR #60 中已经 CI 验收的 `r_agent` 包；`pyproject.toml`、锁文件、Dockerfile 与依赖均未变化。发布目录先安装到规范 `/srv/releases`，随后原子切换 `current` 与 `HIGGS_IMAGE`。
+- 激活前把原 `stack.env` 连同数字属主/模式复制到 `/srv/trash`，并保留旧 `current` 目标链接。失败路径会原子恢复两者、只重建旧 Agent 并重新等待健康；本次未触发回滚，备份仍保留可恢复。
+- Compose 仅执行 `--no-deps --force-recreate agent`。上线结果为 Agent 使用精确 `f8354699fb84f61e1d30a64ca229d03232ded1a4` 镜像且 Persona Bundle 为 `2.1.0`；official sidecar 与 NapCat 的容器标识、启动时间和重启计数均未变化。
+- 独立匿名后验通过：三容器 healthy/零重启，官方 Gateway 为一个，reply=true，`qq_official` transport 为 verified/connected/authenticated/account-match/ok，健康回执小于 120 秒，rejected、fatal 与 active batches 均为零。`stack.env` 的模式和数字属主与备份一致。
+- 生产能力边界没有扩大：Persona V2 仍只用于 owner 官方 C2C；self-memory schema/mode、群记忆、普通用户 C2C、官方群和 proactive 均保持关闭。未迁移数据库、导入摄影观点、发送测试消息、读取身份或正文、重登或重启 NapCat。
+- `higgs-72` 已重置为 Persona 2.1 新基线后的 24 小时观察，窗口为 2026-08-30 23:26:02 至 2026-08-31 23:26:02（Asia/Shanghai），每 3 小时只读检查。下一步由主人继续真实 owner C2C 对话验收；本次生产记录仍须独立分支、PR、CI 后合并，不得直接推送 `main`。
+- 生产记录已进入 PR #61。首轮 CI 在上海深夜暴露 8 个日计划测试仍用真实入站时间、而只冻结业务模块时钟的夹具缺陷；测试事件现与既有固定上午时钟使用同一常量，避免按 CI 运行时刻误判“当天无法完成”。本地 Python `439 passed, 5 skipped`、Node `47 passed, 9 skipped`、Ruff/格式和 release gate 通过；修正后的 push/PR runs `33320282139`、`33320283690` 四项全绿，Ubuntu Python 零跳过并通过 Node、Shell、镜像与 Compose。该测试修正不改变生产代码或运行状态。
