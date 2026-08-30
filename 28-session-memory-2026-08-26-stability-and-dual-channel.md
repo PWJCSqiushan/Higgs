@@ -343,3 +343,11 @@
 - 新增受 72 小时门禁约束的主动发送激活脚本：双私有配置原子变更、`/srv/trash` 可恢复备份、只重建 sidecar/Agent、单 Gateway/transport/批次/schema 后验和 NapCat 不变性验证，失败时双配置与双服务一并回滚。
 - 本地完整 Python 为 `342 passed, 5 skipped`，格式修正后定向 `35 passed`，Ruff 检查通过；Node `37 passed, 8 skipped` 且语法通过。Windows 没有 Bash，POSIX 与新 Shell 语法必须由 PR Ubuntu CI 零跳过/`bash -n` 收口。生产未改变、未发送消息，proactive 双门与测试群白名单继续关闭。
 - 功能提交已进入 PR #48；首轮 push/PR 两套 Python 与 Node/镜像/Compose CI 四项全绿，Ubuntu 验证 Shell 语法、Python 零跳过和 Node 真实 POSIX 持久化。当前仅追加 CI 证据并等待复验；即使合并也不扩大生产授权。
+
+## 节点 41：主动提醒合并与官方主人日计划离线完成
+
+- PR #48 复验全绿后合并为主线 `2f22dd54f32ee41f76d193d77076d01cd47ded9f`，合并后主线 CI run `33292488279` 成功；生产没有部署，proactive 与群白名单保持关闭。
+- 新分支 `codex/higgs-official-daily-plan-20260830` 将今日计划开放给官方 owner C2C：命令和自然语言草案沿用版本化计划、确定性求解、地图单次授权与任务状态机；官方群和非主人拒绝。
+- `shadow` 可在主动发送关闭时使用；官方 `live` 确认必须由 Agent proactive 门放行，否则计划不激活、提醒不创建。启用后的总览/T-10/T0 节点全部是显式 version 2 官方 owner 私聊绑定，不会转到 OneBot。
+- 提醒创建进一步校验官方 canonical origin 与 delivery Bot/owner 完全一致，防止跨 Bot OpenID 复用。OneBot 既有 `create_scheduled` 调用继续兼容。
+- 本地 Python `345 passed, 5 skipped`，Ruff 通过；Node `37 passed, 8 skipped`。尚待 release gate、提交 PR 与 Ubuntu 零跳过；生产状态未改变。

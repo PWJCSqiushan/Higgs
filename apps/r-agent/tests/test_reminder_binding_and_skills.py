@@ -249,6 +249,21 @@ def test_official_reminder_requires_and_persists_explicit_owner_target(tmp_path:
             origin_conversation_id="qq_official:private:bot:owner-openid",
             now_ms=1_000_000,
         )
+    with pytest.raises(ReminderError, match="主人私聊目标"):
+        store.create_pending(
+            owner_principal_id="owner",
+            owner_qq="owner-openid",
+            content="do not cross bot identity",
+            due_at_ms=1_010_000,
+            origin_channel="qq_official",
+            origin_surface="private",
+            origin_conversation_id="qq_official:private:another-bot:owner-openid",
+            delivery_channel="qq_official",
+            delivery_surface="private",
+            delivery_account_id="bot-id",
+            delivery_target_id="owner-openid",
+            now_ms=1_000_000,
+        )
     job = store.create_pending(
         owner_principal_id="owner",
         owner_qq="owner-openid",

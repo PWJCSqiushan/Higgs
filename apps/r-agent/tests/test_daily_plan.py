@@ -19,7 +19,7 @@ def event(text: str, *, group: bool = False, channel: str = "qq") -> InboundEven
     conversation_id = (
         "qq_official:group:1"
         if channel == "qq_official" and group
-        else "qq_official:private:bot:owner-openid"
+        else "qq_official:private:bot-qq:owner-openid"
         if channel == "qq_official"
         else "qq:group:1"
         if group
@@ -39,7 +39,12 @@ def event(text: str, *, group: bool = False, channel: str = "qq") -> InboundEven
     )
 
 
-def service(tmp_path: Path, *, mode: str) -> DailyPlanService:
+def service(
+    tmp_path: Path,
+    *,
+    mode: str,
+    official_proactive_enabled: bool = False,
+) -> DailyPlanService:
     agenda = AgendaStore(tmp_path / "agenda.sqlite")
     agenda.initialize()
     reminders = ReminderStore(tmp_path / "reminders.sqlite")
@@ -52,6 +57,7 @@ def service(tmp_path: Path, *, mode: str) -> DailyPlanService:
         registry=default_skill_registry(),
         approvals=approvals,
         config=DailyPlanConfig(mode=mode),
+        official_proactive_enabled=official_proactive_enabled,
     )
 
 
@@ -199,15 +205,70 @@ async def test_group_and_untrusted_identity_cannot_create_plan(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_official_channel_cannot_create_plan_or_reminders(tmp_path: Path) -> None:
+async def test_official_owner_can_draft_but_live_confirmation_requires_proactive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freeze_morning(monkeypatch)
     planner = service(tmp_path, mode="live")
     response = await planner.handle_event(
         event("今天的待办：背单词、写代码，帮我安排", channel="qq_official"),
         Principal("owner", "owner"),
     )
-    assert response is not None and "官方 QQ 通道" in response
-    assert planner.store.list_for_principal("owner") == []
+    assert response is not None and "今日计划" in response
+    plan = planner.store.latest_pending("owner")
+    assert plan is not None
+    confirmation = await planner.handle_event(
+        event(f"/higgs plan confirm {plan.plan_id[:8]}", channel="qq_official"),
+        Principal("owner", "owner"),
+    )
+    assert confirmation is not None and "主动提醒尚未启用" in confirmation
+    assert planner.store.get(plan.plan_id, principal_id="owner").status == ("awaiting_confirmation")
     assert planner.reminders.list() == []
+
+
+@pytest.mark.asyncio
+async def test_official_live_plan_confirmation_binds_all_nodes_to_owner_c2c(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freeze_morning(monkeypatch)
+    planner = service(tmp_path, mode="live", official_proactive_enabled=True)
+    principal = Principal("owner", "owner")
+    await planner.handle_event(
+        event("今天的待办：背单词、写代码，帮我安排", channel="qq_official"),
+        principal,
+    )
+    plan = planner.store.latest_pending("owner")
+    assert plan is not None
+    confirmation = await planner.handle_event(
+        event(f"/higgs plan confirm {plan.plan_id[:8]}", channel="qq_official"),
+        principal,
+    )
+    assert confirmation is not None and "计划已确认" in confirmation
+    jobs = planner.reminders.list(limit=20)
+    assert jobs
+    assert {job.delivery_policy for job in jobs} == {"agenda_once"}
+    assert {job.delivery_channel for job in jobs} == {"qq_official"}
+    assert {job.delivery_surface for job in jobs} == {"private"}
+    assert {job.delivery_account_id for job in jobs} == {"bot-qq"}
+    assert {job.delivery_target_id for job in jobs} == {"owner-openid"}
+    assert {job.delivery_binding_version for job in jobs} == {2}
+
+
+@pytest.mark.asyncio
+async def test_official_daily_plan_rejects_group_and_non_owner(tmp_path: Path) -> None:
+    planner = service(tmp_path, mode="shadow")
+    group_reply = await planner.handle_event(
+        event("今天的待办：背单词、写代码", group=True, channel="qq_official"),
+        Principal("owner", "owner"),
+    )
+    assert group_reply is not None and "只在私聊中使用" in group_reply
+    user_reply = await planner.handle_event(
+        event("今天的待办：背单词、写代码", channel="qq_official"),
+        Principal("official-user", "user"),
+    )
+    assert user_reply is not None and "仅允许主人" in user_reply
+    assert planner.store.list_for_principal("owner") == []
+    assert planner.store.list_for_principal("official-user") == []
 
 
 @pytest.mark.asyncio

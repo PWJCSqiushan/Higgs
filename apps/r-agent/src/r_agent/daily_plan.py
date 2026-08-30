@@ -1,5 +1,5 @@
 # ruff: noqa: RUF001
-"""Governed today-plan skill for private QQ conversations."""
+"""Governed today-plan skill for channel-bound private QQ conversations."""
 
 from __future__ import annotations
 
@@ -157,6 +157,7 @@ class DailyPlanService:
         config: DailyPlanConfig,
         model_client: OpenAICompatibleClient | None = None,
         amap: AmapRouteClient | None = None,
+        official_proactive_enabled: bool = False,
     ) -> None:
         self.store = store
         self.reminders = reminders
@@ -165,14 +166,15 @@ class DailyPlanService:
         self.config = config
         self.extractor = PlanIntentExtractor(model_client)
         self.amap = amap
+        self.official_proactive_enabled = official_proactive_enabled
 
     async def handle_event(self, event: InboundEvent, principal: Principal) -> str | None:
         if self.config.mode == "off" or not looks_like_daily_plan(event.text):
             return None
-        if event.channel.casefold() == "qq_official":
-            return "官方 QQ 通道暂不支持今日计划及主动提醒，请在 NapCat 私聊中使用。"
         if event.conversation_kind is not ConversationKind.PRIVATE:
             return "为保护位置和个人日程，今日计划第一版只在私聊中使用。"
+        if event.channel.casefold() == "qq_official" and principal.role != "owner":
+            return "官方 QQ 今日计划当前仅允许主人使用。"
         if principal.role not in {"owner", "user"}:
             return "当前身份不能使用今日计划。"
         try:
@@ -522,6 +524,8 @@ class DailyPlanService:
     async def _confirm_live(
         self, plan: DailyPlan, *, event: InboundEvent, principal: Principal
     ) -> str:
+        if event.channel.casefold() == "qq_official" and not self.official_proactive_enabled:
+            raise DailyPlanError("官方 QQ 主动提醒尚未启用，不能激活会产生节点提醒的计划")
         parameters = {
             "plan_id": plan.plan_id,
             "version": plan.version,
@@ -694,6 +698,14 @@ class DailyPlanService:
         event: InboundEvent,
         principal: Principal,
     ) -> None:
+        delivery = {
+            "origin_channel": event.channel,
+            "origin_surface": event.conversation_kind.value,
+            "delivery_channel": event.channel,
+            "delivery_surface": event.conversation_kind.value,
+            "delivery_account_id": event.account_id,
+            "delivery_target_id": event.sender_id,
+        }
         now_ms = int(time.time() * 1000)
         plan_day = date.fromisoformat(plan.plan_date)
         morning = int(datetime.combine(plan_day, wall_time(8, 0), SHANGHAI).timestamp() * 1000)
@@ -710,6 +722,7 @@ class DailyPlanService:
                 origin_conversation_id=event.conversation_id,
                 source_kind="agenda_plan",
                 source_id=plan.plan_id,
+                **delivery,
                 expires_at_ms=morning + 60 * 60_000,
             )
             await self._run_sync(
@@ -741,6 +754,7 @@ class DailyPlanService:
                     origin_conversation_id=event.conversation_id,
                     source_kind="agenda_task",
                     source_id=task.task_id,
+                    **delivery,
                     expires_at_ms=task.start_at_ms + 30 * 60_000,
                 )
                 await self._run_sync(
