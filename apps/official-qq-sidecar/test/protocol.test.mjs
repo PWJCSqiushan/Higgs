@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   EventQueue,
+  ChannelGate,
   GROUP_AND_C2C_INTENT,
   PROTOCOL_VERSION,
   ProtocolError,
@@ -16,6 +17,39 @@ const botSafe = "B456_bot-value";
 
 test("uses the exact group and C2C intent", () => {
   assert.equal(GROUP_AND_C2C_INTENT, 33_554_432);
+});
+
+test("channel gate bounds ordinary traffic and opens after repeated failures", () => {
+  let now = 1_000;
+  const gate = new ChannelGate({
+    ratePerMinute: 2,
+    failureLimit: 2,
+    cooldownSeconds: 10,
+    now: () => now,
+  });
+  assert.equal(gate.allow(), true);
+  assert.equal(gate.allow(), true);
+  assert.equal(gate.allow(), false);
+  gate.recordFailure();
+  gate.recordFailure();
+  assert.equal(gate.isOpen(), true);
+  assert.equal(gate.allow(), false);
+  now = 62_001;
+  assert.equal(gate.isOpen(), false);
+  assert.equal(gate.allow(), true);
+});
+
+test("channel gate success clears the failure circuit without widening rate limits", () => {
+  const gate = new ChannelGate({
+    ratePerMinute: 3,
+    failureLimit: 2,
+    cooldownSeconds: 10,
+    now: () => 1_000,
+  });
+  gate.recordFailure();
+  gate.recordSuccess();
+  gate.recordFailure();
+  assert.equal(gate.isOpen(), false);
 });
 
 test("send requests separate passive replies from owner-C2C proactive sends", () => {

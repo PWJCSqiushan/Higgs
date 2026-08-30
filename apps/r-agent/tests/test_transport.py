@@ -14,7 +14,16 @@ def test_official_qq_defaults_to_disabled(monkeypatch: pytest.MonkeyPatch) -> No
         "R_AGENT_OFFICIAL_QQ_CLIENT_SECRET",
         "R_AGENT_OFFICIAL_QQ_SANDBOX",
         "R_AGENT_OFFICIAL_QQ_OWNER_OPENID",
+        "R_AGENT_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS",
         "R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS",
+        "R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED",
+        "R_AGENT_OFFICIAL_QQ_GROUP_ENABLED",
+        "R_AGENT_OFFICIAL_QQ_PRIVATE_RATE_PER_MINUTE",
+        "R_AGENT_OFFICIAL_QQ_GROUP_RATE_PER_MINUTE",
+        "R_AGENT_OFFICIAL_QQ_PRIVATE_CIRCUIT_FAILURE_LIMIT",
+        "R_AGENT_OFFICIAL_QQ_GROUP_CIRCUIT_FAILURE_LIMIT",
+        "R_AGENT_OFFICIAL_QQ_PRIVATE_CIRCUIT_COOLDOWN_SECONDS",
+        "R_AGENT_OFFICIAL_QQ_GROUP_CIRCUIT_COOLDOWN_SECONDS",
         "R_AGENT_OFFICIAL_QQ_TRANSPORT",
         "R_AGENT_OFFICIAL_QQ_SIDECAR_SOCKET",
         "R_AGENT_OFFICIAL_QQ_REPLY_ENABLED",
@@ -28,7 +37,74 @@ def test_official_qq_defaults_to_disabled(monkeypatch: pytest.MonkeyPatch) -> No
     assert config.app_id is None
     assert config.reply_enabled is False
     assert config.proactive_enabled is False
+    assert config.ordinary_private_enabled is False
+    assert config.group_enabled is False
+    assert config.allowed_private_openids == frozenset()
     assert "CLIENT_SECRET" not in repr(config)
+
+
+def test_owner_c2c_remains_available_without_new_ordinary_switches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ENABLED", "true")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_TRANSPORT", "sidecar")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_REPLY_ENABLED", "true")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_OWNER_OPENID", "owner-openid")
+    monkeypatch.delenv("R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED", raising=False)
+    monkeypatch.delenv("R_AGENT_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS", raising=False)
+
+    config = OfficialQQConfig.from_env()
+
+    assert config.ordinary_private_enabled is False
+    assert config.active_private_openids == frozenset({"owner-openid"})
+    assert config.active_group_openids == frozenset()
+
+
+def test_private_allowlist_is_normalized_and_owner_is_always_union_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ENABLED", "true")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_TRANSPORT", "sidecar")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_OWNER_OPENID", "owner-openid")
+    monkeypatch.setenv(
+        "R_AGENT_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS",
+        "member-openid, owner-openid, member-openid",
+    )
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED", "true")
+
+    config = OfficialQQConfig.from_env()
+
+    assert config.allowed_private_openids == frozenset({"owner-openid", "member-openid"})
+    assert config.active_private_openids == config.allowed_private_openids
+
+
+@pytest.mark.parametrize(
+    "name,value,match",
+    [
+        ("R_AGENT_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS", "*", "printable ASCII"),
+        ("R_AGENT_OFFICIAL_QQ_PRIVATE_RATE_PER_MINUTE", "0", "between 1 and 120"),
+        ("R_AGENT_OFFICIAL_QQ_GROUP_RATE_PER_MINUTE", "241", "between 1 and 240"),
+    ],
+)
+def test_official_channel_policy_rejects_wildcards_and_out_of_range_limits(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+    match: str,
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ConfigError, match=match):
+        OfficialQQConfig.from_env()
+
+
+def test_official_switches_cannot_be_enabled_while_transport_is_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED", "true")
+
+    with pytest.raises(ConfigError, match="enabled transport"):
+        OfficialQQConfig.from_env()
 
 
 def test_enabled_official_qq_requires_both_credentials(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -154,6 +154,8 @@ def config() -> OfficialQQConfig:
         client_secret="a-secure-client-secret",
         owner_openid="owner-openid",
         allowed_group_openids=frozenset({"group-openid"}),
+        ordinary_private_enabled=True,
+        group_enabled=True,
     )
 
 
@@ -348,6 +350,112 @@ async def test_fake_gateway_rejects_unknown_or_mismatched_message_event_types(
     await gateway.callbacks.on_message_event("GROUP_AT_MESSAGE_CREATE", {})
     assert received == []
 
+    await gateway.callbacks.on_message_event("C2C_MESSAGE_CREATE", {})
+    assert len(received) == 1
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_gateway_owner_c2c_survives_new_switches_defaulting_off(tmp_path: Path) -> None:
+    received = []
+    gateway: FakeGateway | None = None
+
+    def gateway_factory(callbacks: Any) -> FakeGateway:
+        nonlocal gateway
+        gateway = FakeGateway(callbacks)
+        return gateway
+
+    parsed: Any = None
+
+    async def capture(event: Any) -> None:
+        received.append(event)
+
+    adapter = OfficialQQAdapter(
+        replace(
+            config(),
+            ordinary_private_enabled=False,
+            group_enabled=False,
+            allowed_private_openids=frozenset(),
+        ),
+        event_handler=capture,
+        data_dir=tmp_path,
+        api_client=FakeApi(),
+        gateway_factory=gateway_factory,
+        session_store=FakeSessionStore(),
+        parser=lambda _event_type, _raw: parsed,
+    )
+    await adapter.start()
+    assert gateway is not None
+    gateway.callbacks.on_connected()
+    gateway.callbacks.on_ready(SimpleNamespace(user=SimpleNamespace(id="bot-openid")))
+    for _ in range(5):
+        adapter._private_gate.record_failure()  # type: ignore[attr-defined]
+    parsed = SimpleNamespace(
+        chat_scope="c2c",
+        user_id="owner-openid",
+        chat_id="owner-openid",
+        message_id="owner-message",
+        timestamp="2026-08-26T00:00:00Z",
+        content="owner",
+        attachments=[],
+    )
+    await gateway.callbacks.on_message_event("C2C_MESSAGE_CREATE", {})
+    assert len(received) == 1
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_gateway_ordinary_c2c_requires_explicit_allowlist_and_switch(
+    tmp_path: Path,
+) -> None:
+    received = []
+    gateway: FakeGateway | None = None
+
+    def gateway_factory(callbacks: Any) -> FakeGateway:
+        nonlocal gateway
+        gateway = FakeGateway(callbacks)
+        return gateway
+
+    parsed: Any = None
+
+    async def capture(event: Any) -> None:
+        received.append(event)
+
+    adapter = OfficialQQAdapter(
+        replace(config(), allowed_private_openids=frozenset({"ordinary-openid"})),
+        event_handler=capture,
+        data_dir=tmp_path,
+        api_client=FakeApi(),
+        gateway_factory=gateway_factory,
+        session_store=FakeSessionStore(),
+        parser=lambda _event_type, _raw: parsed,
+    )
+    await adapter.start()
+    assert gateway is not None
+    gateway.callbacks.on_connected()
+    gateway.callbacks.on_ready(SimpleNamespace(user=SimpleNamespace(id="bot-openid")))
+
+    parsed = SimpleNamespace(
+        chat_scope="c2c",
+        user_id="ordinary-openid",
+        chat_id="ordinary-openid",
+        message_id="ordinary-message",
+        timestamp="2026-08-26T00:00:00Z",
+        content="ordinary",
+        attachments=[],
+    )
+    await gateway.callbacks.on_message_event("C2C_MESSAGE_CREATE", {})
+    assert len(received) == 1
+
+    parsed = SimpleNamespace(
+        chat_scope="c2c",
+        user_id="unknown-openid",
+        chat_id="unknown-openid",
+        message_id="unknown-message",
+        timestamp="2026-08-26T00:00:01Z",
+        content="unknown",
+        attachments=[],
+    )
     await gateway.callbacks.on_message_event("C2C_MESSAGE_CREATE", {})
     assert len(received) == 1
     await adapter.stop()

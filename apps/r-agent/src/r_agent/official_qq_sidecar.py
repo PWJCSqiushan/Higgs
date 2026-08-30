@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
 from r_agent.events import AttachmentRef, ConversationKind, InboundEvent
+from r_agent.official_qq_policy import OfficialChannelGate
 from r_agent.transport import (
     DeliveryReceipt,
     DeliveryState,
@@ -58,6 +59,10 @@ _SAFE_ERROR_CODES = {
     "invalid_request_identity",
     "invalid_reply_binding",
     "invalid_proactive_target",
+    "private_channel_disabled",
+    "group_channel_disabled",
+    "channel_rate_limited",
+    "channel_circuit_open",
     "invalid_target",
     "invalid_text",
     "not_found",
@@ -105,6 +110,17 @@ class SidecarConfig(Protocol):
     enabled: bool
     owner_openid: str | None
     allowed_group_openids: frozenset[str]
+    allowed_private_openids: frozenset[str]
+    active_private_openids: frozenset[str]
+    active_group_openids: frozenset[str]
+    ordinary_private_enabled: bool
+    group_enabled: bool
+    private_rate_per_minute: int
+    group_rate_per_minute: int
+    private_circuit_failure_limit: int
+    group_circuit_failure_limit: int
+    private_circuit_cooldown_seconds: int
+    group_circuit_cooldown_seconds: int
     transport: str
     sidecar_socket_path: str
     proactive_enabled: bool
@@ -191,6 +207,18 @@ class OfficialQQSidecarAdapter:
         self._client = client
         self._transport_state = transport_state
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+        self._private_gate = OfficialChannelGate(
+            rate_per_minute=config.private_rate_per_minute,
+            failure_limit=config.private_circuit_failure_limit,
+            cooldown_seconds=config.private_circuit_cooldown_seconds,
+            clock_ms=self._clock_ms,
+        )
+        self._group_gate = OfficialChannelGate(
+            rate_per_minute=config.group_rate_per_minute,
+            failure_limit=config.group_circuit_failure_limit,
+            cooldown_seconds=config.group_circuit_cooldown_seconds,
+            clock_ms=self._clock_ms,
+        )
         self._stop_requested = asyncio.Event()
         self._send_lock = asyncio.Lock()
         self._generation: str | None = None
@@ -443,7 +471,12 @@ class OfficialQQSidecarAdapter:
         if event_type == "C2C_MESSAGE_CREATE" and kind_value == "c2c":
             if group_value is not None:
                 raise SidecarProtocolViolation("sidecar private event has a group identity")
-            if sender_id != self.config.owner_openid:
+            is_owner = sender_id == self.config.owner_openid
+            if (
+                sender_id not in self.config.active_private_openids
+                or (not is_owner and not self.config.ordinary_private_enabled)
+                or (not is_owner and not self._private_gate.allow(now_ms=self._clock_ms()))
+            ):
                 policy_allowed = False
             kind = ConversationKind.PRIVATE
             target_id = sender_id
@@ -451,7 +484,11 @@ class OfficialQQSidecarAdapter:
             mentioned = False
         elif event_type == "GROUP_AT_MESSAGE_CREATE" and kind_value == "group":
             group_id = _safe_id(group_value)
-            if group_id not in self.config.allowed_group_openids:
+            if (
+                not self.config.group_enabled
+                or group_id not in self.config.active_group_openids
+                or not self._group_gate.allow(now_ms=self._clock_ms())
+            ):
                 policy_allowed = False
             kind = ConversationKind.GROUP
             target_id = group_id
@@ -655,12 +692,20 @@ class OfficialQQSidecarAdapter:
             raise TransportUnavailable("official QQ target identity is invalid") from exc
         if target.conversation_kind is ConversationKind.PRIVATE:
             kind = "c2c"
-            if target_id != self.config.owner_openid:
-                raise TransportUnavailable("official QQ private target is not the owner")
+            if target_id not in self.config.active_private_openids:
+                raise TransportUnavailable("official QQ private target is not allowlisted")
+            if target_id != self.config.owner_openid and not self.config.ordinary_private_enabled:
+                raise TransportUnavailable("official QQ ordinary private channel is disabled")
+            if target_id != self.config.owner_openid and self._private_gate.is_open():
+                raise TransportUnavailable("official QQ private channel circuit is open")
         elif target.conversation_kind is ConversationKind.GROUP:
             kind = "group"
-            if target_id not in self.config.allowed_group_openids:
+            if not self.config.group_enabled:
+                raise TransportUnavailable("official QQ group channel is disabled")
+            if target_id not in self.config.active_group_openids:
                 raise TransportUnavailable("official QQ group target is not allowlisted")
+            if self._group_gate.is_open():
+                raise TransportUnavailable("official QQ group channel circuit is open")
         else:  # pragma: no cover - enum exhaustiveness
             raise TransportUnavailable("official QQ target kind is invalid")
         if delivery_mode == "proactive" and kind != "c2c":
@@ -770,6 +815,12 @@ class OfficialQQSidecarAdapter:
                     DeliveryState.UNKNOWN,
                     normalized_key,
                 )
+            if kind != "c2c" or target_id != self.config.owner_openid:
+                gate = self._private_gate if kind == "c2c" else self._group_gate
+                if receipt.state is DeliveryState.SENT:
+                    gate.record_success()
+                elif receipt.state is DeliveryState.UNKNOWN:
+                    gate.record_failure()
             self._receipts[normalized_key] = receipt
             self._receipt_fingerprints[normalized_key] = fingerprint
             return receipt

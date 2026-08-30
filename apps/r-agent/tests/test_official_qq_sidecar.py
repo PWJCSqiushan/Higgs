@@ -58,6 +58,8 @@ def sidecar_config() -> OfficialQQConfig:
         client_secret=None,
         owner_openid="owner-id",
         allowed_group_openids=frozenset({"allowed-group"}),
+        ordinary_private_enabled=True,
+        group_enabled=True,
         transport="sidecar",
         reply_enabled=True,
     )
@@ -228,6 +230,120 @@ async def test_events_route_only_owner_and_allowlisted_group() -> None:
     assert received[1].mentioned is True
     assert adapter._cursor == 4
     assert [request[1] for request in client.requests].count("/v1/events/ack") == 4
+
+
+@pytest.mark.asyncio
+async def test_owner_event_is_kept_when_new_ordinary_and_group_gates_are_off() -> None:
+    received: list[InboundEvent] = []
+
+    async def capture(event: InboundEvent) -> None:
+        received.append(event)
+
+    client = FakeSidecarClient(
+        [
+            (200, hello_payload()),
+            (200, status_payload()),
+            (
+                200,
+                {
+                    "protocol_version": 1,
+                    "generation": "generation-1",
+                    "events": [
+                        event_payload(1, sender_id="owner-id"),
+                        event_payload(2, sender_id="ordinary-id"),
+                        event_payload(
+                            3,
+                            event_type="GROUP_AT_MESSAGE_CREATE",
+                            kind="group",
+                            sender_id="member-id",
+                            group_id="allowed-group",
+                        ),
+                    ],
+                },
+            ),
+            *[
+                (
+                    200,
+                    {
+                        "protocol_version": 1,
+                        "generation": "generation-1",
+                        "event_cursor": cursor,
+                    },
+                )
+                for cursor in range(1, 4)
+            ],
+        ]
+    )
+    adapter = OfficialQQSidecarAdapter(
+        replace(
+            sidecar_config(),
+            ordinary_private_enabled=False,
+            group_enabled=False,
+            allowed_private_openids=frozenset(),
+        ),
+        event_handler=capture,
+        client=client,
+    )
+
+    await adapter.start()
+    for _ in range(5):
+        adapter._private_gate.record_failure()  # type: ignore[attr-defined]
+    await adapter._poll_events()
+
+    assert [event.sender_id for event in received] == ["owner-id"]
+    await adapter.stop()
+
+
+@pytest.mark.asyncio
+async def test_allowlisted_ordinary_private_event_is_admitted_only_when_enabled() -> None:
+    received: list[InboundEvent] = []
+
+    async def capture(event: InboundEvent) -> None:
+        received.append(event)
+
+    client = FakeSidecarClient(
+        [
+            (200, hello_payload()),
+            (200, status_payload()),
+            (
+                200,
+                {
+                    "protocol_version": 1,
+                    "generation": "generation-1",
+                    "events": [
+                        event_payload(1, sender_id="ordinary-id"),
+                        event_payload(2, sender_id="unknown-id"),
+                    ],
+                },
+            ),
+            *[
+                (
+                    200,
+                    {
+                        "protocol_version": 1,
+                        "generation": "generation-1",
+                        "event_cursor": cursor,
+                    },
+                )
+                for cursor in range(1, 3)
+            ],
+        ]
+    )
+    adapter = OfficialQQSidecarAdapter(
+        replace(
+            sidecar_config(),
+            allowed_private_openids=frozenset({"ordinary-id"}),
+            ordinary_private_enabled=True,
+        ),
+        event_handler=capture,
+        client=client,
+    )
+
+    await adapter.start()
+    await adapter._poll_events()
+
+    assert [event.sender_id for event in received] == ["ordinary-id"]
+    await adapter.stop()
 
 
 @pytest.mark.asyncio
