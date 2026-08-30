@@ -351,3 +351,4 @@
 - `shadow` 可在主动发送关闭时使用；官方 `live` 确认必须由 Agent proactive 门放行，否则计划不激活、提醒不创建。启用后的总览/T-10/T0 节点全部是显式 version 2 官方 owner 私聊绑定，不会转到 OneBot。
 - 提醒创建进一步校验官方 canonical origin 与 delivery Bot/owner 完全一致，防止跨 Bot OpenID 复用。OneBot 既有 `create_scheduled` 调用继续兼容。
 - 本地 Python `345 passed, 5 skipped`，Ruff 通过；Node `37 passed, 8 skipped`。尚待 release gate、提交 PR 与 Ubuntu 零跳过；生产状态未改变。
+- 功能提交 `5e1b8ed` 已进入 PR #49，首轮 push/PR 四项 CI 全绿，Ubuntu Python 与 Node POSIX 项零跳过，镜像/Compose 通过。仅追加 CI 证据后复验，生产仍未改变。

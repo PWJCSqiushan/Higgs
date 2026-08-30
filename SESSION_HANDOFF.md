@@ -346,3 +346,4 @@
 - `shadow` 计划不需要主动发送；`live` 精确版本确认在 Agent proactive 未启用时失败关闭，计划仍停留在待确认且不会创建提醒。获准启用后，总览、T-10 与 T0 节点使用 version 2 ReminderStore 记录，审批和投递固定绑定当前 `qq_official + private + Bot account + owner OpenID`，不回退 NapCat。
 - `ReminderStore.create_scheduled` 现接受显式 origin/delivery 绑定，旧 OneBot 调用保持兼容。官方创建路径新增 canonical 同一 Bot 校验：origin conversation 中的 Bot/owner 必须与 delivery account/target 完全一致，避免跨 Bot 复用 OpenID。
 - 文档已说明双通道日计划、地图授权和 proactive 门禁。Windows 完整 Python 为 `345 passed, 5 skipped`，Ruff 格式/检查通过；Node `37 passed, 8 skipped` 且语法通过。本切片尚未提交 PR/CI、部署、修改配置、重建容器或发送消息；72 小时结论前不得启用 live 官方节点提醒。
+- 功能提交 `5e1b8ed` 已进入 PR #49，首轮 push 与 pull request 两套 CI 四项全绿；Ubuntu 对 Python 权限项和 Node UDS/进程替换持久化均零跳过，镜像与 Compose 也通过。当前仅追加本 CI 证据并复验同一 PR；合并不等于生产部署许可。
