@@ -8,6 +8,7 @@ import sqlite3
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from r_agent.model_client import ModelError, OpenAICompatibleClient
 from r_agent.owner_commands import OwnerCommandRouter
 from r_agent.recall import RecallError
 from r_agent.reminders import (
+    SHANGHAI,
     ReminderError,
     ReminderStore,
     format_job,
@@ -349,7 +351,10 @@ class PersonaBrain:
                             f"{completed.job_id[:8]} "
                             "\u5df2\u5b8c\u6210\u3002"
                         )
-                    parsed = parse_reminder_intent(clean)
+                    parsed = parse_reminder_intent(
+                        clean,
+                        now=datetime.fromtimestamp(event.occurred_at_ms / 1000, SHANGHAI),
+                    )
                     if parsed is not None:
                         if official_channel and (
                             event.conversation_kind is not ConversationKind.PRIVATE

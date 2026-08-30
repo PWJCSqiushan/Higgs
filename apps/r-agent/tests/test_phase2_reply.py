@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 
 from r_agent.access import IngressDecision
@@ -345,7 +346,7 @@ async def test_official_owner_can_create_only_explicit_bound_private_reminder(tm
         account_id="official-bot-id",
         sender_id="owner-openid",
         message_id=base.message_id,
-        occurred_at_ms=base.occurred_at_ms,
+        occurred_at_ms=int(time.time() * 1000),
         conversation_kind=ConversationKind.PRIVATE,
         conversation_id="qq_official:private:official-bot-id:owner-openid",
         group_id=None,
@@ -359,6 +360,10 @@ async def test_official_owner_can_create_only_explicit_bound_private_reminder(tm
     assert job.delivery_surface == "private"
     assert job.delivery_account_id == "official-bot-id"
     assert job.delivery_target_id == "owner-openid"
+
+    replay = await brain.draft(official)
+    assert "请核对后回复" in replay
+    assert len(reminders.list()) == 1
 
 
 async def test_send_failure_becomes_auditable_decision() -> None:

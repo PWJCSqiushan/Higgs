@@ -347,3 +347,13 @@
 - `ReminderStore.create_scheduled` 现接受显式 origin/delivery 绑定，旧 OneBot 调用保持兼容。官方创建路径新增 canonical 同一 Bot 校验：origin conversation 中的 Bot/owner 必须与 delivery account/target 完全一致，避免跨 Bot 复用 OpenID。
 - 文档已说明双通道日计划、地图授权和 proactive 门禁。Windows 完整 Python 为 `345 passed, 5 skipped`，Ruff 格式/检查通过；Node `37 passed, 8 skipped` 且语法通过。本切片尚未提交 PR/CI、部署、修改配置、重建容器或发送消息；72 小时结论前不得启用 live 官方节点提醒。
 - 功能提交 `5e1b8ed` 已进入 PR #49，首轮 push 与 pull request 两套 CI 四项全绿；Ubuntu 对 Python 权限项和 Node UDS/进程替换持久化均零跳过，镜像与 Compose 也通过。当前仅追加本 CI 证据并复验同一 PR；合并不等于生产部署许可。
+
+## 36. 2026-08-30 日计划与提醒 prepare 重放边界修复完成
+
+- PR #49 已复验全绿并合并为主线 `4827add4edc0a6847b66290d69420be243e9a083`；合并后主线 CI run `33293097006` 成功。该功能仍未部署，生产 proactive 双门和官方群白名单保持关闭。
+- 上线前复核发现：官方 durable processor 在 `preparing` 阶段崩溃后会重新调用回复准备；日计划草案、计划确认和提醒创建此前会在准备阶段直接写各自数据库，因此存在“业务副作用已提交、prepared reply 尚未提交”时重放并重复写入的风险。生产当前版本不包含 PR #48/#49，所以现场未受此问题影响。
+- 独立分支 `codex/higgs-official-owner-controls-20260830` 先暂停继续迁移变更性主人命令，改为修复这条阻断路径。计划草案使用由 purpose、channel、Bot account 和入站 message 计算的 SHA-256 请求键；数据库在 `BEGIN IMMEDIATE` 内先复用同请求，再原子执行每日限额和新建。相同键参数变化一律失败关闭。
+- 相对时间解析和计划起点固定到入站事件发生时间，避免同一事件重放时因墙钟变化产生另一份参数。地图授权限额与确认状态转换也在事务内幂等；确认、任务完成、计划取消及替换重放不再重复追加审计事件。
+- 自然提醒按原会话和 source message 幂等创建；日计划节点提醒使用内容无关的稳定 SHA-256 内部来源键。计划确认中断后重放会复用已创建节点并补齐缺失节点，不重复确认、不重复提醒；投递通道、Bot 和目标绑定冲突仍失败关闭。
+- 新增请求键复用/冲突、同事件双次草案、自然提醒双次准备、确认重复、任务状态重复，以及“首个节点已创建后注入中断并恢复”的测试。当前 Windows 完整 Python 为 `349 passed, 5 skipped`；Ruff、格式、release gate、秘密边界、Shell LF、Node 语法与 Node `37 passed, 8 skipped` 均通过。
+- 修复提交 `bb965cf` 已进入 PR #50。首轮 push 与 pull request 两套 Ubuntu CI 共四项全绿，Linux Python 零跳过、Node POSIX/真实进程替换、Shell 语法、npm 签名、镜像与 Compose 均通过。当前只追加 CI 证据并等待复验；尚未合并或部署，复验通过后才继续主人控制命令迁移。

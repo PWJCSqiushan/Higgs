@@ -70,6 +70,39 @@ def test_generic_confirmation_is_same_conversation_and_unambiguous(tmp_path: Pat
     assert quoted is not None and quoted.job_id == first.job_id
 
 
+def test_source_message_replay_is_idempotent_and_conflicts_fail_closed(tmp_path: Path) -> None:
+    store = ReminderStore(tmp_path / "reminders.sqlite")
+    store.initialize()
+    first = create_job(store, conversation="qq:private:owner", message="same-message")
+    replay = store.create_pending(
+        owner_principal_id="owner",
+        owner_qq="800001",
+        content="study",
+        due_at_ms=first.due_at_ms,
+        origin_channel="qq",
+        origin_surface="private",
+        origin_conversation_id="qq:private:owner",
+        source_message_id="same-message",
+        now_ms=first.due_at_ms + 60_000,
+    )
+    assert replay.job_id == first.job_id
+    assert len(store.list()) == 1
+    confirmed = store.confirm(first.job_id)
+    assert store.confirm(first.job_id).job_id == confirmed.job_id
+    with pytest.raises(ReminderError, match="幂等键"):
+        store.create_pending(
+            owner_principal_id="owner",
+            owner_qq="800001",
+            content="different",
+            due_at_ms=first.due_at_ms,
+            origin_channel="qq",
+            origin_surface="private",
+            origin_conversation_id="qq:private:owner",
+            source_message_id="same-message",
+            now_ms=1_000_000,
+        )
+
+
 def test_delivery_quote_binds_ack_but_another_group_does_not(tmp_path: Path) -> None:
     store = ReminderStore(tmp_path / "reminders.sqlite")
     store.initialize()
