@@ -411,3 +411,11 @@
 - 修正版包装器保留三份私有 env 各自的数字属主和 `0600`，显式触发/验证回滚健康，并禁止 `die` 绕过回滚。第二次尝试因首次安装留下的不可变目标已存在而安全拒绝并完成 healthy 回滚；第三次先把现有 release 与同一签名归档逐文件比对，再幂等切换并成功。
 - 最终匿名验收为 release、Agent/sidecar 镜像精确匹配，Agent、sidecar、NapCat healthy，官方 transport verified，活动批次为零，单 Gateway，主人被动回复保持 true，NapCat 容器未改变。Persona V2、自我记忆 schema/mode、群、普通用户和 proactive 等所有新开关继续为 false；没有发送测试消息、重登或重启 NapCat。十个服务器临时发布/回滚文件已移动到 `/srv/trash`，均可恢复。
 - 原 `higgs-72` 自动化已改为 2026-08-30 19:00:18 至 2026-08-31 19:00:18 的部署后 24 小时匿名观察，每 3 小时只读检查。开发不再被观察阻塞；下一生产动作是另行确认 owner Persona V2 灰度，完成至少 20 轮真实对话评分后，才讨论自我记忆 shadow、摄影观点种子、普通测试用户或单测试群激活。
+
+## 43. 2026-08-30 owner Persona V2 生产灰度已开启
+
+- 主人单独授权后，仅把生产 `R_AGENT_PERSONA_V2_ENABLED` 从 `false` 原子切换为 `true`，并且只执行了一次 Agent 强制重建。Agent 仍使用发布 `e60afd6b0347ed79e2308b64a26d8bb476f21049` 的既有镜像；official sidecar 与 NapCat 的容器标识、启动时间和重启计数均未变化。
+- 切换前后均验证 Agent、official sidecar、NapCat healthy，官方 Gateway 单实例，主人被动回复为 true，`qq_official` transport 为 verified、已连接、已认证、身份匹配且健康回执小于 120 秒，活动 durable batches 为零。独立后验检查中 rejected、fatal、reconnect、pending 和 active batch 均为零，三容器重启计数均为零。
+- `higgs.env` 切换前以 `0600`、`10001:10001` 元数据复制到 `/srv/trash`，临时文件原子替换时保持同一属主和模式；失败路径只恢复该私有配置并只重建 Agent。首次未压缩的一次性命令因控制台拒绝启动而没有触达服务器；压缩后的同内容脚本通过 SHA-256 与 `bash -n` 后执行成功并移入 `/srv/trash`。
+- 自我记忆 schema v4/mode、群记忆、普通用户 C2C、官方群和主动发送仍全部关闭；没有迁移数据库、导入摄影观点、发送测试消息、读取身份/正文、重登或重启 NapCat。Persona V2 仍只允许官方 owner C2C，其他入口继续使用原人格路径。
+- `higgs-72` 已重置为 Persona V2 上线后的 24 小时观察：2026-08-30 20:03:42 至 2026-08-31 20:03:42，每 3 小时只读检查。下一步由主人完成至少 20 轮真实 owner C2C 对话，按角色一致、自然、不夸张、内容准确四维评分并提供去敏反馈；在该验收前不得开启 self-memory shadow 或其他生产新能力。

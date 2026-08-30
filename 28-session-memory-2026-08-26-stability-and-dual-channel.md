@@ -414,3 +414,11 @@
 - 包装器随后改为保存每个私有 env 的原数字属主、显式健康回滚和不可变 release 幂等校验。已存在 release 必须与签名归档逐文件一致才能重新激活。一次已有目标安全拒绝并 healthy 回滚后，最终发布成功；所有新功能开关仍 false，只有既有 owner 官方被动回复保持 true。
 - 最终门控为 release/两镜像匹配、三容器 healthy、单 Gateway、official transport verified、零活动批次、NapCat 容器不变。未发送消息、读取身份或正文、重登或重启 NapCat。十个临时发布/回滚文件已移入服务器回收区。
 - `higgs-72` 已复用为部署后 24 小时观察：2026-08-30 19:00:18 至 2026-08-31 19:00:18，每 3 小时只读检查。代码开发继续；生产下一步只允许单独确认 owner Persona V2，20 轮真实对话验收之后再推进自我记忆 shadow 与其他用户/群灰度。
+
+## 节点 49：owner Persona V2 完成受控生产灰度
+
+- 主人明确授权只开启 owner Persona V2 并只重建 Agent。生产只将 `R_AGENT_PERSONA_V2_ENABLED=false` 原子改为 `true`；Agent 使用既有 `e60afd6b0347ed79e2308b64a26d8bb476f21049` 镜像重建一次，official sidecar 与 NapCat 的容器指纹保持不变。
+- 前置门要求三容器 healthy、Agent 镜像和 release 精确匹配、单 Gateway、官方 transport verified 且健康回执新鲜、零活动批次、reply=true，并逐项确认 self-memory schema/mode、group memory、ordinary C2C、官方群和 proactive 为 false。任何失败只恢复 `higgs.env` 并只重建 Agent。
+- `higgs.env` 的可恢复备份保存在 `/srv/trash`，备份与原子替换均保持 `0600`、`10001:10001`，避免再次触发 Agent 私有配置读取权限事故。控制台最初拒绝启动过长命令，未发生服务器变更；压缩传输后先验证脚本摘要和 `bash -n`，再完成切换并把脚本移入服务器回收区。
+- 独立匿名后验在上线约四分钟时仍为 Agent/sidecar/NapCat healthy 且重启计数为零、Gateway=1、reply=true、Persona V2=true、其他新功能全部关闭、transport verified/connected/authenticated/account-match/ok，回执新鲜，pending/rejected/fatal/reconnect/active batches 均为零。未发送测试消息、读取身份或正文、迁移数据库、导入观点、重登或重启 NapCat。
+- 观察自动化重置到 2026-08-30 20:03:42 至 2026-08-31 20:03:42。下一验收是主人至少 20 轮真实官方私聊，记录去敏的四维评分与典型出戏/守卫样本；通过前不开放 self-memory shadow、摄影种子、普通用户或官方群。
