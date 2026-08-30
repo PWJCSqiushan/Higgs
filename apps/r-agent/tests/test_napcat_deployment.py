@@ -87,6 +87,55 @@ def test_official_stability_observer_is_anonymous_and_read_only() -> None:
     assert "QQBOT_APP_SECRET" not in text
 
 
+def test_official_test_group_binding_is_owner_only_bounded_and_non_activating() -> None:
+    text = (ROOT / "deploy/existing-server/run_official_node_group_bind.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "ONLY_OWNER_WILL_BIND_ONE_TEST_GROUP" in text
+    assert "STABILITY_72H_ACCEPTED" in text
+    assert "绑定测试群" in text
+    assert "private owner binding is absent" in text
+    assert "first test-group slot is not empty" in text
+    assert "another official Gateway is active" in text
+    assert "official_processing_batches WHERE state!='complete'" in text
+    assert "compose stop -t 20 official-qq-sidecar" in text
+    assert "compose up -d --no-deps official-qq-sidecar" in text
+    assert "production allowlist remains unchanged" in text
+    assert "agent_started=" in text
+    assert "agent_restarts=" in text
+    assert "group.openid" in text
+    assert "/srv/trash/higgs-official-group-bind-failed-" in text
+    assert "NapCat" not in text
+    assert 'echo "$group' not in text
+    assert 'cat "$group_file"' not in text
+    assert "docker logs" not in text
+    assert "\nrm " not in text
+    assert ".unlink(" not in text
+
+
+def test_official_test_group_activation_is_atomic_and_reversible() -> None:
+    text = (ROOT / "deploy/existing-server/activate_official_test_group.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "ACTIVATE_ONE_BOUND_TEST_GROUP" in text
+    assert "STABILITY_72H_ACCEPTED" in text
+    assert "R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS" in text
+    assert "HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS" in text
+    assert "restore_private_configuration" in text
+    assert "rollback_required=true" in text
+    assert "/srv/trash/higgs-official-test-group-activation-" in text
+    assert "official_processing_batches WHERE state!='complete'" in text
+    assert "--force-recreate official-qq-sidecar" in text
+    assert "--force-recreate agent" in text
+    assert "R_AGENT_OFFICIAL_QQ_REPLY_ENABLED=true" in text
+    assert "only group-at events are accepted" in text
+    assert 'echo "$group' not in text
+    assert 'cat "$group_file"' not in text
+    assert "docker logs" not in text
+    assert "\nrm " not in text
+    assert ".unlink(" not in text
+
+
 def test_opencloudos_build_prefetches_locked_dependencies_before_offline_sync() -> None:
     text = (ROOT / "apps/r-agent/Dockerfile.opencloudos").read_text(encoding="utf-8")
     pyproject = (ROOT / "apps/r-agent/pyproject.toml").read_text(encoding="utf-8")

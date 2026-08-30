@@ -220,6 +220,72 @@ test("owner binding callback failure stops the client fail-closed", async () => 
   }
 });
 
+test("group binding callback requires authenticated owner group-at and fixed phrase", async () => {
+  const candidates = [];
+  const client = newClient({
+    captureOnly: true,
+    groupBindPhrase: "绑定测试群",
+    onGroupCandidate: (value) => candidates.push(value),
+  });
+  try {
+    await client.start();
+    const bot = FakeBot.instances[0];
+    const groupMessage = (overrides = {}) => ({
+      rawEventType: "GROUP_AT_MESSAGE_CREATE",
+      kind: "group",
+      senderId: senderSafe,
+      groupOpenid: safe,
+      messageId: safe,
+      content: "@Higgs 绑定测试群",
+      timestamp: "2026-08-30T01:00:00Z",
+      ...overrides,
+    });
+    bot.emit("message", {}, groupMessage());
+    bot.emit("ready", { user: { id: safe } });
+    bot.gateway.currentWs.emit("message", Buffer.from('{"op":11}'));
+    bot.emit("message", {}, groupMessage({ senderId: "not-owner" }));
+    bot.emit("message", {}, groupMessage({ content: "@Higgs 普通测试" }));
+    bot.emit("message", {}, groupMessage());
+    bot.emit("message", {}, groupMessage({ groupOpenid: "ignored-group" }));
+    assert.deepEqual(candidates, [safe, "ignored-group"]);
+    assert.equal(
+      client.readEvents(0, 10).every((event) => event.sender_id === undefined),
+      true,
+    );
+  } finally {
+    await client.stop();
+  }
+});
+
+test("group binding callback failure stops the client fail-closed", async () => {
+  const client = newClient({
+    captureOnly: true,
+    groupBindPhrase: "绑定测试群",
+    onGroupCandidate: () => {
+      throw new Error("private write failed");
+    },
+  });
+  try {
+    await client.start();
+    const bot = FakeBot.instances[0];
+    bot.emit("ready", { user: { id: safe } });
+    bot.gateway.currentWs.emit("message", Buffer.from('{"op":11}'));
+    bot.emit("message", {}, {
+      rawEventType: "GROUP_AT_MESSAGE_CREATE",
+      kind: "group",
+      senderId: senderSafe,
+      groupOpenid: safe,
+      messageId: safe,
+      content: "@Higgs 绑定测试群",
+      timestamp: "2026-08-30T01:00:00Z",
+    });
+    assert.equal(client.status().authenticated, false);
+    assert.equal(client.status().reason, "group_bind_error");
+  } finally {
+    await client.stop();
+  }
+});
+
 function sendRequest(client, overrides = {}) {
   return {
     protocol_version: PROTOCOL_VERSION,

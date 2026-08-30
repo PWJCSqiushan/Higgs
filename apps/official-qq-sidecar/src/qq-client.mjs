@@ -58,6 +58,7 @@ function boundedReason(value) {
     "session_store_error",
     "delivery_store_error",
     "owner_bind_error",
+    "group_bind_error",
     "protocol_error",
     "stopped",
   ]);
@@ -80,6 +81,8 @@ export class OfficialQQClient {
     ownerOpenId = null,
     allowedGroupOpenIds = [],
     onOwnerCandidate = null,
+    onGroupCandidate = null,
+    groupBindPhrase = null,
     onFatal = () => {},
     sessionStore = null,
     deliveryStore = null,
@@ -98,6 +101,8 @@ export class OfficialQQClient {
     this.ownerOpenId = ownerOpenId;
     this.allowedGroupOpenIds = new Set(allowedGroupOpenIds);
     this.onOwnerCandidate = onOwnerCandidate;
+    this.onGroupCandidate = onGroupCandidate;
+    this.groupBindPhrase = groupBindPhrase;
     this.onFatal = onFatal;
     this.sessionStore = sessionStore;
     this.deliveryStore = deliveryStore;
@@ -331,6 +336,23 @@ export class OfficialQQClient {
           this.onOwnerCandidate(normalized.sender_id);
         } catch {
           this._failFatal("owner_bind_error");
+          return;
+        }
+      }
+      if (
+        this.captureOnly &&
+        normalized.kind === "group" &&
+        typeof this.onGroupCandidate === "function" &&
+        isSafeId(this.ownerOpenId) &&
+        normalized.sender_id === this.ownerOpenId &&
+        typeof this.groupBindPhrase === "string" &&
+        this.groupBindPhrase.length >= 4 &&
+        normalized.text.includes(this.groupBindPhrase)
+      ) {
+        try {
+          this.onGroupCandidate(normalized.group_id);
+        } catch {
+          this._failFatal("group_bind_error");
           return;
         }
       }

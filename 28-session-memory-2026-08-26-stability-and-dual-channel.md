@@ -318,3 +318,11 @@
 - 启动基线完整通过：三容器 healthy/零重启，单 Gateway，reply=true，官方 transport verified 且连接、认证、身份匹配和健康新鲜度通过，活动批次为零。启动后数分钟内出现一次短暂重连并以 `ready` 恢复；容器未重启，没有 rejected 或致命转换。该转换不重置窗口，将纳入最终证据。
 - 本窗口结束前不修改生产群白名单。观察期内先离线完成一次性测试群 OpenID 绑定、owner 触发确认、双层白名单与群用户身份隔离回归；全绿后也只是代码就绪，生产启用必须等待 72 小时结论和新的人工验收。
 - 观察脚本已在生产环境以只读方式真实执行并通过；本地 release gate、秘密边界、Shell LF、Ruff 与格式通过，Python `332 passed, 5 skipped`，Node `31 passed, 7 skipped`。本分支只提交脚本、CI 语法门、静态只读边界回归和观察起点文档，不修改生产状态。
+
+## 节点 38：测试群双阶段绑定与激活代码完成
+
+- 一次性 Node 群绑定器只在两个显式确认（唯一测试群、72 小时观察通过）后运行。它只接受认证后的 owner `GROUP_AT_MESSAGE_CREATE` 与固定短语，直接把候选群 OpenID 写入私有 `0600` create-once 文件；不输出身份、正文、平台消息/回执 ID、附件或凭据。
+- 绑定阶段暂时用唯一 capture-only Gateway 替换 sidecar，完成后恢复原 sidecar并等待 transport verified；Agent 与 NapCat 不重建。候选不会自动进入生产白名单，失败文件只移入 `/srv/trash`。
+- 独立激活脚本再次要求 72 小时确认，把两份私有配置备份到 `/srv/trash` 后原子写入 Agent/sidecar 双层 allowlist，仅重建 sidecar 与 Agent；运行时值、单 Gateway、reply、transport、活动批次和 NapCat 不变性任一失败都会回滚。
+- 协议和业务仍只接收群 `@` 事件，普通群消息不进入业务与记忆。官方群成员按通道和 member OpenID 隔离，不自动跨到个人 QQ、owner 或其他成员 principal。
+- 本地 Python `335 passed, 5 skipped`，Node `36 passed, 7 skipped`；Ruff、格式、Node/远端 Bash 语法通过。release gate 以 249 个跟踪文件、272 个归档成员通过，秘密边界与 Shell LF 干净。PR #47 首轮四项 CI 全绿，增强后尚待重新推送复验。代码未部署；生产群白名单保持为空，必须等待固定 72 小时窗口完成后再决定绑定与灰度。
