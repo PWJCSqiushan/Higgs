@@ -479,23 +479,50 @@ async def process_reply(
 
 
 def _onebot_reminder_target(occurrence: DueOccurrence) -> OutboundTarget | None:
-    """Build a NapCat target only from the persisted channel-bound origin."""
+    """Build a NapCat target only from the explicit persisted delivery binding."""
 
-    if occurrence.origin_channel.casefold() != "qq":
+    if occurrence.delivery_channel.casefold() != "qq":
         return None
-    if occurrence.origin_surface == "group":
+    if occurrence.delivery_surface == "group":
         kind = ConversationKind.GROUP
-    elif occurrence.origin_surface == "private":
+    elif occurrence.delivery_surface == "private":
         kind = ConversationKind.PRIVATE
     else:
         return None
-    conversation_id = occurrence.origin_conversation_id.strip()
-    if not conversation_id.casefold().startswith("qq:"):
+    account_id = occurrence.delivery_account_id.strip()
+    target_id = occurrence.delivery_target_id.strip()
+    if not account_id or not target_id or ":" in account_id or ":" in target_id:
         return None
     return OutboundTarget(
         channel="qq",
         conversation_kind=kind,
-        conversation_id=conversation_id,
+        conversation_id=f"qq:{kind.value}:{account_id}:{target_id}",
+    )
+
+
+def _official_reminder_target(
+    occurrence: DueOccurrence,
+    *,
+    owner_openid: str | None,
+    account_id: str | None,
+) -> OutboundTarget | None:
+    """Build only the bound owner-C2C official target for proactive delivery."""
+
+    if (
+        occurrence.delivery_channel.casefold() != "qq_official"
+        or occurrence.delivery_surface != "private"
+        or not owner_openid
+        or not account_id
+        or occurrence.delivery_account_id != account_id
+        or occurrence.delivery_target_id != owner_openid
+        or ":" in account_id
+        or ":" in owner_openid
+    ):
+        return None
+    return OutboundTarget(
+        channel="qq_official",
+        conversation_kind=ConversationKind.PRIVATE,
+        conversation_id=f"qq_official:private:{account_id}:{owner_openid}",
     )
 
 
@@ -775,6 +802,7 @@ async def listen() -> None:
         owner_commands=owner_commands,
         reminders=reminders,
         daily_plans=daily_plans,
+        official_proactive_enabled=official_config.proactive_enabled,
     )
     passive_learner = (
         PassiveMemoryLearner(
@@ -1078,86 +1106,122 @@ async def listen() -> None:
     async def reminder_loop() -> None:
         while True:
             await asyncio.to_thread(reminders.recover_stale_prepared)
+            delivery_channels: set[str] = set()
+            official_reminder_status = None
             if online.snapshot().qq_online:
-                due = await asyncio.to_thread(reminders.prepare_due)
-                for occurrence in due:
-                    if occurrence.delivery_policy == "agenda_once":
-                        text = occurrence.content
-                    else:
-                        text = (
-                            f"\u63d0\u9192\uff1a{occurrence.content}\n"
-                            f"ID: {occurrence.job_id[:8]}\n"
-                            "\u8bf7\u56de\u590d\u201c\u6536\u5230\u201d\uff0c\u6216\u53d1\u9001 "
-                            f"/higgs remind ack {occurrence.job_id[:8]}"
-                        )
+                delivery_channels.add("qq")
+            if official_config.proactive_enabled and official_adapter is not None:
+                try:
+                    candidate_status = await official_adapter.status()
+                except Exception:
+                    candidate_status = None
+                if (
+                    candidate_status is not None
+                    and candidate_status.connected
+                    and candidate_status.authenticated
+                    and candidate_status.account_id is not None
+                ):
+                    official_reminder_status = candidate_status
+                    delivery_channels.add("qq_official")
+            due = await asyncio.to_thread(
+                reminders.prepare_due,
+                delivery_channels=frozenset(delivery_channels),
+            )
+            for occurrence in due:
+                if occurrence.delivery_policy == "agenda_once":
+                    text = occurrence.content
+                else:
+                    text = (
+                        f"\u63d0\u9192\uff1a{occurrence.content}\n"
+                        f"ID: {occurrence.job_id[:8]}\n"
+                        "\u8bf7\u56de\u590d\u201c\u6536\u5230\u201d\uff0c\u6216\u53d1\u9001 "
+                        f"/higgs remind ack {occurrence.job_id[:8]}"
+                    )
+                if occurrence.delivery_channel == "qq":
                     target = _onebot_reminder_target(occurrence)
-                    if target is None:
-                        # Official QQ reminders are intentionally blocked until
-                        # explicit channel+target binding is implemented.  Never
-                        # reinterpret an OpenID as a NapCat QQ number.
-                        _log.warning(
-                            "reminder_delivery_blocked channel=%s surface=%s",
-                            occurrence.origin_channel,
-                            occurrence.origin_surface,
+                    delivery_adapter = onebot_adapter
+                elif occurrence.delivery_channel == "qq_official":
+                    target = _official_reminder_target(
+                        occurrence,
+                        owner_openid=official_owner_openid,
+                        account_id=(
+                            official_reminder_status.account_id
+                            if official_reminder_status is not None
+                            else None
+                        ),
+                    )
+                    delivery_adapter = official_adapter
+                else:
+                    target = None
+                    delivery_adapter = None
+                if target is None:
+                    _log.warning(
+                        "reminder_delivery_blocked channel=%s surface=%s",
+                        occurrence.delivery_channel,
+                        occurrence.delivery_surface,
+                    )
+                    await asyncio.to_thread(
+                        reminders.finish_occurrence,
+                        occurrence.occurrence_key,
+                        state="failed",
+                    )
+                    continue
+                target_conversation = target.conversation_id
+                budget = await asyncio.to_thread(
+                    risk_ledger.reserve_send,
+                    event_type="reminder",
+                    actor_class="owner",
+                    account_id=occurrence.delivery_account_id,
+                    conversation_id=target_conversation,
+                )
+                if not budget.allowed or budget.reservation_id is None:
+                    continue
+                try:
+                    assert delivery_adapter is not None
+                    receipt = await delivery_adapter.send_text(
+                        target,
+                        text,
+                        idempotency_key=occurrence.occurrence_key,
+                    )
+                except (OutboundError, TransportUnavailable) as exc:
+                    outcome = (
+                        "unknown"
+                        if isinstance(exc, TransportUnavailable) or exc.delivery_unknown
+                        else "failed"
+                    )
+                    await asyncio.to_thread(
+                        risk_ledger.finish_send,
+                        budget.reservation_id,
+                        outcome=outcome,
+                    )
+                    await asyncio.to_thread(
+                        reminders.finish_occurrence,
+                        occurrence.occurrence_key,
+                        state=outcome,
+                    )
+                else:
+                    if receipt.state is DeliveryState.SENT:
+                        await asyncio.to_thread(
+                            risk_ledger.finish_send, budget.reservation_id, outcome="sent"
                         )
                         await asyncio.to_thread(
                             reminders.finish_occurrence,
                             occurrence.occurrence_key,
-                            state="failed",
+                            state="sent",
+                            message_id=receipt.provider_message_id,
                         )
-                        continue
-                    target_conversation = target.conversation_id
-                    budget = await asyncio.to_thread(
-                        risk_ledger.reserve_send,
-                        event_type="reminder",
-                        actor_class="owner",
-                        account_id=expected_bot_qq or "unknown",
-                        conversation_id=target_conversation,
-                    )
-                    if not budget.allowed or budget.reservation_id is None:
-                        continue
-                    try:
-                        receipt = await onebot_adapter.send_text(
-                            target,
-                            text,
-                            idempotency_key=occurrence.occurrence_key,
-                        )
-                    except OutboundError as exc:
+                    else:
+                        outcome = "unknown" if receipt.state is DeliveryState.UNKNOWN else "failed"
                         await asyncio.to_thread(
                             risk_ledger.finish_send,
                             budget.reservation_id,
-                            outcome="unknown" if exc.delivery_unknown else "failed",
+                            outcome=outcome,
                         )
                         await asyncio.to_thread(
                             reminders.finish_occurrence,
                             occurrence.occurrence_key,
-                            state="unknown",
+                            state=outcome,
                         )
-                    else:
-                        if receipt.state is DeliveryState.SENT:
-                            await asyncio.to_thread(
-                                risk_ledger.finish_send, budget.reservation_id, outcome="sent"
-                            )
-                            await asyncio.to_thread(
-                                reminders.finish_occurrence,
-                                occurrence.occurrence_key,
-                                state="sent",
-                                message_id=receipt.provider_message_id,
-                            )
-                        else:
-                            outcome = (
-                                "unknown" if receipt.state is DeliveryState.UNKNOWN else "failed"
-                            )
-                            await asyncio.to_thread(
-                                risk_ledger.finish_send,
-                                budget.reservation_id,
-                                outcome=outcome,
-                            )
-                            await asyncio.to_thread(
-                                reminders.finish_occurrence,
-                                occurrence.occurrence_key,
-                                state=outcome,
-                            )
             await asyncio.sleep(5)
 
     async def candidate_review_notification_loop() -> None:

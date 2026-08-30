@@ -176,10 +176,10 @@ def test_confirmed_job_parameter_tampering_fails_closed(tmp_path: Path) -> None:
     assert store.get(job.job_id).status == "failed"
 
 
-def test_official_channel_cannot_create_a_reminder(tmp_path: Path) -> None:
+def test_official_reminder_requires_and_persists_explicit_owner_target(tmp_path: Path) -> None:
     store = ReminderStore(tmp_path / "reminders.sqlite")
     store.initialize()
-    with pytest.raises(ReminderError, match="官方 QQ 通道"):
+    with pytest.raises(ReminderError, match="显式绑定"):
         store.create_pending(
             owner_principal_id="owner",
             owner_qq="owner-openid",
@@ -190,6 +190,37 @@ def test_official_channel_cannot_create_a_reminder(tmp_path: Path) -> None:
             origin_conversation_id="qq_official:private:bot:owner-openid",
             now_ms=1_000_000,
         )
+    job = store.create_pending(
+        owner_principal_id="owner",
+        owner_qq="owner-openid",
+        content="send safely",
+        due_at_ms=1_010_000,
+        origin_channel="qq_official",
+        origin_surface="private",
+        origin_conversation_id="qq_official:private:bot-id:owner-openid",
+        delivery_channel="qq_official",
+        delivery_surface="private",
+        delivery_account_id="bot-id",
+        delivery_target_id="owner-openid",
+        now_ms=1_000_000,
+    )
+    confirmed = store.confirm(job.job_id)
+    assert confirmed.delivery_channel == "qq_official"
+    assert confirmed.delivery_account_id == "bot-id"
+    assert confirmed.delivery_target_id == "owner-openid"
+    assert (
+        store.prepare_due(
+            now_ms=job.due_at_ms,
+            delivery_channels=frozenset({"qq"}),
+        )
+        == []
+    )
+    occurrence = store.prepare_due(
+        now_ms=job.due_at_ms,
+        delivery_channels=frozenset({"qq_official"}),
+    )[0]
+    assert occurrence.delivery_surface == "private"
+    assert occurrence.delivery_target_id == "owner-openid"
 
 
 def test_skill_registry_is_fail_closed_and_future_skills_are_disabled() -> None:

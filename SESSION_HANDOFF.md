@@ -318,3 +318,13 @@
 - 激活是第二个独立显式动作，同样硬性要求 72 小时观察已通过。它先把两份 `0600` 私有环境备份到 `/srv/trash`，再把同一候选原子写入 Agent 与 sidecar 的官方群白名单，仅重建 official sidecar 和 Agent，并验证单 Gateway、双运行时值一致、reply=true、transport verified、零活动批次及 NapCat 不变；任一失败恢复两份配置和旧服务。
 - 生产业务面继续只接受 `GROUP_AT_MESSAGE_CREATE`，因此普通群消息不会进入 Journal、身份、记忆、模型或回复流水线。官方群成员按 `channel + member OpenID` 建立独立 principal；不会因字符串相同自动与 NapCat QQ 身份、owner 或其他成员合并。
 - 本地回归为 Python `335 passed, 5 skipped`、Node `36 passed, 7 skipped`；Ruff、格式、Node 语法和两份新 Shell 的真实远端 Bash 语法检查通过。release gate 以 249 个跟踪文件、272 个归档成员通过，秘密边界与 Shell LF 均干净。PR #47 已建立且首轮四项 CI 全绿；后续增强尚待推送复验。尚未部署；72 小时观察仍在进行，当前生产群白名单没有变化。
+
+## 33. 2026-08-30 关机暂停：主人命令与官方主动提醒离线实现中
+
+- PR #47 已合并为主线 `b72ad8a4fab1f1ad8d261287105e6797a910b9bf`，合并后主线 CI run `33284134356` 成功。测试群代码就绪不等于生产获准；固定 72 小时窗口结束前仍不得绑定或激活群白名单。
+- 新建独立工作树 `Higgs-wt-official-owner-reminders` 与分支 `codex/higgs-official-owner-reminders-20260830`，基于上述主线。腾讯官方 `tencent-connect/openclaw-qqbot` 与 `qqbot-nodejs` 的当前实现证明主动 C2C 使用同一 Bot 对明确 OpenID 发送且不携带入站 `msgId`；OpenID 必须与产生它的 Bot 账户绑定。该结论只用于离线设计，尚未发送任何主动消息。
+- ReminderStore WIP 新增显式 `delivery_channel + delivery_surface + delivery_account_id + delivery_target_id`，并把四项纳入主人确认哈希。官方群提醒只允许由 owner C2C 原会话建立、投递回同一 Bot 的 owner OpenID；不允许从群创建官方群主动提醒，也不把 OpenID 解释为个人 QQ。调度器可按当前健康通道筛选到期任务，NapCat 离线不会再阻断已明确绑定的官方群提醒。
+- Agent 与 sidecar WIP 增加两端独立、默认关闭的 proactive 开关。主动发送只允许 owner C2C；sidecar 在平台调用前把幂等键与请求指纹持久认领为 `UNKNOWN`，若进程在调用边界崩溃，重启后不会重复调用平台。被动回复授权、群 `@` 回复和现有 reply 开关语义保持独立。
+- 官方主人私聊命令 WIP 从仅 `/higgs status` 扩展到显式 allowlist：help、status、server status、risk、提醒管理与只读记忆查询。群内主人命令、运行开关、白名单、速率、备份、记忆变更、日计划等尚未迁移，继续在任何副作用前拒绝。
+- 暂停前最小验证通过：Python 相关 `67 passed`，Ruff 格式与检查通过；Node 语法通过，`37 passed, 8 skipped`，Windows 跳过项含新增 POSIX 持久 proactive claim。代码尚未跑完整 pytest、release gate、秘密扫描或 Ubuntu 零跳过；尚未提交 PR、部署、修改私有配置、重建容器或发送测试消息。
+- 恢复顺序：①先确认 `higgs-72` 观察未出现 rejected/fatal/容器重建；②复核 WIP diff 与提醒旧数据迁移策略；③补齐调度/配置/Compose 静态回归及 Linux 进程替换测试；④跑完整 Python/Node/发布门；⑤更新本阶段追加记忆并提交独立 PR/CI。即使 CI 全绿，proactive 两端开关仍保持 false，生产启用必须等待 72 小时结论并取得单独确认。

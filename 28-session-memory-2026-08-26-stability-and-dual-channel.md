@@ -326,3 +326,11 @@
 - 独立激活脚本再次要求 72 小时确认，把两份私有配置备份到 `/srv/trash` 后原子写入 Agent/sidecar 双层 allowlist，仅重建 sidecar 与 Agent；运行时值、单 Gateway、reply、transport、活动批次和 NapCat 不变性任一失败都会回滚。
 - 协议和业务仍只接收群 `@` 事件，普通群消息不进入业务与记忆。官方群成员按通道和 member OpenID 隔离，不自动跨到个人 QQ、owner 或其他成员 principal。
 - 本地 Python `335 passed, 5 skipped`，Node `36 passed, 7 skipped`；Ruff、格式、Node/远端 Bash 语法通过。release gate 以 249 个跟踪文件、272 个归档成员通过，秘密边界与 Shell LF 干净。PR #47 首轮四项 CI 全绿，增强后尚待重新推送复验。代码未部署；生产群白名单保持为空，必须等待固定 72 小时窗口完成后再决定绑定与灰度。
+
+## 节点 39：主人命令与官方主动提醒关机检查点
+
+- 测试群 PR #47 最终合并为主线 `b72ad8a4fab1f1ad8d261287105e6797a910b9bf`，合并后主线 CI 通过；生产群仍受 72 小时门禁约束，没有激活。
+- 新分支 `codex/higgs-official-owner-reminders-20260830` 开始离线迁移主人功能。提醒目标从隐式 origin 改为确认哈希覆盖的显式 channel、surface、Bot account 与 target；官方群仅允许主人 C2C 创建并回投同一 owner OpenID。
+- Node sidecar 与 Agent 增加默认关闭的独立 proactive 能力。主动请求不携带 reply message ID，只允许 owner C2C；sidecar 在 provider 边界前持久写入请求指纹与 UNKNOWN claim，崩溃后不得重发。该实现依据腾讯官方 `openclaw-qqbot` 主动发送和提醒代码，但尚未真实启用或发送。
+- 主人私聊命令先开放严格 allowlist 的只读状态/记忆查询及提醒管理；群内主人命令与其他变更性运维命令继续拒绝。日计划仍未迁移。
+- 暂停前定向门禁为 Python `67 passed`、Node `37 passed, 8 skipped`，Ruff 与 Node 语法通过。尚需完整测试、Linux 零跳过、release gate、秘密扫描、PR/CI；生产 proactive 配置仍为 false，没有部署或容器变化。

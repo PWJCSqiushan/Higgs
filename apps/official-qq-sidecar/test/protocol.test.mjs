@@ -18,7 +18,7 @@ test("uses the exact group and C2C intent", () => {
   assert.equal(GROUP_AND_C2C_INTENT, 33_554_432);
 });
 
-test("send requests are versioned, passive-only, and reject unknown fields", () => {
+test("send requests separate passive replies from owner-C2C proactive sends", () => {
   const request = normalizeSendRequest({
     protocol_version: PROTOCOL_VERSION,
     generation: safe,
@@ -30,11 +30,22 @@ test("send requests are versioned, passive-only, and reject unknown fields", () 
     reply_message_id: safe,
   });
   assert.equal(request.kind, "c2c");
+  assert.equal(request.delivery_mode, "passive");
   assert.throws(
     () => normalizeSendRequest({ ...request, reply_message_id: "" }),
     /reply_message_id_required/,
   );
   assert.throws(() => normalizeSendRequest({ ...request, extra: true }), /unknown_field/);
+  const proactive = normalizeSendRequest({
+    ...request,
+    delivery_mode: "proactive",
+    reply_message_id: null,
+  });
+  assert.equal(proactive.delivery_mode, "proactive");
+  assert.throws(
+    () => normalizeSendRequest({ ...proactive, kind: "group" }),
+    /invalid_proactive_target/,
+  );
   assert.throws(
     () => normalizeSendRequest({ ...request, protocol_version: 2 }),
     /protocol_version_mismatch/,

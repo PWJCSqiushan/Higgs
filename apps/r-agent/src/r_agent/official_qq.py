@@ -38,10 +38,13 @@ class OfficialQQConfig:
     transport: str = "sdk"
     sidecar_socket_path: str = "/run/higgs-official/sidecar.sock"
     reply_enabled: bool = False
+    proactive_enabled: bool = False
 
     def __post_init__(self) -> None:
         if self.reply_enabled and (not self.enabled or self.transport != "sidecar"):
             raise ConfigError("official QQ replies require the enabled durable sidecar transport")
+        if self.proactive_enabled and not self.reply_enabled:
+            raise ConfigError("official QQ proactive sends require passive replies to be enabled")
         if self.enabled and self.transport == "sidecar" and self.owner_openid is None:
             raise ConfigError("enabled official QQ requires an explicit owner OpenID")
         if self.transport == "sidecar" and (
@@ -67,7 +70,8 @@ class OfficialQQConfig:
             f"allowed_group_count={len(self.allowed_group_openids)!r}, "
             f"transport={self.transport!r}, "
             f"sidecar_socket_path={self.sidecar_socket_path!r}, "
-            f"reply_enabled={self.reply_enabled!r})"
+            f"reply_enabled={self.reply_enabled!r}, "
+            f"proactive_enabled={self.proactive_enabled!r})"
         )
 
     @classmethod
@@ -84,6 +88,9 @@ class OfficialQQConfig:
         ).strip()
         reply_enabled = _bool_value(
             os.environ.get("R_AGENT_OFFICIAL_QQ_REPLY_ENABLED"), default=False
+        )
+        proactive_enabled = _bool_value(
+            os.environ.get("R_AGENT_OFFICIAL_QQ_PROACTIVE_ENABLED"), default=False
         )
         groups = frozenset(
             item.strip()
@@ -123,6 +130,8 @@ class OfficialQQConfig:
             raise ConfigError("official QQ replies require the official transport to be enabled")
         if reply_enabled and transport != "sidecar":
             raise ConfigError("official QQ replies require the durable sidecar transport")
+        if proactive_enabled and not reply_enabled:
+            raise ConfigError("official QQ proactive sends require passive replies to be enabled")
         return cls(
             enabled=enabled,
             app_id=app_id,
@@ -133,6 +142,7 @@ class OfficialQQConfig:
             transport=transport,
             sidecar_socket_path=socket_path,
             reply_enabled=reply_enabled,
+            proactive_enabled=proactive_enabled,
         )
 
 

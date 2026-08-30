@@ -25,6 +25,7 @@ function boolEnv(value, fallback = false) {
 export function loadConfig(env = process.env) {
   const enabled = boolEnv(env.HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED, false);
   const captureOnly = boolEnv(env.HIGGS_OFFICIAL_QQ_CAPTURE_ONLY, true);
+  const proactiveEnabled = boolEnv(env.HIGGS_OFFICIAL_QQ_PROACTIVE_ENABLED, false);
   const appId = String(env.QQBOT_APP_ID ?? "").trim();
   const appSecret = String(env.QQBOT_APP_SECRET ?? "").trim();
   const ownerOpenId = String(env.HIGGS_OFFICIAL_QQ_OWNER_OPENID ?? "").trim();
@@ -47,6 +48,9 @@ export function loadConfig(env = process.env) {
     throw new Error("invalid delivery state configuration");
   }
   const deliveryStateFile = resolve(deliveryValue);
+  if (proactiveEnabled && (!enabled || captureOnly)) {
+    throw new Error("proactive sends require enabled full mode");
+  }
   if (enabled) {
     if (!/^\d{5,32}$/u.test(appId)) throw new Error("invalid AppID configuration");
     if (appSecret.length < 16 || appSecret.length > 512) {
@@ -62,6 +66,7 @@ export function loadConfig(env = process.env) {
   return Object.freeze({
     enabled,
     captureOnly,
+    proactiveEnabled,
     appId,
     appSecret,
     ownerOpenId,

@@ -51,15 +51,18 @@ _SAFE_ERROR_CODES = {
     "internal_error",
     "invalid_cursor",
     "invalid_idempotency_key",
+    "invalid_delivery_mode",
     "invalid_json",
     "invalid_limit",
     "invalid_object",
     "invalid_request_identity",
     "invalid_reply_binding",
+    "invalid_proactive_target",
     "invalid_target",
     "invalid_text",
     "not_found",
     "protocol_version_mismatch",
+    "proactive_disabled",
     "reply_message_id_required",
     "sidecar_not_configured",
     "stale_generation",
@@ -104,6 +107,7 @@ class SidecarConfig(Protocol):
     allowed_group_openids: frozenset[str]
     transport: str
     sidecar_socket_path: str
+    proactive_enabled: bool
 
 
 class HttpxSidecarClient:
@@ -624,12 +628,16 @@ class OfficialQQSidecarAdapter:
         content = text.strip()
         if not content or len(content) > 2000:
             raise ValueError("official QQ text must contain 1-2000 characters")
-        if reply_message_id is None:
-            raise TransportUnavailable("official QQ only permits passive replies")
-        try:
-            reply_id = _safe_id(reply_message_id)
-        except SidecarProtocolViolation as exc:
-            raise ValueError("official QQ reply message identity is invalid") from exc
+        delivery_mode = "proactive" if reply_message_id is None else "passive"
+        if delivery_mode == "proactive":
+            if not self.config.proactive_enabled:
+                raise TransportUnavailable("official QQ proactive sends are disabled")
+            reply_id = None
+        else:
+            try:
+                reply_id = _safe_id(reply_message_id)
+            except SidecarProtocolViolation as exc:
+                raise ValueError("official QQ reply message identity is invalid") from exc
         parts = target.conversation_id.split(":")
         account_id = self._account_id
         if (
@@ -655,8 +663,10 @@ class OfficialQQSidecarAdapter:
                 raise TransportUnavailable("official QQ group target is not allowlisted")
         else:  # pragma: no cover - enum exhaustiveness
             raise TransportUnavailable("official QQ target kind is invalid")
+        if delivery_mode == "proactive" and kind != "c2c":
+            raise TransportUnavailable("official QQ proactive sends are owner private only")
         fingerprint = hashlib.sha256(
-            "\0".join((kind, target_id, content, reply_id)).encode("utf-8")
+            "\0".join((delivery_mode, kind, target_id, content, reply_id or "")).encode("utf-8")
         ).hexdigest()
         async with self._send_lock:
             prior = self._receipts.get(normalized_key)
@@ -685,6 +695,7 @@ class OfficialQQSidecarAdapter:
                         "generation": self._generation,
                         "request_id": request_id,
                         "idempotency_key": normalized_key,
+                        "delivery_mode": delivery_mode,
                         "kind": kind,
                         "target_id": target_id,
                         "text": content,
@@ -723,6 +734,8 @@ class OfficialQQSidecarAdapter:
                     "capture_only",
                     "idempotency_collision",
                     "invalid_reply_binding",
+                    "invalid_proactive_target",
+                    "proactive_disabled",
                     "sidecar_not_configured",
                 }:
                     receipt = DeliveryReceipt(

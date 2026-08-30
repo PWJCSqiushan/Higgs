@@ -8,6 +8,7 @@ from r_agent.model_client import ModelError
 from r_agent.phase2_cli import process_reply
 from r_agent.phase2_outbound import OutboundError
 from r_agent.phase2_reply import PersonaBrain, ReplyDecision, ReplyPolicy
+from r_agent.reminders import ReminderStore
 from r_agent.transport import DeliveryReceipt, DeliveryState
 
 
@@ -182,7 +183,7 @@ async def test_model_failure_becomes_auditable_decision() -> None:
     assert plan.text is None
 
 
-async def test_official_mvp_allows_only_owner_status_command() -> None:
+async def test_official_owner_private_commands_use_an_explicit_allowlist() -> None:
     commands = _OwnerCommands()
     brain = PersonaBrain(
         None,
@@ -210,11 +211,29 @@ async def test_official_mvp_allows_only_owner_status_command() -> None:
     assert await brain.draft(official) == "状态正常"
     assert commands.calls == ["/higgs status"]
 
+    for index, allowed_text in enumerate(
+        ("/higgs help", "/higgs server status", "/higgs memory stats", "/higgs remind list"),
+        start=2,
+    ):
+        allowed = InboundEvent(
+            channel=official.channel,
+            account_id=official.account_id,
+            sender_id=official.sender_id,
+            message_id=str(index),
+            occurred_at_ms=official.occurred_at_ms,
+            conversation_kind=official.conversation_kind,
+            conversation_id=official.conversation_id,
+            group_id=None,
+            text=allowed_text,
+            mentioned=False,
+        )
+        assert await brain.draft(allowed) == "状态正常"
+
     blocked = InboundEvent(
         channel=official.channel,
         account_id=official.account_id,
         sender_id=official.sender_id,
-        message_id="2",
+        message_id="20",
         occurred_at_ms=official.occurred_at_ms,
         conversation_kind=official.conversation_kind,
         conversation_id=official.conversation_id,
@@ -222,8 +241,14 @@ async def test_official_mvp_allows_only_owner_status_command() -> None:
         text="/higgs enable",
         mentioned=False,
     )
-    assert await brain.draft(blocked) == "官方 QQ 通道当前仅开放 /higgs status 状态查询。"
-    assert commands.calls == ["/higgs status"]
+    assert await brain.draft(blocked) == "该主人命令尚未迁移到官方 QQ 安全边界。"
+    assert commands.calls == [
+        "/higgs status",
+        "/higgs help",
+        "/higgs server status",
+        "/higgs memory stats",
+        "/higgs remind list",
+    ]
 
 
 async def test_official_dialogue_skips_plan_and_reminder_mutations() -> None:
@@ -252,6 +277,39 @@ async def test_official_dialogue_skips_plan_and_reminder_mutations() -> None:
     assert (
         await brain.draft(official) == "我已收到。当前处于受控测试阶段，请告诉我需要协助处理什么。"
     )
+
+
+async def test_official_owner_can_create_only_explicit_bound_private_reminder(tmp_path) -> None:
+    reminders = ReminderStore(tmp_path / "reminders.sqlite")
+    reminders.initialize()
+    brain = PersonaBrain(
+        None,
+        "test",
+        identities=_OfficialIdentities(),  # type: ignore[arg-type]
+        context_builder=SimpleNamespace(),  # type: ignore[arg-type]
+        reminders=reminders,
+        official_proactive_enabled=True,
+    )
+    base = event(text="5分钟后提醒我喝水")
+    official = InboundEvent(
+        channel="qq_official",
+        account_id="official-bot-id",
+        sender_id="owner-openid",
+        message_id=base.message_id,
+        occurred_at_ms=base.occurred_at_ms,
+        conversation_kind=ConversationKind.PRIVATE,
+        conversation_id="qq_official:private:official-bot-id:owner-openid",
+        group_id=None,
+        text=base.text,
+        mentioned=False,
+    )
+
+    assert "请核对后回复" in await brain.draft(official)
+    job = reminders.list()[0]
+    assert job.delivery_channel == "qq_official"
+    assert job.delivery_surface == "private"
+    assert job.delivery_account_id == "official-bot-id"
+    assert job.delivery_target_id == "owner-openid"
 
 
 async def test_send_failure_becomes_auditable_decision() -> None:

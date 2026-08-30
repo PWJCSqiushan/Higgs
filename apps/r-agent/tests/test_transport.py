@@ -18,6 +18,7 @@ def test_official_qq_defaults_to_disabled(monkeypatch: pytest.MonkeyPatch) -> No
         "R_AGENT_OFFICIAL_QQ_TRANSPORT",
         "R_AGENT_OFFICIAL_QQ_SIDECAR_SOCKET",
         "R_AGENT_OFFICIAL_QQ_REPLY_ENABLED",
+        "R_AGENT_OFFICIAL_QQ_PROACTIVE_ENABLED",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -26,6 +27,7 @@ def test_official_qq_defaults_to_disabled(monkeypatch: pytest.MonkeyPatch) -> No
     assert config.enabled is False
     assert config.app_id is None
     assert config.reply_enabled is False
+    assert config.proactive_enabled is False
     assert "CLIENT_SECRET" not in repr(config)
 
 
@@ -103,6 +105,25 @@ def test_official_reply_gate_requires_durable_sidecar(
             owner_openid="owner-openid",
             reply_enabled=True,
         )
+
+
+def test_official_proactive_gate_requires_enabled_passive_sidecar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_PROACTIVE_ENABLED", "true")
+    with pytest.raises(ConfigError, match="passive replies"):
+        OfficialQQConfig.from_env()
+
+    config = OfficialQQConfig(
+        enabled=True,
+        app_id=None,
+        client_secret=None,
+        owner_openid="owner-openid",
+        transport="sidecar",
+        reply_enabled=True,
+        proactive_enabled=True,
+    )
+    assert config.proactive_enabled is True
 
 
 def test_direct_sidecar_config_keeps_credentials_and_missing_owner_out_of_agent() -> None:

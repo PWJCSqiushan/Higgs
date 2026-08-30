@@ -42,6 +42,34 @@ def _owner_reminder_message(event: InboundEvent, owner_ids: frozenset[str]) -> b
     return parse_reminder_intent(clean) is not None
 
 
+def _official_owner_command_allowed(text: str) -> bool:
+    """Return the explicitly migrated owner-private command surface."""
+
+    clean = " ".join(text.strip().casefold().split())
+    if clean in {
+        "/higgs help",
+        "/higgs status",
+        "/higgs 状态",
+        "/higgs server status",
+        "/higgs risk",
+    }:
+        return True
+    if clean.startswith("/higgs remind "):
+        return True
+    read_only_memory = (
+        "/higgs memory list",
+        "/higgs memory show",
+        "/higgs memory audit",
+        "/higgs memory stats",
+        "/higgs memory recall",
+        "/higgs memory source status",
+        "/higgs memory observations failed",
+        "/higgs memory model list",
+        "/higgs memory model show",
+    )
+    return any(clean == prefix or clean.startswith(f"{prefix} ") for prefix in read_only_memory)
+
+
 class ReplyDecision(StrEnum):
     OFF = "off"
     NOT_STORED = "not_stored"
@@ -225,6 +253,7 @@ class PersonaBrain:
         owner_commands: OwnerCommandRouter | None = None,
         reminders: ReminderStore | None = None,
         daily_plans: DailyPlanService | None = None,
+        official_proactive_enabled: bool = False,
     ):
         self.client = client
         self.persona = persona
@@ -235,6 +264,7 @@ class PersonaBrain:
 
         self.reminders = reminders
         self.daily_plans = daily_plans
+        self.official_proactive_enabled = official_proactive_enabled
 
     async def draft(self, event: InboundEvent) -> str:
         if self.context_builder is not None:
@@ -247,27 +277,27 @@ class PersonaBrain:
             )
             official_channel = event.channel.casefold() == "qq_official"
             clean = event.text.strip()
-            official_status_command = clean.casefold() in {
-                "/higgs status",
-                "/higgs 状态",
-            }
             if official_channel and clean.casefold().startswith("/higgs"):
-                if not official_status_command:
-                    return "官方 QQ 通道当前仅开放 /higgs status 状态查询。"
+                if event.conversation_kind is not ConversationKind.PRIVATE:
+                    return "官方 QQ 主人命令仅允许在机器人私聊中使用。"
+                if principal.role != "owner":
+                    return "该命令仅允许主人使用。"
+                if not _official_owner_command_allowed(clean):
+                    return "该主人命令尚未迁移到官方 QQ 安全边界。"
                 if self.owner_commands is None:
-                    return "状态查询当前不可用。"
+                    return "主人命令当前不可用。"
                 command_reply = await asyncio.to_thread(
                     self.owner_commands.handle,
                     clean,
                     actor=principal,
                     surface=event.conversation_kind.value,
                 )
-                return command_reply or "状态查询当前不可用。"
+                return command_reply or "主人命令当前不可用。"
             if not official_channel and self.daily_plans is not None:
                 plan_reply = await self.daily_plans.handle_event(event, principal)
                 if plan_reply is not None:
                     return plan_reply
-            if not official_channel and self.reminders is not None and principal.role == "owner":
+            if self.reminders is not None and principal.role == "owner":
                 try:
                     if clean in {"\u786e\u8ba4", "\u786e\u8ba4\u63d0\u9192"}:
                         pending = await asyncio.to_thread(
@@ -314,7 +344,22 @@ class PersonaBrain:
                         )
                     parsed = parse_reminder_intent(clean)
                     if parsed is not None:
+                        if official_channel and (
+                            event.conversation_kind is not ConversationKind.PRIVATE
+                            or not self.official_proactive_enabled
+                        ):
+                            return (
+                                "官方 QQ 主动提醒当前未启用，或当前不是主人私聊。"
+                                "已存在提醒仍可查询、确认、签收或取消。"
+                            )
                         due_at_ms, content = parsed
+                        delivery_target_id = (
+                            event.group_id
+                            if event.conversation_kind is ConversationKind.GROUP
+                            else event.sender_id
+                        )
+                        if not delivery_target_id:
+                            raise ReminderError("invalid reminder delivery target")
                         pending = await asyncio.to_thread(
                             self.reminders.create_pending,
                             owner_principal_id=principal.principal_id,
@@ -324,6 +369,10 @@ class PersonaBrain:
                             origin_channel=event.channel,
                             origin_surface=event.conversation_kind.value,
                             origin_conversation_id=event.conversation_id,
+                            delivery_channel=event.channel,
+                            delivery_surface=event.conversation_kind.value,
+                            delivery_account_id=event.account_id,
+                            delivery_target_id=delivery_target_id,
                             source_message_id=event.message_id,
                         )
                         return (

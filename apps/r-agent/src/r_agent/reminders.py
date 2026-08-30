@@ -50,6 +50,10 @@ class ReminderJob:
     origin_channel: str
     origin_surface: str
     origin_conversation_id: str
+    delivery_channel: str
+    delivery_surface: str
+    delivery_account_id: str
+    delivery_target_id: str
     source_message_id: str | None
     approved_parameter_sha256: str | None
     delivery_policy: str = "persistent_ack"
@@ -69,6 +73,10 @@ class DueOccurrence:
     origin_channel: str
     origin_surface: str
     origin_conversation_id: str
+    delivery_channel: str
+    delivery_surface: str
+    delivery_account_id: str
+    delivery_target_id: str
     delivery_policy: str = "persistent_ack"
     source_kind: str | None = None
     source_id: str | None = None
@@ -203,12 +211,46 @@ class ReminderStore:
         return conn
 
     @staticmethod
+    def _legacy_delivery_target(
+        *,
+        origin_channel: str,
+        origin_surface: str,
+        origin_conversation_id: str,
+        owner_id: str,
+    ) -> tuple[str, str, str, str]:
+        """Derive only the historical channel-bound target during migration.
+
+        New official reminders must always supply all four delivery fields.
+        Short pre-canonical OneBot test/legacy conversation IDs retain an
+        explicit ``legacy`` account marker instead of guessing a bot account.
+        """
+
+        channel = origin_channel.strip().casefold()
+        surface = origin_surface.strip().casefold()
+        conversation = origin_conversation_id.strip()
+        parts = conversation.split(":")
+        if (
+            len(parts) >= 4
+            and parts[0].casefold() == channel
+            and parts[1].casefold() == surface
+            and parts[2]
+            and ":".join(parts[3:])
+        ):
+            return channel, surface, parts[2], ":".join(parts[3:])
+        target = parts[-1].strip() if len(parts) >= 3 else owner_id.strip()
+        return channel, surface, "legacy", target or owner_id.strip()
+
+    @staticmethod
     def _approved_parameters(row: sqlite3.Row) -> dict[str, object]:
         """Return the exact side-effect parameters covered by owner confirmation."""
         parameters: dict[str, object] = {
             "content": str(row["content"]),
             "due_at_ms": int(row["due_at_ms"]),
             "origin_conversation_id": str(row["origin_conversation_id"]),
+            "delivery_channel": str(row["delivery_channel"]),
+            "delivery_surface": str(row["delivery_surface"]),
+            "delivery_account_id": str(row["delivery_account_id"]),
+            "delivery_target_id": str(row["delivery_target_id"]),
         }
         policy = str(row["delivery_policy"])
         source_kind = row["source_kind"]
@@ -249,6 +291,10 @@ class ReminderStore:
                     origin_channel TEXT NOT NULL DEFAULT 'qq',
                     origin_surface TEXT NOT NULL DEFAULT 'private',
                     origin_conversation_id TEXT NOT NULL DEFAULT 'legacy',
+                    delivery_channel TEXT,
+                    delivery_surface TEXT,
+                    delivery_account_id TEXT,
+                    delivery_target_id TEXT,
                     source_message_id TEXT,
                     approved_parameter_sha256 TEXT,
                     delivery_policy TEXT NOT NULL DEFAULT 'persistent_ack',
@@ -294,6 +340,10 @@ class ReminderStore:
                 "origin_channel": "TEXT NOT NULL DEFAULT 'qq'",
                 "origin_surface": "TEXT NOT NULL DEFAULT 'private'",
                 "origin_conversation_id": "TEXT NOT NULL DEFAULT 'legacy'",
+                "delivery_channel": "TEXT",
+                "delivery_surface": "TEXT",
+                "delivery_account_id": "TEXT",
+                "delivery_target_id": "TEXT",
                 "source_message_id": "TEXT",
                 "approved_parameter_sha256": "TEXT",
                 "delivery_policy": "TEXT NOT NULL DEFAULT 'persistent_ack'",
@@ -304,6 +354,32 @@ class ReminderStore:
             for column, declaration in migrations.items():
                 if column not in existing:
                     conn.execute(f"ALTER TABLE reminder_jobs ADD COLUMN {column} {declaration}")
+            # Legacy rows predate explicit transport targets.  Preserve their
+            # original channel-bound behavior without ever interpreting an
+            # official OpenID as a personal QQ number.
+            rows = conn.execute(
+                """
+                SELECT job_id,owner_qq,origin_channel,origin_surface,origin_conversation_id
+                FROM reminder_jobs
+                WHERE delivery_channel IS NULL OR delivery_surface IS NULL
+                   OR delivery_account_id IS NULL OR delivery_target_id IS NULL
+                """
+            ).fetchall()
+            for row in rows:
+                channel, surface, account_id, target_id = self._legacy_delivery_target(
+                    origin_channel=str(row["origin_channel"]),
+                    origin_surface=str(row["origin_surface"]),
+                    origin_conversation_id=str(row["origin_conversation_id"]),
+                    owner_id=str(row["owner_qq"]),
+                )
+                conn.execute(
+                    """
+                    UPDATE reminder_jobs
+                    SET delivery_channel=?,delivery_surface=?,delivery_account_id=?,delivery_target_id=?
+                    WHERE job_id=?
+                    """,
+                    (channel, surface, account_id, target_id, str(row["job_id"])),
+                )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_reminder_origin
@@ -338,6 +414,10 @@ class ReminderStore:
             str(row["origin_channel"]),
             str(row["origin_surface"]),
             str(row["origin_conversation_id"]),
+            str(row["delivery_channel"]),
+            str(row["delivery_surface"]),
+            str(row["delivery_account_id"]),
+            str(row["delivery_target_id"]),
             str(row["source_message_id"]) if row["source_message_id"] is not None else None,
             str(row["approved_parameter_sha256"])
             if row["approved_parameter_sha256"] is not None
@@ -372,6 +452,10 @@ class ReminderStore:
         origin_channel: str = "qq",
         origin_surface: str = "private",
         origin_conversation_id: str = "legacy",
+        delivery_channel: str | None = None,
+        delivery_surface: str | None = None,
+        delivery_account_id: str | None = None,
+        delivery_target_id: str | None = None,
         source_message_id: str | None = None,
         delivery_policy: str = "persistent_ack",
         source_kind: str | None = None,
@@ -385,13 +469,51 @@ class ReminderStore:
             raise ReminderError("提醒内容长度必须为1到500字")
         if not now + 5_000 <= due_at_ms <= now + 366 * 86_400_000:
             raise ReminderError("提醒时间必须在5秒后到366天内")
-        normalized_origin_channel = origin_channel.strip()
-        if normalized_origin_channel.casefold() == "qq_official":
-            raise ReminderError("官方 QQ 通道暂不支持主动提醒，请在 NapCat 私聊中创建提醒")
+        normalized_origin_channel = origin_channel.strip().casefold()
         if origin_surface not in {"private", "group"}:
             raise ReminderError("invalid reminder origin surface")
         if not normalized_origin_channel or not origin_conversation_id.strip():
             raise ReminderError("invalid reminder origin conversation")
+        if any(
+            value is None
+            for value in (
+                delivery_channel,
+                delivery_surface,
+                delivery_account_id,
+                delivery_target_id,
+            )
+        ):
+            if normalized_origin_channel == "qq_official":
+                raise ReminderError("官方 QQ 提醒必须显式绑定投递通道、Bot 与目标")
+            (
+                normalized_delivery_channel,
+                normalized_delivery_surface,
+                normalized_delivery_account,
+                normalized_delivery_target,
+            ) = self._legacy_delivery_target(
+                origin_channel=normalized_origin_channel,
+                origin_surface=origin_surface,
+                origin_conversation_id=origin_conversation_id,
+                owner_id=owner_qq,
+            )
+        else:
+            normalized_delivery_channel = str(delivery_channel).strip().casefold()
+            normalized_delivery_surface = str(delivery_surface).strip().casefold()
+            normalized_delivery_account = str(delivery_account_id).strip()
+            normalized_delivery_target = str(delivery_target_id).strip()
+        if normalized_delivery_channel not in {"qq", "qq_official"}:
+            raise ReminderError("invalid reminder delivery channel")
+        if normalized_delivery_surface not in {"private", "group"}:
+            raise ReminderError("invalid reminder delivery surface")
+        if not normalized_delivery_account or not normalized_delivery_target:
+            raise ReminderError("invalid reminder delivery target")
+        if normalized_delivery_channel == "qq_official" and (
+            normalized_origin_channel != "qq_official"
+            or origin_surface != "private"
+            or normalized_delivery_surface != "private"
+            or owner_qq != normalized_delivery_target
+        ):
+            raise ReminderError("官方 QQ 主动提醒仅允许原会话主人私聊目标")
         if delivery_policy not in {"persistent_ack", "agenda_once"}:
             raise ReminderError("invalid reminder delivery policy")
         if (source_kind is None) != (source_id is None):
@@ -406,8 +528,10 @@ class ReminderStore:
                     job_id, owner_principal_id, owner_qq, content, due_at_ms,
                     status, created_at_ms, updated_at_ms, origin_channel,
                     origin_surface, origin_conversation_id, source_message_id,
+                    delivery_channel, delivery_surface, delivery_account_id,
+                    delivery_target_id,
                     delivery_policy, source_kind, source_id, expires_at_ms
-                ) VALUES (?, ?, ?, ?, ?, 'pending_confirmation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, 'pending_confirmation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -421,6 +545,10 @@ class ReminderStore:
                     origin_surface,
                     origin_conversation_id.strip(),
                     source_message_id,
+                    normalized_delivery_channel,
+                    normalized_delivery_surface,
+                    normalized_delivery_account,
+                    normalized_delivery_target,
                     delivery_policy,
                     source_kind,
                     source_id,
@@ -635,19 +763,41 @@ class ReminderStore:
             ).fetchall()
         return [self._row(row) for row in rows]
 
-    def prepare_due(self, *, now_ms: int | None = None) -> list[DueOccurrence]:
+    def prepare_due(
+        self,
+        *,
+        now_ms: int | None = None,
+        delivery_channels: frozenset[str] | None = None,
+    ) -> list[DueOccurrence]:
         now = int(time.time() * 1000) if now_ms is None else now_ms
         due: list[DueOccurrence] = []
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            jobs = conn.execute(
-                """
-                SELECT * FROM reminder_jobs
-                WHERE status IN ('scheduled','awaiting_ack') AND due_at_ms <= ?
-                ORDER BY due_at_ms LIMIT 50
-                """,
-                (now,),
-            ).fetchall()
+            if delivery_channels is not None:
+                normalized_channels = tuple(
+                    sorted({item.strip().casefold() for item in delivery_channels if item.strip()})
+                )
+                if not normalized_channels:
+                    return []
+                placeholders = ",".join("?" for _ in normalized_channels)
+                jobs = conn.execute(
+                    f"""
+                    SELECT * FROM reminder_jobs
+                    WHERE status IN ('scheduled','awaiting_ack') AND due_at_ms <= ?
+                      AND delivery_channel IN ({placeholders})
+                    ORDER BY due_at_ms LIMIT 50
+                    """,
+                    (now, *normalized_channels),
+                ).fetchall()
+            else:
+                jobs = conn.execute(
+                    """
+                    SELECT * FROM reminder_jobs
+                    WHERE status IN ('scheduled','awaiting_ack') AND due_at_ms <= ?
+                    ORDER BY due_at_ms LIMIT 50
+                    """,
+                    (now,),
+                ).fetchall()
             for row in jobs:
                 job_id = str(row["job_id"])
                 approved_digest = row["approved_parameter_sha256"]
@@ -711,6 +861,10 @@ class ReminderStore:
                             str(row["origin_channel"]),
                             str(row["origin_surface"]),
                             str(row["origin_conversation_id"]),
+                            str(row["delivery_channel"]),
+                            str(row["delivery_surface"]),
+                            str(row["delivery_account_id"]),
+                            str(row["delivery_target_id"]),
                             policy,
                             str(row["source_kind"]) if row["source_kind"] else None,
                             str(row["source_id"]) if row["source_id"] else None,
