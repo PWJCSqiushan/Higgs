@@ -429,3 +429,4 @@
 - PersonaGuard 新增 `IMMERSION_BREAK`，确定性捕获本次真实出现的高信号角色抹除句式。违规回答仍只允许一次有界改写；改写继续出戏时使用角色一致、诚实且不编造细节的固定降级文本。普通技术讨论中的“系统配置”不会被误拦截。
 - 自动回归集从 50 条扩展到 55 条，加入身份追问、摄影经历、自我介绍、长期关系和疲惫交流。Windows 完整 Python 为 `439 passed, 5 skipped`，Node 为 `47 passed, 9 skipped`；Ruff 格式/检查、release gate、秘密边界、Shell LF 与 `git diff --check` 通过。本机无 Bash，Shell `bash -n` 和 Linux 零跳过仍由 PR CI 验收。
 - 当前只完成代码、测试和文档，不修改生产配置、不重建容器、不发送消息，也不改变正在进行的 24 小时观察。下一步走独立分支、PR 与 CI；合并后仍需主人单独确认，才可部署 Persona 2.1 并只重建 Agent。
+- 修复已提交到 PR #60。push run `33312732031` 与 pull_request run `33312743071` 的 Python、official sidecar 四项检查全部通过；Ubuntu 完成 Python 零跳过、Shell 语法、Node POSIX/UDS/进程替换、npm 签名、镜像与 Compose 验收。当前只追加 CI 证据并复验同一 PR，仍未部署生产。

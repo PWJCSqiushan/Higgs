@@ -431,3 +431,4 @@
 - 风格与示例新增身份追问、摄影经历、自我介绍、长期关系和自然疲惫交流的对照样例。守卫增加 `IMMERSION_BREAK`，对真实高信号出戏句式执行一次改写，仍失败则使用角色一致的固定降级；普通技术系统讨论保持不受影响。
 - 自动人格集扩展至 55 条。Windows 本地 Python `439 passed, 5 skipped`，Node `47 passed, 9 skipped`；Ruff、格式、发布门、秘密边界、Shell LF 和 diff 检查通过。本机无 Bash，Linux 零跳过和 Shell 语法由 PR CI 收口。
 - 本节点未部署、改生产开关、重建容器或发送消息，当前 Persona V2 生产灰度与 24 小时观察均保持原状。Persona 2.1 合并后仍需主人单独确认才可只重建 Agent。
+- Persona 2.1 已进入 PR #60；push run `33312732031` 与 pull_request run `33312743071` 四项 CI 全绿，Ubuntu 补齐 Python 零跳过、Shell 语法、Node POSIX/UDS/进程替换、npm 签名、镜像与 Compose。仅追加本证据后复验同一 PR，生产仍未改变。
