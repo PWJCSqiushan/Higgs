@@ -461,3 +461,12 @@
 - 本节点未改变生产 Persona 2.1、配置、数据库、容器或消息流，也未干扰正在进行的 24 小时观察。下一步同步远端主线、独立 PR/CI；生产部署仍需单独确认并只重建 Agent。
 - PR #62 已从最新 main `30f615e6c7bff1489405171bc298cc8f437240c4` 建立。`github.com` Git smart HTTP 暂时不可达时改用 GitHub Git Data API，远端 tree `45d1b25ceebe04c3be2840f309c958604aa5d862` 与本地逐字节一致；仍是普通阶段分支，没有直接推送 main。
 - push/pull_request runs `33323748799`、`33323762741` 四项任务全绿；Ubuntu Python 零跳过，并通过 Shell、秘密/发布包、Node POSIX/UDS/进程替换、npm 签名、镜像和 Compose。当前只追加 CI 证据并复验 PR，生产不变。
+- 复验 runs `33323840063`、`33323841589` 再次全绿，PR #62 合并为 main `6682be3c33c78b1e486286fb224af986419cb922`；合并后 main run `33323897339` 两项任务成功。Persona 2.2 源码阶段完成，尚未部署；生产仍运行 Persona 2.1，Agent-only 更新必须另行确认。
+
+## 节点 54：Persona 2.2 完成 Agent-only 生产激活
+
+- 主人授权测试通过后直接部署。目标 main 为 `6682be3c33c78b1e486286fb224af986419cb922`，远端与本地 tree `b51fb97520e6667b14a94c00d572ae320b61074d` 一致；617609 字节、302 成员的 Git-only 归档通过 SHA-256、release gate、秘密模式和 Shell LF 校验，Bundle 为 `2.2.0`。
+- 前置匿名门确认 Persona 2.1 生产三容器 healthy/零重启、单 Gateway、reply/owner Persona 为 true，官方 transport verified 且回执新鲜，零 rejected/fatal/active batches；所有尚未获准的新记忆、普通用户、群和 proactive 开关仍关闭。
+- 新镜像基于已验收旧 Agent 镜像，仅覆盖 CI 通过的 `r_agent` 包；先离线验证 Persona `2.2.0` 及聚合哈希，再安装不可变 release。原 `stack.env` 按原数字属主与 `0600` 备份到 `/srv/trash`，失败路径会恢复 current/镜像标签并只重建旧 Agent。
+- 本次仅强制重建 Agent，未触发回滚。独立后验确认新 release/镜像/Bundle 精确匹配、三容器 healthy/零重启、Gateway=1、transport verified/connected/authenticated/account-match/ok 且回执新鲜，零 active/rejected/fatal/Resume/reconnect。除 Agent 镜像标签外私有配置无变化，official sidecar 与 NapCat 指纹保持不变。
+- 没有迁移数据库、导入观点、发送测试消息、读取身份/正文、重新登录或重启 NapCat。`higgs-72` 已重置到 2026-08-31 01:11:51 至 2026-09-01 01:11:51 的 Persona 2.2 只读观察；真实沉浸度继续由主人对话验收，其他能力的生产开启仍需独立确认。
