@@ -80,6 +80,8 @@ def test_schema_migration_is_idempotent(tmp_path: Path) -> None:
         "supersedes_item_id",
         "source_principal_role",
     } <= columns
+    # Self-memory v4 is a separately approved production migration and must
+    # never be applied by the legacy/default initialize path.
     assert versions == [(2,), (3,)]
 
 

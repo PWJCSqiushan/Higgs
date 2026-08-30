@@ -72,6 +72,7 @@ def _official_owner_command_allowed(text: str) -> bool:
         "/higgs memory observations failed",
         "/higgs memory model list",
         "/higgs memory model show",
+        "/higgs memory self",
     )
     read_only_controls = {
         "/higgs keyword",

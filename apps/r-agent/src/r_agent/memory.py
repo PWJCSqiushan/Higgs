@@ -99,6 +99,8 @@ class MemoryKind(StrEnum):
     COMMITMENT = "commitment"
     EPISODE_SUMMARY = "episode_summary"
     GROUP_NORM = "group_norm"
+    SELF_STANCE = "self_stance"
+    ADOPTED_IDEA = "adopted_idea"
 
 
 class MemoryRisk(StrEnum):
@@ -172,10 +174,15 @@ class MemoryStore:
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
-    def initialize(self) -> None:
+    def initialize(self, *, self_memory_v4: bool = False) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
+            # Keep all schema changes in one transaction.  In particular, the
+            # v4 kind expansion requires rebuilding the old CHECK-constrained
+            # table on SQLite (SQLite cannot ALTER a CHECK constraint).  A
+            # failed rebuild therefore leaves the pre-migration table intact.
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS memory_items (
@@ -261,6 +268,227 @@ class MemoryStore:
                     """
                     INSERT INTO memory_schema_versions(version, applied_at_ms)
                     VALUES (3, ?)
+                    """,
+                    (int(time.time() * 1000),),
+                )
+
+            # v4 extends the kind constraint while preserving every legacy
+            # row.  Rebuild only when the existing table definition does not
+            # already contain the two new kinds; fresh databases are created
+            # with the expanded definition above.
+            table_sql_row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_items'"
+            ).fetchone()
+            table_sql = str(table_sql_row[0] or "").casefold() if table_sql_row else ""
+            applied_versions = {
+                int(row[0]) for row in conn.execute("SELECT version FROM memory_schema_versions")
+            }
+            if self_memory_v4 and 4 not in applied_versions:
+                if "self_stance" not in table_sql or "adopted_idea" not in table_sql:
+                    legacy_name = "memory_items_v3_legacy"
+                    conn.execute(f"DROP TABLE IF EXISTS {legacy_name}")
+                    # The index belongs to the old table and would otherwise
+                    # collide with the replacement index name.
+                    conn.execute("DROP INDEX IF EXISTS idx_memory_scope_status")
+                    conn.execute(f"ALTER TABLE memory_items RENAME TO {legacy_name}")
+                    conn.execute(
+                        """
+                        CREATE TABLE memory_items (
+                            item_id TEXT PRIMARY KEY,
+                            fingerprint TEXT NOT NULL UNIQUE,
+                            scope_type TEXT NOT NULL
+                                CHECK(scope_type IN ('principal','group','persona','global')),
+                            scope_id TEXT NOT NULL,
+                            kind TEXT NOT NULL CHECK(kind IN (
+                                'user_fact','preference','relationship','commitment',
+                                'episode_summary','group_norm','self_stance','adopted_idea'
+                            )),
+                            text TEXT NOT NULL,
+                            source_channel TEXT NOT NULL,
+                            source_account_id TEXT NOT NULL,
+                            source_message_id TEXT NOT NULL,
+                            source_principal_id TEXT NOT NULL,
+                            source_principal_role TEXT NOT NULL DEFAULT 'user',
+                            created_by TEXT NOT NULL,
+                            risk TEXT NOT NULL CHECK(risk IN ('low','medium','high')),
+                            confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+                            status TEXT NOT NULL CHECK(status IN (
+                                'candidate','quarantined','active','invalidated'
+                            )),
+                            created_at_ms INTEGER NOT NULL,
+                            reviewed_at_ms INTEGER,
+                            reviewed_by TEXT,
+                            invalidated_reason TEXT,
+                            embedding BLOB,
+                            embedding_dim INTEGER,
+                            importance REAL NOT NULL DEFAULT 0.5,
+                            source_trust REAL NOT NULL DEFAULT 0.5,
+                            valid_from_ms INTEGER NOT NULL DEFAULT 0,
+                            valid_to_ms INTEGER,
+                            supersedes_item_id TEXT
+                        )
+                        """
+                    )
+                    legacy_columns = {
+                        str(row[1]) for row in conn.execute(f"PRAGMA table_info({legacy_name})")
+                    }
+                    ordered_columns = (
+                        "item_id",
+                        "fingerprint",
+                        "scope_type",
+                        "scope_id",
+                        "kind",
+                        "text",
+                        "source_channel",
+                        "source_account_id",
+                        "source_message_id",
+                        "source_principal_id",
+                        "source_principal_role",
+                        "created_by",
+                        "risk",
+                        "confidence",
+                        "status",
+                        "created_at_ms",
+                        "reviewed_at_ms",
+                        "reviewed_by",
+                        "invalidated_reason",
+                        "embedding",
+                        "embedding_dim",
+                        "importance",
+                        "source_trust",
+                        "valid_from_ms",
+                        "valid_to_ms",
+                        "supersedes_item_id",
+                    )
+                    expressions = {
+                        name: (
+                            name
+                            if name in legacy_columns
+                            else {
+                                "source_principal_role": "'user'",
+                                "importance": "0.5",
+                                "source_trust": "0.5",
+                                "valid_from_ms": "0",
+                                "valid_to_ms": "NULL",
+                                "supersedes_item_id": "NULL",
+                            }.get(name, "NULL")
+                        )
+                        for name in ordered_columns
+                    }
+                    columns_sql = ", ".join(ordered_columns)
+                    values_sql = ", ".join(expressions[name] for name in ordered_columns)
+                    conn.execute(
+                        f"INSERT INTO memory_items ({columns_sql}) "
+                        f"SELECT {values_sql} FROM {legacy_name}"
+                    )
+                    conn.execute(f"DROP TABLE {legacy_name}")
+
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS self_memory_observations (
+                        observation_id TEXT PRIMARY KEY,
+                        idempotency_key TEXT NOT NULL UNIQUE,
+                        reply_message_id TEXT NOT NULL,
+                        reply_fingerprint TEXT NOT NULL,
+                        reply_text TEXT NOT NULL,
+                        delivery_status TEXT NOT NULL CHECK(delivery_status = 'SENT'),
+                        channel TEXT NOT NULL,
+                        account_id TEXT NOT NULL,
+                        conversation_id TEXT,
+                        principal_id TEXT,
+                        created_at_ms INTEGER NOT NULL,
+                        UNIQUE(channel, account_id, reply_message_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS self_memory_metadata (
+                        item_id TEXT PRIMARY KEY,
+                        memory_kind TEXT NOT NULL CHECK(
+                            memory_kind IN ('self_stance','adopted_idea')
+                        ),
+                        canonical_content TEXT NOT NULL,
+                        original_quote TEXT,
+                        origin TEXT NOT NULL,
+                        state TEXT NOT NULL CHECK(state IN (
+                            'adopted','partial','considering','rejected',
+                            'quarantined','supersedes','withdrawn'
+                        )),
+                        previous_state TEXT,
+                        adoption_reason TEXT,
+                        created_at_ms INTEGER NOT NULL,
+                        withdrawn_at_ms INTEGER,
+                        restored_at_ms INTEGER
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS self_memory_evidence (
+                        evidence_id TEXT PRIMARY KEY,
+                        item_id TEXT NOT NULL,
+                        observation_id TEXT,
+                        evidence_kind TEXT NOT NULL CHECK(
+                            evidence_kind IN ('self_reply','support','opposition')
+                        ),
+                        source_message_id TEXT NOT NULL,
+                        source_principal_id TEXT NOT NULL,
+                        quote TEXT,
+                        quote_sha256 TEXT,
+                        created_at_ms INTEGER NOT NULL,
+                        UNIQUE(item_id, evidence_kind, source_message_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS self_memory_evolution_observations (
+                        evolution_id TEXT PRIMARY KEY,
+                        idempotency_key TEXT NOT NULL UNIQUE,
+                        item_id TEXT,
+                        observation_id TEXT,
+                        source_message_id TEXT NOT NULL,
+                        source_principal_id TEXT NOT NULL,
+                        source_principal_role TEXT NOT NULL
+                            CHECK(source_principal_role IN ('owner','user','blocked')),
+                        memory_kind TEXT NOT NULL CHECK(
+                            memory_kind IN ('self_stance','adopted_idea')
+                        ),
+                        normalized_content TEXT NOT NULL,
+                        original_quote TEXT,
+                        confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+                        risk TEXT NOT NULL CHECK(risk IN ('low','medium','high')),
+                        sensitive_level TEXT NOT NULL CHECK(
+                            sensitive_level IN ('low','medium','high')
+                        ),
+                        decision TEXT NOT NULL CHECK(decision IN (
+                            'adopted','partial','considering','rejected',
+                            'quarantined','supersedes'
+                        )),
+                        requires_fact_check INTEGER NOT NULL DEFAULT 0
+                            CHECK(requires_fact_check IN (0,1)),
+                        core_impact INTEGER NOT NULL DEFAULT 0
+                            CHECK(core_impact IN (0,1)),
+                        reason TEXT NOT NULL,
+                        supersedes_item_id TEXT,
+                        created_at_ms INTEGER NOT NULL,
+                        updated_at_ms INTEGER NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_self_memory_evidence_item "
+                    "ON self_memory_evidence(item_id, evidence_kind, created_at_ms DESC)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_self_memory_evolution_decision "
+                    "ON self_memory_evolution_observations(decision, created_at_ms DESC)"
+                )
+                conn.execute(
+                    """
+                    INSERT INTO memory_schema_versions(version, applied_at_ms)
+                    VALUES (4, ?)
                     """,
                     (int(time.time() * 1000),),
                 )
