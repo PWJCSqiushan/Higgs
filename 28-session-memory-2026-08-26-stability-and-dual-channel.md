@@ -470,4 +470,4 @@
 - 新镜像基于已验收旧 Agent 镜像，仅覆盖 CI 通过的 `r_agent` 包；先离线验证 Persona `2.2.0` 及聚合哈希，再安装不可变 release。原 `stack.env` 按原数字属主与 `0600` 备份到 `/srv/trash`，失败路径会恢复 current/镜像标签并只重建旧 Agent。
 - 本次仅强制重建 Agent，未触发回滚。独立后验确认新 release/镜像/Bundle 精确匹配、三容器 healthy/零重启、Gateway=1、transport verified/connected/authenticated/account-match/ok 且回执新鲜，零 active/rejected/fatal/Resume/reconnect。除 Agent 镜像标签外私有配置无变化，official sidecar 与 NapCat 指纹保持不变。
 - 没有迁移数据库、导入观点、发送测试消息、读取身份/正文、重新登录或重启 NapCat。`higgs-72` 已重置到 2026-08-31 01:11:51 至 2026-09-01 01:11:51 的 Persona 2.2 只读观察；真实沉浸度继续由主人对话验收，其他能力的生产开启仍需独立确认。
-- 生产记录已进入 PR #63，首轮 push/PR runs `33324831703`、`33324845285` 四项全绿，Ubuntu Python 零跳过并完成 Shell、Node、秘密/发布、镜像与 Compose 验收。记录提交本身不触发生产动作；追加该证据后复验同一 PR 再合并。
+- 生产记录 PR #63 的首轮 runs `33324831703`、`33324845285` 与复验 runs `33324963637`、`33324966549` 均全绿，并合并为 main `d944306da48b15f29e1d3d1745c013dfb7e1b698`；合并后 main run `33325020959` 再次通过且 Linux Python 零跳过。记录提交本身未触发任何生产动作。

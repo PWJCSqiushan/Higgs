@@ -473,4 +473,4 @@
 - 独立后验在新 Agent 稳定运行后再次通过：release、Agent 镜像和 Persona Bundle 精确为 `6682be3...`/`2.2.0`；三容器 healthy/零重启、单 Gateway、transport verified 且回执新鲜，活动批次、rejected、fatal、Resume 和 reconnect 均为零。`stack.env` 元数据未漂移，规范化比较确认除 Agent 镜像标签外没有其他配置变化；official sidecar 与 NapCat 容器指纹保持不变。
 - 生产能力边界没有扩大：Persona V2 仍只用于 owner 官方 C2C；self-memory schema/mode、群记忆、普通用户 C2C、官方群和 proactive 继续关闭。没有迁移数据库、导入观点、发送测试消息、读取身份/正文、重新登录或重启 NapCat。
 - `higgs-72` 已重置为 Persona 2.2 上线后的 24 小时只读观察，窗口为 2026-08-31 01:11:51 至 2026-09-01 01:11:51（Asia/Shanghai），每 3 小时检查 Persona 版本、开关、三容器、单 Gateway、官方 transport 和活动批次。主人可立即继续真实对话验收；开发不被观察窗口阻塞，但后续 self-memory 或普通用户/群生产开关仍需单独确认。
-- 生产记录已进入 PR #63；首轮 push run `33324831703` 与 pull_request run `33324845285` 的 Python、official sidecar 四项检查全绿，Ubuntu Python 零跳过并通过 Shell、秘密/发布包、Node POSIX、镜像与 Compose。该文档记录提交没有再次部署、重建或修改生产配置；追加本 CI 证据后仍须复验同一 PR，再合并 main。
+- 生产记录 PR #63 的首轮 runs `33324831703`、`33324845285` 与复验 runs `33324963637`、`33324966549` 全绿，随后合并为 main `d944306da48b15f29e1d3d1745c013dfb7e1b698`；合并后的 main run `33325020959` 再次全绿，Ubuntu Python 零跳过并通过 Shell、秘密/发布包、Node POSIX、镜像与 Compose。所有记录提交均未再次部署、重建或修改生产配置。
