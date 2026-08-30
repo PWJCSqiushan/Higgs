@@ -422,3 +422,4 @@
 - `higgs.env` 的可恢复备份保存在 `/srv/trash`，备份与原子替换均保持 `0600`、`10001:10001`，避免再次触发 Agent 私有配置读取权限事故。控制台最初拒绝启动过长命令，未发生服务器变更；压缩传输后先验证脚本摘要和 `bash -n`，再完成切换并把脚本移入服务器回收区。
 - 独立匿名后验在上线约四分钟时仍为 Agent/sidecar/NapCat healthy 且重启计数为零、Gateway=1、reply=true、Persona V2=true、其他新功能全部关闭、transport verified/connected/authenticated/account-match/ok，回执新鲜，pending/rejected/fatal/reconnect/active batches 均为零。未发送测试消息、读取身份或正文、迁移数据库、导入观点、重登或重启 NapCat。
 - 观察自动化重置到 2026-08-30 20:03:42 至 2026-08-31 20:03:42。下一验收是主人至少 20 轮真实官方私聊，记录去敏的四维评分与典型出戏/守卫样本；通过前不开放 self-memory shadow、摄影种子、普通用户或官方群。
+- 生产记录已通过 PR #58 合并为主线 `f55e927d9cfbe96564e8a7dd7973b4c56aad1620`。PR 四项检查与合并后的 main CI run `33310807439` 全绿，Linux Python 零跳过并通过 Node、Shell、发布包、秘密边界、镜像和 Compose；记录合并未触发任何生产重建。
