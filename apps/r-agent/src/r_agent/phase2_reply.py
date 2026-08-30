@@ -22,6 +22,8 @@ from r_agent.ingest import IngestResult
 from r_agent.memory import MemoryError
 from r_agent.model_client import ModelError, OpenAICompatibleClient
 from r_agent.owner_commands import OwnerCommandRouter
+from r_agent.persona_bundle import PersonaBundle, PersonaV2Gate
+from r_agent.persona_guard import PersonaGuard
 from r_agent.recall import RecallError
 from r_agent.reminders import (
     SHANGHAI,
@@ -276,6 +278,9 @@ class PersonaBrain:
         reminders: ReminderStore | None = None,
         daily_plans: DailyPlanService | None = None,
         official_proactive_enabled: bool = False,
+        persona_bundle: PersonaBundle | None = None,
+        persona_v2_gate: PersonaV2Gate | None = None,
+        official_owner_id: str | None = None,
     ):
         self.client = client
         self.persona = persona
@@ -287,6 +292,44 @@ class PersonaBrain:
         self.reminders = reminders
         self.daily_plans = daily_plans
         self.official_proactive_enabled = official_proactive_enabled
+        self.persona_bundle = persona_bundle
+        self.persona_v2_gate = persona_v2_gate or PersonaV2Gate()
+        self.official_owner_id = official_owner_id
+        self.persona_guard = PersonaGuard(persona_bundle) if persona_bundle is not None else None
+
+    def _persona_v2_allowed(self, event: InboundEvent, *, principal_role: str) -> bool:
+        return self.persona_v2_gate.allows(
+            channel=event.channel,
+            conversation_kind=event.conversation_kind.value,
+            principal_role=principal_role,
+            sender_id=event.sender_id,
+            owner_id=self.official_owner_id,
+        )
+
+    async def _guard_persona_reply(
+        self,
+        text: str,
+        *,
+        system_prompt: str,
+    ) -> str:
+        """Apply at most one model repair before a deterministic fallback."""
+
+        guard = self.persona_guard
+        if guard is None or guard.inspect(text).safe:
+            return text
+        if self.client is not None:
+            try:
+                repaired = await self.client.complete_messages(
+                    messages=(
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": guard.rewrite_prompt(text)},
+                    )
+                )
+            except ModelError:
+                repaired = None
+            if repaired is not None and guard.inspect(repaired).safe:
+                return repaired
+        return guard.apply(text).text
 
     async def draft(self, event: InboundEvent) -> str:
         if self.context_builder is not None:
@@ -441,16 +484,31 @@ class PersonaBrain:
                         query_embedding = await self.embedding_client.embed_one(event.text)
                     except EmbeddingError:
                         query_embedding = None
+                use_persona_v2 = self._persona_v2_allowed(
+                    event,
+                    principal_role=principal.role,
+                )
+                context_kwargs = {
+                    "principal_id": principal.principal_id,
+                    "principal_role": principal.role,
+                    "query_embedding": query_embedding,
+                }
+                if use_persona_v2:
+                    context_kwargs["use_persona_v2"] = True
                 context = await asyncio.to_thread(
                     self.context_builder.build,
                     event,
-                    principal_id=principal.principal_id,
-                    principal_role=principal.role,
-                    query_embedding=query_embedding,
+                    **context_kwargs,
                 )
             except (ConversationError, MemoryError, RecallError, TypeError) as exc:
                 raise ModelError("safe context construction failed") from exc
-            return await self.client.complete_messages(messages=context.messages)
+            reply = await self.client.complete_messages(messages=context.messages)
+            if use_persona_v2:
+                return await self._guard_persona_reply(
+                    reply,
+                    system_prompt=context.messages[0]["content"],
+                )
+            return reply
         if self.client is None:
             return "我已收到。当前处于受控测试阶段，请告诉我需要协助处理什么。"
         context = "群聊" if event.conversation_kind is ConversationKind.GROUP else "私聊"

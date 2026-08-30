@@ -8,6 +8,7 @@ from r_agent.identity import IdentityStore
 from r_agent.ingest import IngestService
 from r_agent.journal import Journal
 from r_agent.memory import MemoryStore
+from r_agent.persona_bundle import PersonaV2Gate, load_persona_bundle
 from r_agent.phase2_cli import process_reply
 from r_agent.phase2_reply import PersonaBrain, ReplyDecision, ReplyPolicy
 from r_agent.recall import RecallLedger
@@ -153,3 +154,101 @@ async def test_context_failure_becomes_model_failed(tmp_path: Path) -> None:
         sender=sender,
     )
     assert plan.decision is ReplyDecision.MODEL_FAILED
+
+
+async def test_owner_official_persona_v2_repairs_once_and_uses_verified_bundle(
+    tmp_path: Path,
+) -> None:
+    class ScriptedClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[dict[str, str], ...]] = []
+
+        async def complete_messages(self, *, messages, max_tokens: int = 400) -> str:
+            self.calls.append(tuple(messages))
+            if len(self.calls) == 1:
+                return "作为AI助手，很高兴为您服务。"
+            return "这件事先看证据。现在的信息不足，我不会把猜测说成结论。"
+
+    official_owner = "owner-openid"
+    identities = IdentityStore(
+        tmp_path / "identity.sqlite",
+        owner_qq=OWNER_QQ,
+        owner_identities=(("qq_official", official_owner),),
+    )
+    identities.initialize()
+    history = ConversationStore(tmp_path / "conversation.sqlite")
+    history.initialize()
+    memory = MemoryStore(tmp_path / "memory.sqlite")
+    memory.initialize()
+    recall = RecallLedger(tmp_path / "memory.sqlite")
+    recall.initialize()
+    bundle = load_persona_bundle(env={})
+    client = ScriptedClient()
+    brain = PersonaBrain(
+        client,  # type: ignore[arg-type]
+        "legacy persona",
+        identities=identities,
+        context_builder=ContextBuilder(
+            history=history,
+            memory=memory,
+            recall=recall,
+            persona="legacy persona",
+            persona_bundle=bundle,
+        ),
+        persona_bundle=bundle,
+        persona_v2_gate=PersonaV2Gate(enabled=True),
+        official_owner_id=official_owner,
+    )
+    inbound = InboundEvent(
+        channel="qq_official",
+        account_id="bot-id",
+        sender_id=official_owner,
+        message_id="official-1",
+        occurred_at_ms=1_767_225_600_000,
+        conversation_kind=ConversationKind.PRIVATE,
+        conversation_id=f"qq_official:private:{official_owner}",
+        group_id=None,
+        text="你怎么看这件事?",
+        mentioned=False,
+    )
+
+    reply = await brain.draft(inbound)
+
+    assert reply.startswith("这件事先看证据")
+    assert len(client.calls) == 2
+    assert "## constitution" in client.calls[0][0]["content"]
+    assert "待修正回答" in client.calls[1][1]["content"]
+
+
+async def test_persona_v2_gate_does_not_change_onebot_owner_path(tmp_path: Path) -> None:
+    identities = IdentityStore(tmp_path / "identity.sqlite", owner_qq=OWNER_QQ)
+    identities.initialize()
+    history = ConversationStore(tmp_path / "conversation.sqlite")
+    history.initialize()
+    memory = MemoryStore(tmp_path / "memory.sqlite")
+    memory.initialize()
+    recall = RecallLedger(tmp_path / "memory.sqlite")
+    recall.initialize()
+    bundle = load_persona_bundle(env={})
+    client = FakeClient()
+    brain = PersonaBrain(
+        client,  # type: ignore[arg-type]
+        "legacy persona",
+        identities=identities,
+        context_builder=ContextBuilder(
+            history=history,
+            memory=memory,
+            recall=recall,
+            persona="legacy persona",
+            persona_bundle=bundle,
+        ),
+        persona_bundle=bundle,
+        persona_v2_gate=PersonaV2Gate(enabled=True),
+        official_owner_id="owner-openid",
+    )
+
+    await brain.draft(event("9", "继续"))
+
+    assert len(client.calls) == 1
+    assert "legacy persona" in client.calls[0][0]["content"]
+    assert "## constitution" not in client.calls[0][0]["content"]

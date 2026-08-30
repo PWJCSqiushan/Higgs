@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "version": "2.0.0",
+  "files": {
+    "constitution.md": "74f93aed50f9096be1cb1a61f459508fa0688ccb2218733fa07e7bf00850ccda",
+    "style.md": "ac0d78073fdba56be4616a698fbdd5293c4954c767cc27273124ae81d2db6f04",
+    "examples.md": "6705afc979704f35d321542a10beb8ba4ddfa043bfda5d72dc030ac8628d88b7"
+  },
+  "bundle_sha256": "5dea15a93a20c8d1f72302026896fa269d50c165606adcbe897ca88cffdd28be"
+}

@@ -375,3 +375,12 @@
 - README、主人命令说明、双通道路线和官方配置模块说明已从旧的“Gateway 尚未启用”更新为当前真实边界：owner C2C 被动回复已验收，测试群和 proactive 仍受固定 72 小时、双层白名单/双开关与单独生产确认约束，生产 Gateway 由固定 Node sidecar 独占，Python SDK 只保留隔离兼容路径。
 - 当前本地完整 Python `369 passed, 5 skipped`，Ruff 格式/检查通过；Node 语法和 `37 passed, 8 skipped` 通过。暂存后的 release gate、秘密边界、Shell LF 与 diff 检查同样通过；没有部署、改配置、重建容器或发送消息。
 - 功能提交 `bf93a7d` 已进入 PR #52；push run `33295771506` 与 pull request run `33295778538` 四项 CI 全绿，Ubuntu Python 零跳过，Node POSIX/UDS/进程替换、Shell 语法、npm 签名、镜像和 Compose 均通过。当前仅追加 CI 证据并复验，尚未合并或部署。
+
+## 39. 2026-08-30 Persona V2 本地实现与运行链路接入
+
+- 远端最新主线已实际抓取并核对为 `56b85adf1d844f545152cdce31dbcb8ef4f40f3d`；本分支 `codex/higgs-persona-v2-20260830` 从该合并提交建立，没有直接修改 `main`。
+- 新增带逐文件 SHA-256 与聚合 hash 校验的版本化 Higgs Persona Bundle，固定 constitution、style、examples 顺序；`R_AGENT_PERSONA_DIR` 优先，旧单文件和内联人格仅作为兼容路径。显式 V2 目录损坏时失败关闭，不会静默回退。
+- `R_AGENT_PERSONA_V2_ENABLED` 默认 false。启用后也只允许已绑定的官方 owner C2C 使用 V2；OneBot、官方群和普通用户继续走原人格路径。运行时系统上下文先放不可覆盖的安全/权限规则，再放 constitution、style/examples、审核记忆和近期对话。
+- 模型输出新增确定性 PersonaGuard：只检测高信号身份矛盾、无必要 AI 自称和客服模板。准确技术回答不改写；违规回答最多调用模型修复一次，再失败则使用经过同一守卫验证的短降级文本，不会进入循环。
+- 建立 50 条人格回归集和独立人工评测模板/汇总器。自动门验证身份矛盾为零、客服/通用腔不超过 5%、身份复述不过量；四维真人评分当前明确为未评分，等待后续 owner 20 轮真实灰度，不伪造 4/5 结论。
+- 本地验收为 Python `389 passed, 5 skipped`，Node `37 passed, 8 skipped`，Ruff、格式和 release gate 通过；Node 跳过项是既有 POSIX/UDS/进程替换覆盖，须由 Ubuntu CI 零跳过收口。尚未部署、修改生产开关、重建容器或发送消息；72 小时观察与现有生产通道不受影响。
