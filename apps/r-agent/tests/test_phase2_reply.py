@@ -58,6 +58,16 @@ class _OwnerCommands:
         return "状态正常"
 
 
+class _DailyPlans:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def handle_event(self, item: InboundEvent, actor: Principal) -> str:
+        assert actor.role == "owner"
+        self.calls.append(item.text)
+        return "计划已受理"
+
+
 def test_draft_requires_mention_for_group() -> None:
     policy = ReplyPolicy(
         mode="draft",
@@ -251,14 +261,13 @@ async def test_official_owner_private_commands_use_an_explicit_allowlist() -> No
     ]
 
 
-async def test_official_dialogue_skips_plan_and_reminder_mutations() -> None:
+async def test_unrelated_official_dialogue_skips_reminder_mutations() -> None:
     brain = PersonaBrain(
         None,
         "test",
         identities=_OfficialIdentities(),  # type: ignore[arg-type]
         context_builder=SimpleNamespace(),  # type: ignore[arg-type]
         reminders=_ForbiddenFeature(),  # type: ignore[arg-type]
-        daily_plans=_ForbiddenFeature(),  # type: ignore[arg-type]
     )
     base = event(text="明天提醒我写计划")
     official = InboundEvent(
@@ -277,6 +286,46 @@ async def test_official_dialogue_skips_plan_and_reminder_mutations() -> None:
     assert (
         await brain.draft(official) == "我已收到。当前处于受控测试阶段，请告诉我需要协助处理什么。"
     )
+
+
+async def test_official_owner_private_plan_command_and_natural_intent_use_daily_service() -> None:
+    plans = _DailyPlans()
+    brain = PersonaBrain(
+        None,
+        "test",
+        identities=_OfficialIdentities(),  # type: ignore[arg-type]
+        context_builder=SimpleNamespace(),  # type: ignore[arg-type]
+        owner_commands=_ForbiddenFeature(),  # type: ignore[arg-type]
+        daily_plans=plans,  # type: ignore[arg-type]
+    )
+    base = event(text="/higgs plan today")
+    official = InboundEvent(
+        channel="qq_official",
+        account_id="official-bot-id",
+        sender_id="owner-openid",
+        message_id=base.message_id,
+        occurred_at_ms=base.occurred_at_ms,
+        conversation_kind=ConversationKind.PRIVATE,
+        conversation_id="qq_official:private:official-bot-id:owner-openid",
+        group_id=None,
+        text=base.text,
+        mentioned=False,
+    )
+    assert await brain.draft(official) == "计划已受理"
+    natural = InboundEvent(
+        channel=official.channel,
+        account_id=official.account_id,
+        sender_id=official.sender_id,
+        message_id="natural-plan",
+        occurred_at_ms=official.occurred_at_ms,
+        conversation_kind=official.conversation_kind,
+        conversation_id=official.conversation_id,
+        group_id=None,
+        text="今天的待办：背单词、写代码，帮我安排",
+        mentioned=False,
+    )
+    assert await brain.draft(natural) == "计划已受理"
+    assert plans.calls == ["/higgs plan today", natural.text]
 
 
 async def test_official_owner_can_create_only_explicit_bound_private_reminder(tmp_path) -> None:

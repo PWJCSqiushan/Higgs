@@ -56,6 +56,8 @@ def _official_owner_command_allowed(text: str) -> bool:
         return True
     if clean.startswith("/higgs remind "):
         return True
+    if clean == "/higgs plan" or clean.startswith("/higgs plan "):
+        return True
     read_only_memory = (
         "/higgs memory list",
         "/higgs memory show",
@@ -284,6 +286,11 @@ class PersonaBrain:
                     return "该命令仅允许主人使用。"
                 if not _official_owner_command_allowed(clean):
                     return "该主人命令尚未迁移到官方 QQ 安全边界。"
+                if clean.casefold() == "/higgs plan" or clean.casefold().startswith("/higgs plan "):
+                    if self.daily_plans is None:
+                        return "今日计划当前不可用。"
+                    plan_reply = await self.daily_plans.handle_event(event, principal)
+                    return plan_reply or "今日计划当前不可用。"
                 if self.owner_commands is None:
                     return "主人命令当前不可用。"
                 command_reply = await asyncio.to_thread(
@@ -293,7 +300,7 @@ class PersonaBrain:
                     surface=event.conversation_kind.value,
                 )
                 return command_reply or "主人命令当前不可用。"
-            if not official_channel and self.daily_plans is not None:
+            if self.daily_plans is not None:
                 plan_reply = await self.daily_plans.handle_event(event, principal)
                 if plan_reply is not None:
                     return plan_reply

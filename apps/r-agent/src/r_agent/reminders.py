@@ -525,6 +525,8 @@ class ReminderStore:
             or origin_surface != "private"
             or normalized_delivery_surface != "private"
             or owner_qq != normalized_delivery_target
+            or origin_conversation_id.strip()
+            != (f"qq_official:private:{normalized_delivery_account}:{normalized_delivery_target}")
         ):
             raise ReminderError("官方 QQ 主动提醒仅允许原会话主人私聊目标")
         if delivery_policy not in {"persistent_ack", "agenda_once"}:
@@ -580,6 +582,12 @@ class ReminderStore:
         origin_conversation_id: str,
         source_kind: str,
         source_id: str,
+        origin_channel: str = "qq",
+        origin_surface: str = "private",
+        delivery_channel: str | None = None,
+        delivery_surface: str | None = None,
+        delivery_account_id: str | None = None,
+        delivery_target_id: str | None = None,
         expires_at_ms: int | None = None,
         now_ms: int | None = None,
     ) -> ReminderJob:
@@ -589,9 +597,13 @@ class ReminderStore:
             owner_qq=owner_qq,
             content=content,
             due_at_ms=due_at_ms,
-            origin_channel="qq",
-            origin_surface="private",
+            origin_channel=origin_channel,
+            origin_surface=origin_surface,
             origin_conversation_id=origin_conversation_id,
+            delivery_channel=delivery_channel,
+            delivery_surface=delivery_surface,
+            delivery_account_id=delivery_account_id,
+            delivery_target_id=delivery_target_id,
             delivery_policy="agenda_once",
             source_kind=source_kind,
             source_id=source_id,

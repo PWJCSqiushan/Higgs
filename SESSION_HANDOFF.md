@@ -338,3 +338,12 @@
 - Windows 本地完整门禁为 Python `342 passed, 5 skipped`，Ruff 检查通过；格式修正后的受影响测试 `35 passed`。Node 语法与测试为 `37 passed, 8 skipped`；跳过项均为既有/新增 POSIX 权限、UDS 和真实进程替换覆盖，必须由 Ubuntu CI 零跳过解除。新增 Shell 因本机无 Bash，真实 `bash -n` 同样必须由 CI 验收。
 - 尚未部署、修改服务器私有配置、重建容器或发送消息。固定 72 小时观察尚未结束，proactive 双门必须继续为 false，测试群白名单也不得提前激活。下一步是暂存后运行基于 Git 索引的 release/secret/LF 门，提交并推送本阶段分支、创建 PR，等待两套 Ubuntu CI 全绿；即使 PR 合并，生产启用仍需窗口结论和主人新的明确确认。
 - 功能与迁移修正已由 `db43583`、`457b0a5` 提交并进入 PR #48。首轮 push 与 pull request 两套 CI 共四项全绿：Ubuntu Shell 语法、Python 零跳过、Node POSIX 持久化、npm 签名、镜像和 Compose 均通过；PR 状态为 clean/mergeable。当前只追加本 CI 证据并复验同一 PR，合并后仍不得提前部署或开启 proactive。
+
+## 35. 2026-08-30 官方主人日计划离线迁移完成
+
+- PR #48 在复验四项 CI 全绿后以 merge commit `2f22dd54f32ee41f76d193d77076d01cd47ded9f` 合并，合并提交自己的主线 CI run `33292488279` 成功；没有直接推送 `main`。生产 proactive 双门、官方群白名单与现有容器均未改变。
+- 新分支 `codex/higgs-official-daily-plan-20260830` 把今日计划迁入官方 owner C2C。`/higgs plan ...` 与自然语言多待办可进入既有确定性排程、版本化草案、只读查看、显式地图授权、完成/跳过/取消/重新规划流程；官方非主人和任何群聊在写入前拒绝。
+- `shadow` 计划不需要主动发送；`live` 精确版本确认在 Agent proactive 未启用时失败关闭，计划仍停留在待确认且不会创建提醒。获准启用后，总览、T-10 与 T0 节点使用 version 2 ReminderStore 记录，审批和投递固定绑定当前 `qq_official + private + Bot account + owner OpenID`，不回退 NapCat。
+- `ReminderStore.create_scheduled` 现接受显式 origin/delivery 绑定，旧 OneBot 调用保持兼容。官方创建路径新增 canonical 同一 Bot 校验：origin conversation 中的 Bot/owner 必须与 delivery account/target 完全一致，避免跨 Bot 复用 OpenID。
+- 文档已说明双通道日计划、地图授权和 proactive 门禁。Windows 完整 Python 为 `345 passed, 5 skipped`，Ruff 格式/检查通过；Node `37 passed, 8 skipped` 且语法通过。本切片尚未提交 PR/CI、部署、修改配置、重建容器或发送消息；72 小时结论前不得启用 live 官方节点提醒。
+- 功能提交 `5e1b8ed` 已进入 PR #49，首轮 push 与 pull request 两套 CI 四项全绿；Ubuntu 对 Python 权限项和 Node UDS/进程替换持久化均零跳过，镜像与 Compose 也通过。当前仅追加本 CI 证据并复验同一 PR；合并不等于生产部署许可。

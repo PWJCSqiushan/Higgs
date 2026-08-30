@@ -792,6 +792,7 @@ async def listen() -> None:
         ),
         model_client=client,
         amap=AmapRouteClient(amap_key) if amap_key else None,
+        official_proactive_enabled=official_config.proactive_enabled,
     )
     brain = PersonaBrain(
         client,
