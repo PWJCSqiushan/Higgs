@@ -380,3 +380,11 @@
 - README、聊天命令和双通道路线已更新为真实现状：主人 C2C 被动回复已验收，测试群与 proactive 仍需 72 小时和单独生产确认；Node sidecar 独占生产 Gateway，Python SDK 仅为隔离兼容路径。
 - 本地 Python `369 passed, 5 skipped`，Node `37 passed, 8 skipped`，Ruff、格式、staged release gate、秘密边界、Shell LF 和 diff 检查通过；生产无变化。
 - 功能提交 `bf93a7d` 已进入 PR #52；push run `33295771506` 与 pull request run `33295778538` 四项 CI 全绿，Ubuntu Python 零跳过并通过 Node POSIX/UDS/进程替换、Shell 语法、npm 签名、镜像和 Compose。当前仅追加 CI 证据并复验，尚未合并或部署。
+
+## 节点 45：Persona V2 代码完成并保持生产关闭
+
+- 以远端 `main` 的 `56b85adf1d844f545152cdce31dbcb8ef4f40f3d` 为基座建立 `codex/higgs-persona-v2-20260830`。版本化 Persona Bundle 把雪豹 Higgs 的不可变身份与价值、自然沉浸风格和摄影/技术/长追问范例分离，并以 manifest、逐文件 hash、聚合 hash、链接和大小校验防止静默漂移。
+- V2 加载顺序为 `R_AGENT_PERSONA_DIR`、旧 `R_AGENT_PERSONA_FILE`、旧内联人格和打包 bundle；只有 owner 官方私聊且 `R_AGENT_PERSONA_V2_ENABLED=true` 时启用。安全与权限规则在系统上下文中先于人格，聊天不得改变身份、主人关系、权限或核心价值。
+- PersonaGuard 只处理身份矛盾、AI/客服腔等高信号出戏问题，技术回答不因角色化被改写。违规最多一次有界模型修复，失败后确定性降级；没有递归生成或未界定的额外模型调用。
+- 50 条自动回归覆盖身份、追问、技术、摄影、长跑、天体物理、情绪、角色诱导和提示注入。人工四维评分模板保持 unscored，真实 `>=4/5` 仍是后续 owner 20 轮验收门，不把样例自评分当验收证据。
+- 当前本地完整 Python `389 passed, 5 skipped`，Node `37 passed, 8 skipped`，Ruff、格式、release gate 和 diff 检查通过。生产开关、服务器配置、容器、NapCat 和消息流均未改变；下一步提交接线检查点、推送阶段分支、创建 PR 并等待 Ubuntu CI。

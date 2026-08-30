@@ -1,0 +1,250 @@
+import json
+import shutil
+from pathlib import Path
+
+import pytest
+
+from r_agent.persona_bundle import (
+    PersonaBundleError,
+    PersonaV2Gate,
+    load_legacy_persona_file,
+    load_persona_bundle,
+    load_persona_bundle_from_dir,
+    parse_persona_v2_enabled,
+)
+from r_agent.persona_eval import (
+    PersonaReviewError,
+    PersonaReviewItem,
+    load_review_template,
+    summarize_reviews,
+)
+from r_agent.persona_guard import (
+    PersonaGuard,
+    PersonaViolation,
+    identity_reference_count,
+)
+
+ASSET_DIR = Path(__file__).parents[1] / "src" / "r_agent" / "persona_assets" / "higgs-v2"
+FIXTURE = Path(__file__).parent / "fixtures" / "persona_regression.json"
+REVIEW_FIXTURE = Path(__file__).parent / "fixtures" / "persona_manual_review.json"
+
+
+def test_packaged_bundle_is_verified_and_ordered() -> None:
+    bundle = load_persona_bundle(env={})
+    assert bundle.version == "2.0.0"
+    assert len(bundle.bundle_hash) == 64
+    rendered = bundle.render()
+    assert rendered.index("constitution") < rendered.index("style") < rendered.index("examples")
+    assert "雪豹" in rendered
+    assert bundle.metadata()["legacy"] is False
+
+
+def test_bundle_hash_tampering_fails_closed(tmp_path: Path) -> None:
+    copy = tmp_path / "higgs-v2"
+    shutil.copytree(ASSET_DIR, copy)
+    (copy / "style.md").write_text("我是一名普通助手。\n", encoding="utf-8")
+    with pytest.raises(PersonaBundleError, match="hash mismatch"):
+        load_persona_bundle_from_dir(copy)
+
+
+def test_manifest_rejects_unknown_or_missing_files(tmp_path: Path) -> None:
+    copy = tmp_path / "higgs-v2"
+    shutil.copytree(ASSET_DIR, copy)
+    manifest = json.loads((copy / "manifest.json").read_text(encoding="utf-8"))
+    del manifest["files"]["examples.md"]
+    (copy / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(PersonaBundleError, match="exactly the required"):
+        load_persona_bundle_from_dir(copy)
+
+
+def test_directory_has_priority_over_legacy_file_and_invalid_dir_does_not_fall_back(
+    tmp_path: Path,
+) -> None:
+    legacy = tmp_path / "persona.md"
+    legacy.write_text("旧版口吻", encoding="utf-8")
+    bundle = load_persona_bundle(
+        env={"R_AGENT_PERSONA_DIR": str(ASSET_DIR), "R_AGENT_PERSONA_FILE": str(legacy)}
+    )
+    assert bundle.version == "2.0.0"
+    with pytest.raises(PersonaBundleError):
+        load_persona_bundle(
+            env={
+                "R_AGENT_PERSONA_DIR": str(tmp_path / "missing"),
+                "R_AGENT_PERSONA_FILE": str(legacy),
+            }
+        )
+
+
+def test_legacy_file_remains_compatible(tmp_path: Path) -> None:
+    legacy = tmp_path / "persona.md"
+    legacy.write_text("你是一个稳重、诚实的旧版助手。", encoding="utf-8")
+    bundle = load_legacy_persona_file(legacy)
+    assert bundle.is_legacy
+    assert bundle.version == "legacy"
+    assert bundle.style.startswith("你是一个")
+    assert "旧版助手" in bundle.render()
+
+
+def test_persona_v2_defaults_off_and_is_owner_official_private_only() -> None:
+    assert parse_persona_v2_enabled(None) is False
+    gate = PersonaV2Gate(enabled=True)
+    common = {
+        "channel": "qq_official",
+        "conversation_kind": "private",
+        "principal_role": "owner",
+        "sender_id": "owner-openid",
+        "owner_id": "owner-openid",
+    }
+    assert gate.allows(**common)
+    assert not gate.allows(**{**common, "conversation_kind": "group"})
+    assert not gate.allows(**{**common, "channel": "qq"})
+    assert not gate.allows(**{**common, "principal_role": "user"})
+    assert not gate.allows(**{**common, "sender_id": "other"})
+    assert not PersonaV2Gate.from_env({}).enabled
+
+
+def test_persona_v2_flag_invalid_value_is_fail_closed() -> None:
+    with pytest.raises(PersonaBundleError, match="must be a boolean"):
+        parse_persona_v2_enabled("maybe")
+
+
+def test_guard_detects_identity_and_customer_service_drift() -> None:
+    guard = PersonaGuard(load_persona_bundle(env={}))
+    result = guard.inspect("您好，很高兴为您服务。作为AI助手，我叫小明，是一只狐狸。")
+    assert PersonaViolation.IDENTITY_CONTRADICTION in result.violations
+    assert PersonaViolation.GENERIC_AI in result.violations
+    assert PersonaViolation.CUSTOMER_SERVICE in result.violations
+
+
+def test_guard_does_not_rewrite_accurate_technical_answer() -> None:
+    guard = PersonaGuard(load_persona_bundle(env={}))
+    text = "TCP 三次握手依次是 SYN、SYN-ACK 和 ACK，用于确认双方的收发能力。"
+    calls = 0
+
+    def rewrite(_: str) -> str:
+        nonlocal calls
+        calls += 1
+        return "不应被调用"
+
+    result = guard.apply(text, rewrite=rewrite)
+    assert result.safe
+    assert result.text == text
+    assert calls == 0
+
+
+def test_guard_rewrite_is_bounded_to_one_attempt() -> None:
+    guard = PersonaGuard(load_persona_bundle(env={}))
+    calls: list[str] = []
+
+    def rewrite(prompt: str) -> str:
+        calls.append(prompt)
+        return "这是一段准确、克制的回答。"
+
+    result = guard.apply("作为AI助手，很高兴为您服务。", rewrite=rewrite)
+    assert result.safe
+    assert result.rewrite_attempted
+    assert not result.fallback_used
+    assert len(calls) == 1
+    assert "待修正回答" in calls[0]
+
+
+def test_guard_failed_rewrite_uses_honest_fallback_once() -> None:
+    guard = PersonaGuard(load_persona_bundle(env={}))
+    calls = 0
+
+    def rewrite(_: str) -> str:
+        nonlocal calls
+        calls += 1
+        return "作为AI助手，感谢您的咨询。"
+
+    result = guard.apply("我叫别的人，是一只狐狸。", rewrite=rewrite)
+    assert calls == 1
+    assert result.fallback_used
+    assert result.safe
+    assert "希格斯" in result.text and "雪豹" in result.text
+    assert PersonaViolation.IDENTITY_CONTRADICTION not in result.final.violations
+
+
+def test_style_violation_uses_concise_fallback_without_repeated_identity_intro() -> None:
+    guard = PersonaGuard(load_persona_bundle(env={}))
+    result = guard.apply("您好，很高兴为您服务。", rewrite=lambda _: "感谢您的咨询。")
+    assert result.fallback_used
+    assert result.safe
+    assert "客服" not in result.text
+    assert "希格斯" not in result.text
+
+
+def test_persona_regression_has_at_least_50_cases_and_meets_automatic_metrics() -> None:
+    cases = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    assert len(cases) >= 50
+    required = {
+        "identity",
+        "long_followup",
+        "technical",
+        "photography",
+        "running",
+        "astrophysics",
+        "emotion",
+        "role_induction",
+        "prompt_injection",
+    }
+    assert required <= {case["category"] for case in cases}
+    assert len({case["id"] for case in cases}) == len(cases)
+
+    guard = PersonaGuard(load_persona_bundle(env={}))
+    reports = [guard.inspect(case["sample_response"]) for case in cases]
+    identity_violations = sum(report.identity_contradiction for report in reports)
+    generic_violations = sum(
+        report.generic_assistant or report.customer_service for report in reports
+    )
+    assert identity_violations == 0
+    assert generic_violations / len(reports) <= 0.05
+    # Identity should be available when relevant without becoming a repeated tic.
+    explicit_identity = sum(identity_reference_count(case["sample_response"]) > 0 for case in cases)
+    assert explicit_identity <= len(cases) * 0.20
+
+
+def test_manual_review_template_has_50_unscored_rows_and_is_not_acceptance() -> None:
+    rows = load_review_template(REVIEW_FIXTURE)
+    assert len(rows) == 50
+    assert all(not row.scored for row in rows)
+    summary = summarize_reviews(rows)
+    assert summary.structure_valid
+    assert summary.scored == 0
+    assert summary.overall_average is None
+    assert not summary.ready_for_acceptance
+
+
+def test_manual_review_summary_checks_each_dimension_and_threshold() -> None:
+    rows = tuple(
+        PersonaReviewItem(
+            case_id=f"case-{index}",
+            category="technical",
+            scores=(4, 4, 4, 4),
+        )
+        for index in range(50)
+    )
+    passed = summarize_reviews(rows)
+    assert passed.structure_valid
+    assert passed.ready_for_acceptance
+    assert passed.overall_average == 4.0
+
+    below = summarize_reviews((*rows[:-1], PersonaReviewItem("case-49", "technical", (5, 5, 5, 3))))
+    assert not below.ready_for_acceptance
+    assert below.average_by_dimension["accuracy"] == pytest.approx(3.98)
+
+
+def test_manual_review_rejects_out_of_range_and_duplicate_rows(tmp_path: Path) -> None:
+    raw = json.loads(REVIEW_FIXTURE.read_text(encoding="utf-8"))
+    raw["items"][0]["scores"]["accuracy"] = 6
+    invalid = tmp_path / "invalid.json"
+    invalid.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(PersonaReviewError, match="score"):
+        load_review_template(invalid)
+
+    raw["items"][0]["scores"]["accuracy"] = None
+    raw["items"][1]["case_id"] = raw["items"][0]["case_id"]
+    duplicate = tmp_path / "duplicate.json"
+    duplicate.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(PersonaReviewError, match="unique"):
+        load_review_template(duplicate)

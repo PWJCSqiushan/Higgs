@@ -53,6 +53,12 @@ from r_agent.online_reliability import OnlineState, PushPlusNotifier, onebot_onl
 from r_agent.operator_control import LiveOperatorControl
 from r_agent.owner_commands import OwnerCommandContext, OwnerCommandRouter
 from r_agent.passive_memory import PassiveMemoryLearner
+from r_agent.persona_bundle import (
+    PersonaBundle,
+    PersonaBundleError,
+    PersonaV2Gate,
+    load_persona_bundle,
+)
 from r_agent.phase2_outbound import (
     OutboundError,
     get_onebot_account_status,
@@ -285,6 +291,16 @@ def _persona_text() -> str:
     if not content:
         raise ConfigError("R_AGENT_PERSONA_FILE must not be empty")
     return content
+
+
+def _persona_v2() -> tuple[PersonaV2Gate, PersonaBundle | None]:
+    """Load Persona V2 only when its owner-only rollout flag is enabled."""
+
+    try:
+        gate = PersonaV2Gate.from_env()
+        return gate, load_persona_bundle() if gate.enabled else None
+    except PersonaBundleError as exc:
+        raise ConfigError(f"invalid Persona V2 configuration: {exc}") from exc
 
 
 def _model_client(*, required: bool) -> OpenAICompatibleClient | None:
@@ -565,6 +581,9 @@ async def listen() -> None:
     official_config = OfficialQQConfig.from_env()
     official_owner_openid = official_config.active_owner_openid
     official_group_openids = official_config.active_group_openids
+    persona_v2_gate, persona_bundle = _persona_v2()
+    if persona_v2_gate.enabled and official_owner_openid is None:
+        raise ConfigError("Persona V2 rollout requires the bound official owner OpenID")
     embeddings = _embedding_client(enabled=phase.embedding_enabled, phase=phase)
     safety = _safety_policy(phase)
     client = _model_client(required=phase.mode in {"draft", "live"})
@@ -683,6 +702,7 @@ async def listen() -> None:
         memory=memory,
         recall=recall,
         persona=persona,
+        persona_bundle=persona_bundle,
         history_limit=phase.history_turns,
         memory_limit=phase.memory_items,
         vectors=vectors,
@@ -815,6 +835,9 @@ async def listen() -> None:
         reminders=reminders,
         daily_plans=daily_plans,
         official_proactive_enabled=official_config.proactive_enabled,
+        persona_bundle=persona_bundle,
+        persona_v2_gate=persona_v2_gate,
+        official_owner_id=official_owner_openid,
     )
     passive_learner = (
         PassiveMemoryLearner(

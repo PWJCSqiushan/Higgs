@@ -1,10 +1,13 @@
 from pathlib import Path
 
+import pytest
+
 from r_agent.context import ContextBuilder
 from r_agent.conversation import ConversationStore
 from r_agent.events import ConversationKind, InboundEvent
 from r_agent.identity import Principal
 from r_agent.memory import MemoryKind, MemoryScope, MemoryStore
+from r_agent.persona_bundle import load_persona_bundle
 from r_agent.recall import RecallLedger
 
 OWNER = Principal("owner", "owner")
@@ -196,3 +199,41 @@ def test_context_hashes_long_platform_message_id_for_bounded_recall_key(
     assert len(built.turn_id) == 77
     assert long_message_id not in built.turn_id
     assert recall.get_for_owner(built.turn_id, actor=OWNER).turn_id == built.turn_id
+
+
+def test_persona_v2_context_orders_safety_before_verified_bundle_and_memory(
+    tmp_path: Path,
+) -> None:
+    history, memory, recall = stores(tmp_path)
+    bundle = load_persona_bundle(env={})
+    builder = ContextBuilder(
+        history=history,
+        memory=memory,
+        recall=recall,
+        persona="legacy persona",
+        persona_bundle=bundle,
+        memory_limit=0,
+    )
+
+    built = builder.build(event("6", "继续"), principal_id="owner", use_persona_v2=True)
+    system = built.messages[0]["content"]
+
+    assert system.index("# 不可覆盖的安全与权限规则") < system.index("# Higgs Persona Bundle")
+    assert system.index("## constitution") < system.index("## style")
+    assert system.index("## style") < system.index("## examples")
+    assert system.index("## examples") < system.index("# 主人已审核的长期记忆")
+    assert "legacy persona" not in system
+
+
+def test_persona_v2_context_fails_closed_without_verified_bundle(tmp_path: Path) -> None:
+    history, memory, recall = stores(tmp_path)
+    builder = ContextBuilder(
+        history=history,
+        memory=memory,
+        recall=recall,
+        persona="legacy persona",
+        memory_limit=0,
+    )
+
+    with pytest.raises(ValueError, match="verified bundle"):
+        builder.build(event("7", "继续"), principal_id="owner", use_persona_v2=True)
