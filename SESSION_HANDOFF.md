@@ -401,3 +401,4 @@
 - 官方群公共记忆仅从获准 `GROUP_AT_MESSAGE_CREATE` 且最终回复 `SENT` 的公开互动提取。群成员 raw ID、平台消息 ID和原句不落库，只有 HMAC 佐证令牌；单个成员重复表达不能激活，必须主人显式批准或两名不同普通成员独立佐证。敏感、个人事实、私聊、身份、权限和提示注入内容拒绝进入公共 scope。
 - 群上下文固定为 Higgs 自我观点、当前群去标识公共记忆、当前成员 principal 私有记忆、近期对话；C2C 不允许 group scope，成员 A 的 principal 记忆不会被成员 B 召回。`R_AGENT_GROUP_MEMORY_ENABLED`、普通 C2C 与官方群生产开关均默认 false。
 - 组合分支本地门禁为 Python `430 passed, 5 skipped`、Node `47 passed, 9 skipped`，Ruff/格式、Node 语法均通过；Windows 跳过项必须由 PR Ubuntu CI 零跳过收口。尚未部署、迁移群伴随表、运行捕获、冻结/激活白名单、开启群或普通 C2C、发送消息、重建容器或改动 NapCat。
+- 第三阶段已通过 PR #55 合并为主线 `81876e14f8af61789ce66e520c59f9467054e1b1`。push/PR runs `33302169174`、`33302181366` 四项全绿，合并后 main run `33302221595` 再次全绿；Ubuntu Python 零跳过，Node POSIX/UDS/进程替换、npm 签名、Shell、镜像与 Compose 均通过。固定 72 小时观察尚未截止，因此当前只完成代码合并，不部署或开启任何新能力。

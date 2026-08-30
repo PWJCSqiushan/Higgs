@@ -404,3 +404,4 @@
 - 普通 C2C 与官方群开关、频率和熔断均相互独立且默认 false；owner C2C 保持独立可用。未知 C2C 在进入 durable queue、Journal、模型或记忆前丢弃，普通用户仍不能调用主人命令、工具、计划、提醒、主动发送或治理接口。
 - 群公共记忆与 member principal 私有记忆分层。公共候选不保存 raw 成员/消息标识、原句、个人事实或私聊；单人重复不形成 quorum，只有主人批准或两位不同成员独立佐证才 active。召回顺序是 self、当前 group、当前 principal、近期历史，C2C 与其他群无法读取该 group scope。
 - 只有官方群获准 @ 事件且回复最终 SENT 后才运行公共候选提取；失败、UNKNOWN、未 @、OneBot 和 C2C 均不学习。组合本地回归 Python `430 passed, 5 skipped`、Node `47 passed, 9 skipped`，Ruff/格式/Node 语法通过；尚待阶段 PR、Ubuntu 零跳过和 release gate，生产完全未变化。
+- PR #55 的 push/PR runs `33302169174`、`33302181366` 全绿并合并为主线 `81876e14f8af61789ce66e520c59f9467054e1b1`；合并后 main run `33302221595` 亦成功，Linux Python 零跳过并完成 Node POSIX、Shell、镜像和 Compose 验收。72 小时观察仍在固定窗口内，故未部署、迁移、捕获、冻结或开启任何新通道/记忆开关。
