@@ -176,10 +176,69 @@ def test_confirmed_job_parameter_tampering_fails_closed(tmp_path: Path) -> None:
     assert store.get(job.job_id).status == "failed"
 
 
-def test_official_channel_cannot_create_a_reminder(tmp_path: Path) -> None:
+def test_legacy_confirmed_onebot_job_keeps_old_approval_but_cannot_cross_channel(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "reminders.sqlite"
+    old_parameters = {
+        "content": "legacy study",
+        "due_at_ms": 1_010_000,
+        "origin_conversation_id": "qq:private:bot-id:owner-id",
+    }
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE reminder_jobs (
+                job_id TEXT PRIMARY KEY, owner_principal_id TEXT NOT NULL,
+                owner_qq TEXT NOT NULL, content TEXT NOT NULL, due_at_ms INTEGER NOT NULL,
+                timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai', status TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL, confirmed_at_ms INTEGER,
+                acknowledged_at_ms INTEGER, cancelled_at_ms INTEGER,
+                updated_at_ms INTEGER NOT NULL, origin_channel TEXT NOT NULL,
+                origin_surface TEXT NOT NULL, origin_conversation_id TEXT NOT NULL,
+                source_message_id TEXT, approved_parameter_sha256 TEXT,
+                delivery_policy TEXT NOT NULL DEFAULT 'persistent_ack',
+                source_kind TEXT, source_id TEXT, expires_at_ms INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO reminder_jobs(
+                job_id,owner_principal_id,owner_qq,content,due_at_ms,status,
+                created_at_ms,confirmed_at_ms,updated_at_ms,origin_channel,
+                origin_surface,origin_conversation_id,approved_parameter_sha256
+            ) VALUES ('legacy-job','owner','owner-id','legacy study',1010000,
+                'scheduled',1000000,1000001,1000001,'qq','private',
+                'qq:private:bot-id:owner-id',?)
+            """,
+            (normalized_parameter_hash(old_parameters),),
+        )
+
+    store = ReminderStore(path)
+    store.initialize()
+    migrated = store.get("legacy-job")
+    assert migrated.delivery_binding_version == 1
+    assert migrated.delivery_channel == "qq"
+    assert migrated.delivery_account_id == "bot-id"
+    assert (
+        store.prepare_due(
+            now_ms=migrated.due_at_ms,
+            delivery_channels=frozenset({"qq_official"}),
+        )
+        == []
+    )
+    occurrence = store.prepare_due(
+        now_ms=migrated.due_at_ms,
+        delivery_channels=frozenset({"qq"}),
+    )[0]
+    assert occurrence.delivery_channel == "qq"
+
+
+def test_official_reminder_requires_and_persists_explicit_owner_target(tmp_path: Path) -> None:
     store = ReminderStore(tmp_path / "reminders.sqlite")
     store.initialize()
-    with pytest.raises(ReminderError, match="官方 QQ 通道"):
+    with pytest.raises(ReminderError, match="显式绑定"):
         store.create_pending(
             owner_principal_id="owner",
             owner_qq="owner-openid",
@@ -190,6 +249,38 @@ def test_official_channel_cannot_create_a_reminder(tmp_path: Path) -> None:
             origin_conversation_id="qq_official:private:bot:owner-openid",
             now_ms=1_000_000,
         )
+    job = store.create_pending(
+        owner_principal_id="owner",
+        owner_qq="owner-openid",
+        content="send safely",
+        due_at_ms=1_010_000,
+        origin_channel="qq_official",
+        origin_surface="private",
+        origin_conversation_id="qq_official:private:bot-id:owner-openid",
+        delivery_channel="qq_official",
+        delivery_surface="private",
+        delivery_account_id="bot-id",
+        delivery_target_id="owner-openid",
+        now_ms=1_000_000,
+    )
+    confirmed = store.confirm(job.job_id)
+    assert confirmed.delivery_binding_version == 2
+    assert confirmed.delivery_channel == "qq_official"
+    assert confirmed.delivery_account_id == "bot-id"
+    assert confirmed.delivery_target_id == "owner-openid"
+    assert (
+        store.prepare_due(
+            now_ms=job.due_at_ms,
+            delivery_channels=frozenset({"qq"}),
+        )
+        == []
+    )
+    occurrence = store.prepare_due(
+        now_ms=job.due_at_ms,
+        delivery_channels=frozenset({"qq_official"}),
+    )[0]
+    assert occurrence.delivery_surface == "private"
+    assert occurrence.delivery_target_id == "owner-openid"
 
 
 def test_skill_registry_is_fail_closed_and_future_skills_are_disabled() -> None:

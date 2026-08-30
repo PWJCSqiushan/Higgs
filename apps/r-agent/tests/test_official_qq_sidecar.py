@@ -609,6 +609,7 @@ async def test_send_is_passive_canonical_and_idempotent() -> None:
     assert (
         sent_body["request_id"] == hashlib.sha256(b"higgs-official-request\0reply-key").hexdigest()
     )
+    assert sent_body["delivery_mode"] == "passive"
     with pytest.raises(TransportUnavailable, match="conflicts"):
         await adapter.send_text(
             target,
@@ -619,8 +620,61 @@ async def test_send_is_passive_canonical_and_idempotent() -> None:
     collision_status = await adapter.status()
     assert collision_status.connected is True
     assert collision_status.authenticated is True
-    with pytest.raises(TransportUnavailable, match="passive"):
+    with pytest.raises(TransportUnavailable, match="proactive sends are disabled"):
         await adapter.send_text(target, "reply", idempotency_key="new-key")
+
+
+@pytest.mark.asyncio
+async def test_proactive_send_is_separately_gated_and_owner_private_only() -> None:
+    request_id = hashlib.sha256(b"higgs-official-request\0proactive-key").hexdigest()
+    client = FakeSidecarClient(
+        [
+            (200, hello_payload()),
+            (200, status_payload()),
+            (
+                200,
+                {
+                    "protocol_version": 1,
+                    "generation": "generation-1",
+                    "receipt": {
+                        "request_id": request_id,
+                        "state": "sent",
+                        "provider_message_id": "provider-id",
+                    },
+                },
+            ),
+        ]
+    )
+    adapter = OfficialQQSidecarAdapter(
+        replace(sidecar_config(), proactive_enabled=True),
+        event_handler=_discard,
+        client=client,
+    )
+    await adapter.start()
+    owner_target = OutboundTarget(
+        channel="qq_official",
+        conversation_kind=ConversationKind.PRIVATE,
+        conversation_id="qq_official:private:bot-id:owner-id",
+    )
+
+    receipt = await adapter.send_text(
+        owner_target,
+        "reminder",
+        idempotency_key="proactive-key",
+    )
+
+    assert receipt.state is DeliveryState.SENT
+    sent_body = next(request[2] for request in client.requests if request[0] == "POST")
+    assert sent_body is not None
+    assert sent_body["delivery_mode"] == "proactive"
+    assert sent_body["reply_message_id"] is None
+    group_target = OutboundTarget(
+        channel="qq_official",
+        conversation_kind=ConversationKind.GROUP,
+        conversation_id="qq_official:group:bot-id:allowed-group",
+    )
+    with pytest.raises(TransportUnavailable, match="owner private only"):
+        await adapter.send_text(group_target, "no", idempotency_key="group-key")
 
 
 @pytest.mark.asyncio

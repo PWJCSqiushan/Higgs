@@ -173,6 +173,38 @@ not converge as an incident requiring manual review. A recovered reconnect is
 still evidence to retain in the final observation result; do not erase it by
 resetting the observation start time.
 
+## Owner-only proactive reminders
+
+Keep both proactive gates false during the fixed 72-hour observation:
+
+```text
+R_AGENT_OFFICIAL_QQ_PROACTIVE_ENABLED=false
+HIGGS_OFFICIAL_QQ_PROACTIVE_ENABLED=false
+```
+
+They are independent fail-closed gates in the Agent and sidecar private
+environment files. Enabling only one cannot send an official proactive message.
+Official reminders must originate in the owner's C2C conversation and persist
+an explicit official channel, private surface, current Bot account, and owner
+target. Pre-migration reminder approvals are version 1 and remain eligible only
+for their historical OneBot target; they can never migrate into the official
+channel. New approvals are version 2 and cover the full delivery binding.
+
+Do not enable either gate until the 72-hour result is accepted, the active
+legacy-binding count has been reviewed, and a separate production change is
+approved. The audited activation entry point is:
+
+```bash
+sh activate_official_owner_proactive.sh \
+  ACTIVATE_OWNER_PROACTIVE \
+  STABILITY_72H_ACCEPTED
+```
+
+It updates both private files atomically, recreates only the official sidecar
+and Agent, and rolls back both gates together if the single Gateway, verified
+transport, reminder schema, or zero-active-batch checks fail. NapCat is checked
+before and after and must not be restarted as part of this change.
+
 ## One-shot official test-group binding
 
 Do not run either group helper until the fixed 72-hour observation has been

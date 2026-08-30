@@ -477,6 +477,69 @@ test("send requires an inbound reply binding and serializes concurrent idempoten
   await client.stop();
 });
 
+test("proactive send is separately gated, owner-C2C only, and omits msgId", async () => {
+  const disabled = newClient();
+  await disabled.start();
+  readyForSend(FakeBot.instances[0]);
+  await assert.rejects(
+    disabled.send(
+      sendRequest(disabled, {
+        delivery_mode: "proactive",
+        target_id: senderSafe,
+        reply_message_id: null,
+      }),
+    ),
+    /proactive_disabled/,
+  );
+  await disabled.stop();
+
+  const client = newClient({ proactiveEnabled: true });
+  await client.start();
+  const bot = FakeBot.instances[0];
+  readyForSend(bot);
+  const request = sendRequest(client, {
+    delivery_mode: "proactive",
+    target_id: senderSafe,
+    reply_message_id: null,
+  });
+  const first = await client.send(request);
+  const repeated = await client.send(request);
+  assert.equal(first.state, "sent");
+  assert.deepEqual(repeated, first);
+  assert.equal(bot.sent.length, 1);
+  assert.deepEqual(bot.sent[0].target, { scope: "c2c", targetId: senderSafe });
+  await assert.rejects(
+    client.send({ ...request, idempotency_key: "other-key", target_id: safe }),
+    /invalid_proactive_target/,
+  );
+  await client.stop();
+});
+
+test(
+  "a durable proactive claim becomes UNKNOWN after process replacement without resending",
+  unixOnly,
+  async () => {
+    const store = durableStore("higgs-official-proactive-crash-");
+    const first = newClient({ deliveryStore: store, proactiveEnabled: true });
+    const request = sendRequest(first, {
+      delivery_mode: "proactive",
+      target_id: senderSafe,
+      reply_message_id: null,
+    });
+    assert.equal(store.claimProactive(request.idempotency_key, requestFingerprint(request)), true);
+
+    const restoredStore = new SecureDeliveryStore(store.path, { now: () => 1234 });
+    const restored = newClient({ deliveryStore: restoredStore, proactiveEnabled: true });
+    await restored.start();
+    const bot = FakeBot.instances[0];
+    readyForSend(bot);
+    const receipt = await restored.send({ ...request, generation: restored.generation });
+    assert.equal(receipt.state, "unknown");
+    assert.equal(bot.sent.length, 0);
+    await restored.stop();
+  },
+);
+
 test("send requires a fresh observable heartbeat ACK", async () => {
   let now = 1000;
   const client = newClient({

@@ -71,6 +71,7 @@ export class OfficialQQClient {
     appSecret,
     enabled = false,
     captureOnly = true,
+    proactiveEnabled = false,
     BotClass = QQBot,
     now = () => Date.now(),
     watchdogIntervalMs = 1000,
@@ -91,6 +92,7 @@ export class OfficialQQClient {
     this.appSecret = appSecret;
     this.enabled = enabled;
     this.captureOnly = captureOnly;
+    this.proactiveEnabled = proactiveEnabled;
     this.BotClass = BotClass;
     this.now = now;
     this.watchdogIntervalMs = watchdogIntervalMs;
@@ -489,14 +491,32 @@ export class OfficialQQClient {
     ) {
       throw new ProtocolError("gateway_unavailable", 503);
     }
-    const newlyClaimed = this.replyAuthorizations.claim(
-      request.reply_message_id,
-      request.kind,
-      request.target_id,
-      request.idempotency_key,
-      fingerprint,
-      this.now(),
-    );
+    let newlyClaimed;
+    if (request.delivery_mode === "proactive") {
+      if (!this.proactiveEnabled) {
+        throw new ProtocolError("proactive_disabled", 403);
+      }
+      if (
+        request.kind !== "c2c" ||
+        request.target_id !== this.ownerOpenId ||
+        request.reply_message_id !== null
+      ) {
+        throw new ProtocolError("invalid_proactive_target", 403);
+      }
+      newlyClaimed = this.receipts.claimProactive(
+        request.idempotency_key,
+        fingerprint,
+      );
+    } else {
+      newlyClaimed = this.replyAuthorizations.claim(
+        request.reply_message_id,
+        request.kind,
+        request.target_id,
+        request.idempotency_key,
+        fingerprint,
+        this.now(),
+      );
+    }
     if (!newlyClaimed) {
       const receipt = Object.freeze({ state: "unknown", provider_message_id: null });
       this.receipts.put(request.idempotency_key, fingerprint, receipt);
@@ -512,7 +532,9 @@ export class OfficialQQClient {
               {
                 scope: request.kind,
                 targetId: request.target_id,
-                msgId: request.reply_message_id,
+                ...(request.delivery_mode === "passive"
+                  ? { msgId: request.reply_message_id }
+                  : {}),
               },
               request.text,
             ),

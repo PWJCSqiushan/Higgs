@@ -16,6 +16,9 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 ACTIVATE = REPO_ROOT / "deploy" / "server" / "activate_release.sh"
 ROLLBACK = REPO_ROOT / "deploy" / "server" / "rollback_release.sh"
 OWNER_CAPTURE = REPO_ROOT / "deploy" / "existing-server" / "run_official_owner_capture.sh"
+PROACTIVE_ACTIVATE = (
+    REPO_ROOT / "deploy" / "existing-server" / "activate_official_owner_proactive.sh"
+)
 
 
 def _bash_path() -> str | None:
@@ -102,7 +105,7 @@ def _directory_symlink(link: Path, target: Path) -> None:
 def test_shell_attributes_force_lf_and_changed_scripts_have_no_crlf() -> None:
     attributes = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
     assert "*.sh text eol=lf" in attributes
-    for script in (ACTIVATE, ROLLBACK, OWNER_CAPTURE):
+    for script in (ACTIVATE, ROLLBACK, OWNER_CAPTURE, PROACTIVE_ACTIVATE):
         assert b"\r\n" not in script.read_bytes()
 
 

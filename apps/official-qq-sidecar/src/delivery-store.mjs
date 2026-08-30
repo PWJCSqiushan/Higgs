@@ -393,6 +393,34 @@ export class SecureDeliveryStore {
     });
   }
 
+  claimProactive(key, fingerprint) {
+    return this._guard(() => {
+      if (!isSafeId(key) || key.length > 200 || !/^[0-9a-f]{64}$/u.test(fingerprint)) {
+        throw new ProtocolError("invalid_idempotency_key");
+      }
+      const found = this.receipts.get(key);
+      if (found) {
+        if (found.fingerprint !== fingerprint) {
+          throw new ProtocolError("idempotency_collision", 409);
+        }
+        return false;
+      }
+      this.receipts.set(
+        key,
+        Object.freeze({
+          fingerprint,
+          state: "unknown",
+          provider_message_id: null,
+        }),
+      );
+      while (this.receipts.size > this.receiptLimit) {
+        this.receipts.delete(this.receipts.keys().next().value);
+      }
+      this._write();
+      return true;
+    });
+  }
+
   claim(messageId, kind, targetId, idempotencyKey, fingerprint, now = this.now()) {
     return this._guard(() => {
       this._pruneAuthorizations(now);

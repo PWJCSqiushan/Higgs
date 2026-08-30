@@ -318,3 +318,23 @@
 - 激活是第二个独立显式动作，同样硬性要求 72 小时观察已通过。它先把两份 `0600` 私有环境备份到 `/srv/trash`，再把同一候选原子写入 Agent 与 sidecar 的官方群白名单，仅重建 official sidecar 和 Agent，并验证单 Gateway、双运行时值一致、reply=true、transport verified、零活动批次及 NapCat 不变；任一失败恢复两份配置和旧服务。
 - 生产业务面继续只接受 `GROUP_AT_MESSAGE_CREATE`，因此普通群消息不会进入 Journal、身份、记忆、模型或回复流水线。官方群成员按 `channel + member OpenID` 建立独立 principal；不会因字符串相同自动与 NapCat QQ 身份、owner 或其他成员合并。
 - 本地回归为 Python `335 passed, 5 skipped`、Node `36 passed, 7 skipped`；Ruff、格式、Node 语法和两份新 Shell 的真实远端 Bash 语法检查通过。release gate 以 249 个跟踪文件、272 个归档成员通过，秘密边界与 Shell LF 均干净。PR #47 已建立且首轮四项 CI 全绿；后续增强尚待推送复验。尚未部署；72 小时观察仍在进行，当前生产群白名单没有变化。
+
+## 33. 2026-08-30 关机暂停：主人命令与官方主动提醒离线实现中
+
+- PR #47 已合并为主线 `b72ad8a4fab1f1ad8d261287105e6797a910b9bf`，合并后主线 CI run `33284134356` 成功。测试群代码就绪不等于生产获准；固定 72 小时窗口结束前仍不得绑定或激活群白名单。
+- 新建独立工作树 `Higgs-wt-official-owner-reminders` 与分支 `codex/higgs-official-owner-reminders-20260830`，基于上述主线。腾讯官方 `tencent-connect/openclaw-qqbot` 与 `qqbot-nodejs` 的当前实现证明主动 C2C 使用同一 Bot 对明确 OpenID 发送且不携带入站 `msgId`；OpenID 必须与产生它的 Bot 账户绑定。该结论只用于离线设计，尚未发送任何主动消息。
+- ReminderStore WIP 新增显式 `delivery_channel + delivery_surface + delivery_account_id + delivery_target_id`，并把四项纳入主人确认哈希。官方群提醒只允许由 owner C2C 原会话建立、投递回同一 Bot 的 owner OpenID；不允许从群创建官方群主动提醒，也不把 OpenID 解释为个人 QQ。调度器可按当前健康通道筛选到期任务，NapCat 离线不会再阻断已明确绑定的官方群提醒。
+- Agent 与 sidecar WIP 增加两端独立、默认关闭的 proactive 开关。主动发送只允许 owner C2C；sidecar 在平台调用前把幂等键与请求指纹持久认领为 `UNKNOWN`，若进程在调用边界崩溃，重启后不会重复调用平台。被动回复授权、群 `@` 回复和现有 reply 开关语义保持独立。
+- 官方主人私聊命令 WIP 从仅 `/higgs status` 扩展到显式 allowlist：help、status、server status、risk、提醒管理与只读记忆查询。群内主人命令、运行开关、白名单、速率、备份、记忆变更、日计划等尚未迁移，继续在任何副作用前拒绝。
+- 暂停前最小验证通过：Python 相关 `67 passed`，Ruff 格式与检查通过；Node 语法通过，`37 passed, 8 skipped`，Windows 跳过项含新增 POSIX 持久 proactive claim。代码尚未跑完整 pytest、release gate、秘密扫描或 Ubuntu 零跳过；尚未提交 PR、部署、修改私有配置、重建容器或发送测试消息。
+- 恢复顺序：①先确认 `higgs-72` 观察未出现 rejected/fatal/容器重建；②复核 WIP diff 与提醒旧数据迁移策略；③补齐调度/配置/Compose 静态回归及 Linux 进程替换测试；④跑完整 Python/Node/发布门；⑤更新本阶段追加记忆并提交独立 PR/CI。即使 CI 全绿，proactive 两端开关仍保持 false，生产启用必须等待 72 小时结论并取得单独确认。
+
+## 34. 2026-08-30 主人命令与主动提醒完成本地发布门
+
+- 提醒投递绑定升级为显式版本。生产升级前已确认的 OneBot 提醒作为 version 1 保留原审批哈希并只允许沿原 `qq` 通道履行；它们不能转换成官方 Bot/OpenID 投递。所有新提醒是 version 2，主人确认哈希同时覆盖 delivery channel、surface、Bot account 与 target。由官方通道创建的新提醒只能来自 owner C2C，并回投同一 Bot 的 owner OpenID。
+- Agent 与 Node sidecar 使用两道独立、默认 false 的 proactive 开关。主动请求只允许 owner C2C 且不携带入站 `msgId`；Sidecar 在跨越 provider 边界前持久写入请求指纹与 `UNKNOWN` claim，进程替换后同一键只能返回已有 UNKNOWN/终态，不能再次调用平台。被动回复与群 `@` 仍走原授权路径，不存在 NapCat/官方群之间的透明切换。
+- 官方 owner C2C 命令采用显式 allowlist：help、status、server status、risk、提醒管理和只读记忆查询。官方群 owner 命令、运行开关、白名单、速率、备份、记忆变更和日计划继续在副作用前拒绝；本切片不宣称已完成“全部主人能力”。
+- 新增 `activate_official_owner_proactive.sh`，只有同时提供主动发送和 72 小时已验收两个固定确认才可执行。它检查被动服务、单 Gateway、三容器健康、提醒 schema、零活动批次，把两份私有配置备份到 `/srv/trash` 后原子开启双门，只重建 official sidecar 与 Agent；任一后验失败同时回滚配置与服务，并强制验证 NapCat 身份、启动时间和重启计数不变。
+- Windows 本地完整门禁为 Python `342 passed, 5 skipped`，Ruff 检查通过；格式修正后的受影响测试 `35 passed`。Node 语法与测试为 `37 passed, 8 skipped`；跳过项均为既有/新增 POSIX 权限、UDS 和真实进程替换覆盖，必须由 Ubuntu CI 零跳过解除。新增 Shell 因本机无 Bash，真实 `bash -n` 同样必须由 CI 验收。
+- 尚未部署、修改服务器私有配置、重建容器或发送消息。固定 72 小时观察尚未结束，proactive 双门必须继续为 false，测试群白名单也不得提前激活。下一步是暂存后运行基于 Git 索引的 release/secret/LF 门，提交并推送本阶段分支、创建 PR，等待两套 Ubuntu CI 全绿；即使 PR 合并，生产启用仍需窗口结论和主人新的明确确认。
+- 功能与迁移修正已由 `db43583`、`457b0a5` 提交并进入 PR #48。首轮 push 与 pull request 两套 CI 共四项全绿：Ubuntu Shell 语法、Python 零跳过、Node POSIX 持久化、npm 签名、镜像和 Compose 均通过；PR 状态为 clean/mergeable。当前只追加本 CI 证据并复验同一 PR，合并后仍不得提前部署或开启 proactive。

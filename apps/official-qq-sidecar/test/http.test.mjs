@@ -24,6 +24,11 @@ async function withServer(client, callback) {
 test("configuration is disabled by default and validates enabled secrets", () => {
   assert.equal(loadConfig({}).enabled, false);
   assert.equal(loadConfig({}).captureOnly, true);
+  assert.equal(loadConfig({}).proactiveEnabled, false);
+  assert.throws(
+    () => loadConfig({ HIGGS_OFFICIAL_QQ_PROACTIVE_ENABLED: "true" }),
+    /enabled full mode/,
+  );
   assert.throws(
     () => loadConfig({ HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED: "true" }),
     /invalid AppID/,

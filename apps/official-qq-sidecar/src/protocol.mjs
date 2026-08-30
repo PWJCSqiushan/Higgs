@@ -42,6 +42,7 @@ export function normalizeSendRequest(value) {
       "generation",
       "request_id",
       "idempotency_key",
+      "delivery_mode",
       "kind",
       "target_id",
       "text",
@@ -60,6 +61,10 @@ export function normalizeSendRequest(value) {
   if (!KINDS.has(value.kind) || !isSafeId(value.target_id)) {
     throw new ProtocolError("invalid_target");
   }
+  const deliveryMode = value.delivery_mode ?? "passive";
+  if (!new Set(["passive", "proactive"]).has(deliveryMode)) {
+    throw new ProtocolError("invalid_delivery_mode");
+  }
   if (
     typeof value.text !== "string" ||
     value.text.length === 0 ||
@@ -67,14 +72,21 @@ export function normalizeSendRequest(value) {
   ) {
     throw new ProtocolError("invalid_text");
   }
-  if (!isSafeId(value.reply_message_id)) {
+  if (deliveryMode === "passive" && !isSafeId(value.reply_message_id)) {
     throw new ProtocolError("reply_message_id_required");
+  }
+  if (
+    deliveryMode === "proactive" &&
+    (value.kind !== "c2c" || value.reply_message_id !== null)
+  ) {
+    throw new ProtocolError("invalid_proactive_target", 403);
   }
   return Object.freeze({
     protocol_version: PROTOCOL_VERSION,
     generation: value.generation,
     request_id: value.request_id,
     idempotency_key: value.idempotency_key,
+    delivery_mode: deliveryMode,
     kind: value.kind,
     target_id: value.target_id,
     text: value.text,
@@ -108,6 +120,7 @@ export function requestFingerprint(request) {
         request.target_id,
         request.text,
         request.reply_message_id,
+        request.delivery_mode,
       ]),
       "utf8",
     )
@@ -259,6 +272,18 @@ export class ReceiptCache {
     while (this.items.size > this.limit) {
       this.items.delete(this.items.keys().next().value);
     }
+  }
+
+  claimProactive(key, fingerprint) {
+    const found = this.items.get(key);
+    if (found) {
+      if (found.fingerprint !== fingerprint) {
+        throw new ProtocolError("idempotency_collision", 409);
+      }
+      return false;
+    }
+    this.put(key, fingerprint, { state: "unknown", provider_message_id: null });
+    return true;
   }
 }
 

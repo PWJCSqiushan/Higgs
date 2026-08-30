@@ -136,6 +136,35 @@ def test_official_test_group_activation_is_atomic_and_reversible() -> None:
     assert ".unlink(" not in text
 
 
+def test_official_owner_proactive_activation_is_double_gated_and_reversible() -> None:
+    text = (ROOT / "deploy/existing-server/activate_official_owner_proactive.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "ACTIVATE_OWNER_PROACTIVE" in text
+    assert "STABILITY_72H_ACCEPTED" in text
+    assert "R_AGENT_OFFICIAL_QQ_PROACTIVE_ENABLED" in text
+    assert "HIGGS_OFFICIAL_QQ_PROACTIVE_ENABLED" in text
+    assert "delivery_binding_version<2" in text
+    assert "delivery_channel IS NULL OR delivery_channel!='qq'" in text
+    assert "restore_private_configuration" in text
+    assert "rollback_required=true" in text
+    assert "/srv/trash/higgs-official-owner-proactive-" in text
+    assert "official_processing_batches WHERE state!='complete'" in text
+    assert "--force-recreate official-qq-sidecar" in text
+    assert "--force-recreate agent" in text
+    assert "NapCat changed unexpectedly" in text
+    assert "docker logs" not in text
+    assert "\nrm " not in text
+    assert ".unlink(" not in text
+
+
+def test_official_proactive_configuration_examples_default_off() -> None:
+    agent = (ROOT / "apps/r-agent/.env.phase2.example").read_text(encoding="utf-8")
+    sidecar = (ROOT / "deploy/existing-server/official-qq.env.example").read_text(encoding="utf-8")
+    assert "R_AGENT_OFFICIAL_QQ_PROACTIVE_ENABLED=false" in agent
+    assert "HIGGS_OFFICIAL_QQ_PROACTIVE_ENABLED=false" in sidecar
+
+
 def test_opencloudos_build_prefetches_locked_dependencies_before_offline_sync() -> None:
     text = (ROOT / "apps/r-agent/Dockerfile.opencloudos").read_text(encoding="utf-8")
     pyproject = (ROOT / "apps/r-agent/pyproject.toml").read_text(encoding="utf-8")

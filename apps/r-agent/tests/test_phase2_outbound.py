@@ -7,6 +7,8 @@ from r_agent.phase2_cli import (
     ONLINE_PROBE_INTERVAL_SECONDS,
     ONLINE_PROBE_MAX_DETECTION_SECONDS,
     ONLINE_PROBE_TIMEOUT_SECONDS,
+    _official_reminder_target,
+    _onebot_reminder_target,
 )
 from r_agent.phase2_outbound import (
     OutboundError,
@@ -15,6 +17,7 @@ from r_agent.phase2_outbound import (
     send_onebot_group_message,
     send_onebot_reply,
 )
+from r_agent.reminders import DueOccurrence
 
 
 def event() -> InboundEvent:
@@ -30,6 +33,57 @@ def event() -> InboundEvent:
         text="hello",
         mentioned=False,
     )
+
+
+def reminder_occurrence(*, channel: str = "qq_official") -> DueOccurrence:
+    return DueOccurrence(
+        occurrence_key="job:0",
+        job_id="job",
+        owner_qq="owner-id",
+        content="study",
+        attempt=0,
+        scheduled_at_ms=1,
+        origin_channel=channel,
+        origin_surface="private",
+        origin_conversation_id=f"{channel}:private:bot-id:owner-id",
+        delivery_channel=channel,
+        delivery_surface="private",
+        delivery_account_id="bot-id",
+        delivery_target_id="owner-id",
+    )
+
+
+def test_reminder_targets_require_exact_persisted_channel_account_and_owner() -> None:
+    official = reminder_occurrence()
+    target = _official_reminder_target(
+        official,
+        owner_openid="owner-id",
+        account_id="bot-id",
+    )
+    assert target is not None
+    assert target.conversation_id == "qq_official:private:bot-id:owner-id"
+    assert (
+        _official_reminder_target(
+            official,
+            owner_openid="another-owner",
+            account_id="bot-id",
+        )
+        is None
+    )
+    assert (
+        _official_reminder_target(
+            official,
+            owner_openid="owner-id",
+            account_id="another-bot",
+        )
+        is None
+    )
+
+    onebot = reminder_occurrence(channel="qq")
+    onebot_target = _onebot_reminder_target(onebot)
+    assert onebot_target is not None
+    assert onebot_target.conversation_id == "qq:private:bot-id:owner-id"
+    assert _onebot_reminder_target(official) is None
 
 
 class FakeSocket:
