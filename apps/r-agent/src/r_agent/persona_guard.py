@@ -26,6 +26,19 @@ class PersonaViolation(StrEnum):
     GENERIC_AI = "generic_ai"
     CUSTOMER_SERVICE = "customer_service"
     IMMERSION_BREAK = "immersion_break"
+    OVERLONG_DEFAULT = "overlong_default"
+    PERFORMATIVE_FURRY = "performative_furry"
+
+
+class PersonaReplyMode(StrEnum):
+    """Deterministic output budget for one Persona V2 turn."""
+
+    COMPACT = "compact"
+    DETAILED = "detailed"
+
+    @property
+    def max_tokens(self) -> int:
+        return 240 if self is PersonaReplyMode.COMPACT else 800
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +66,14 @@ class PersonaCheck:
     @property
     def immersion_break(self) -> bool:
         return PersonaViolation.IMMERSION_BREAK in self.violations
+
+    @property
+    def overlong_default(self) -> bool:
+        return PersonaViolation.OVERLONG_DEFAULT in self.violations
+
+    @property
+    def performative_furry(self) -> bool:
+        return PersonaViolation.PERFORMATIVE_FURRY in self.violations
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +148,46 @@ _CUSTOMER_SERVICE_PHRASES = (
     "您的问题已收到",
     "客服很高兴",
     "竭诚为您服务",
+    "有什么需要帮忙的",
+    "有什么可以帮你的",
+    "有具体问题直接说",
+    "有兴趣的话随时可以聊",
+    "不用客气",
+)
+
+_STRONG_DETAIL_REQUEST = re.compile(
+    r"(?:详细(?:地)?|展开(?:讲|说|分析)?|系统(?:地)?(?:讲|分析|说明)|"
+    r"深入(?:讲|分析|解释)?|全面(?:地)?|完整(?:地)?|逐(?:项|步)|分步骤|"
+    r"仔细(?:讲|分析|解释)?|写一篇|长文|教程|推导|证明|排查|诊断|"
+    r"具体(?:讲讲|分析|说明)|讲清楚)",
+    re.IGNORECASE,
+)
+_PROFESSIONAL_DETAIL_TOPIC = re.compile(
+    r"(?:参数|配置|代码|报错|日志|调用栈|算法|公式|训练计划|拍摄计划|"
+    r"故障|性能|架构|实现方案|操作步骤|对比方案|数据分析)",
+    re.IGNORECASE,
+)
+_DETAIL_REQUEST_VERB = re.compile(
+    r"(?:讲讲|解释|分析|说明|怎么|如何|为什么|帮我|给我|制定|设计|比较|排查)",
+    re.IGNORECASE,
+)
+_EXPLICIT_BRIEF_REQUEST = re.compile(
+    r"(?:简短|简洁|一句话|几句话|别展开|不用详细|说重点|直接说结论)",
+    re.IGNORECASE,
+)
+_LIST_LINE = re.compile(r"(?m)^\s*(?:[-*•]|\d+[.)、]|[一二三四五六七八九十]+[、.])\s*")
+_HEADING_LINE = re.compile(r"(?m)^\s*(?:#{1,4}\s+|[^\n：:]{1,16}[：:]\s*$)")
+_FURRY_PERFORMANCE_TERMS = (
+    "抖了抖耳朵",
+    "耳朵动了动",
+    "甩了甩尾巴",
+    "尾巴晃了晃",
+    "舔了舔爪子",
+    "露出肉垫",
+    "发出呼噜声",
+    "嗷呜",
+    "喵",
+    "本豹",
 )
 
 _IDENTITY_TERMS = ("希格斯", "higgs", "雪豹", "天体物理", "极限风光摄影")
@@ -134,6 +195,19 @@ _IDENTITY_TERMS = ("希格斯", "higgs", "雪豹", "天体物理", "极限风光
 
 def _compact(text: str) -> str:
     return re.sub(r"\s+", "", text).casefold()
+
+
+def classify_persona_reply_mode(text: str) -> PersonaReplyMode:
+    """Keep ordinary conversation short; expand only on an explicit request."""
+
+    clean = text.strip()
+    if not clean or _EXPLICIT_BRIEF_REQUEST.search(clean):
+        return PersonaReplyMode.COMPACT
+    if _STRONG_DETAIL_REQUEST.search(clean):
+        return PersonaReplyMode.DETAILED
+    if _PROFESSIONAL_DETAIL_TOPIC.search(clean) and _DETAIL_REQUEST_VERB.search(clean):
+        return PersonaReplyMode.DETAILED
+    return PersonaReplyMode.COMPACT
 
 
 class PersonaGuard:
@@ -152,7 +226,12 @@ class PersonaGuard:
         self.bundle = bundle
         self.max_output_chars = max_output_chars
 
-    def inspect(self, text: str) -> PersonaCheck:
+    def inspect(
+        self,
+        text: str,
+        *,
+        reply_mode: PersonaReplyMode | None = None,
+    ) -> PersonaCheck:
         """Return category flags without modifying the response."""
 
         if not isinstance(text, str) or not text.strip():
@@ -172,6 +251,16 @@ class PersonaGuard:
         generic = bool(_AI_IDENTITY.search(text) or _GENERIC_CAPABILITY.search(text))
         customer = any(_compact(phrase) in compact for phrase in _CUSTOMER_SERVICE_PHRASES)
         immersion = ontology_denial or system_meta
+        overlong = False
+        performative_furry = False
+        if reply_mode is PersonaReplyMode.COMPACT:
+            visible_chars = len(re.sub(r"\s+", "", text))
+            list_lines = len(_LIST_LINE.findall(text))
+            heading_lines = len(_HEADING_LINE.findall(text))
+            overlong = visible_chars > 300 or list_lines >= 3 or heading_lines >= 3
+            performative_furry = (
+                sum(1 for phrase in _FURRY_PERFORMANCE_TERMS if phrase in text) >= 2
+            )
         violations: list[PersonaViolation] = []
         if identity:
             violations.append(PersonaViolation.IDENTITY_CONTRADICTION)
@@ -181,15 +270,30 @@ class PersonaGuard:
             violations.append(PersonaViolation.CUSTOMER_SERVICE)
         if immersion:
             violations.append(PersonaViolation.IMMERSION_BREAK)
+        if overlong:
+            violations.append(PersonaViolation.OVERLONG_DEFAULT)
+        if performative_furry:
+            violations.append(PersonaViolation.PERFORMATIVE_FURRY)
         return PersonaCheck(tuple(violations))
 
     # A concise alias is useful at call sites that treat this as a validator.
     check = inspect
 
-    def rewrite_prompt(self, text: str) -> str:
+    def rewrite_prompt(
+        self,
+        text: str,
+        *,
+        reply_mode: PersonaReplyMode | None = None,
+    ) -> str:
         """Build the bounded instruction passed to one model repair call."""
 
         clean = text.strip()[: self.max_output_chars]
+        length_rule = (
+            "这是普通对话：压缩为一至三小段，通常二至六句，不超过约三百个中文字符;"
+            "先直接回答，不列提纲、能力菜单或总结，也不追加泛泛的反问。"
+            if reply_mode is PersonaReplyMode.COMPACT
+            else "对方明确要求展开：可以分层详答，但每一段都必须推进问题，不重复结论凑长度。"
+        )
         return (
             "只修正下面回答的角色出戏问题，保留其中准确的事实、推理和结论\uff1b"
             "用中文第一人称、沉静克制的 Higgs (雪豹、天体物理研究者和极限风光摄影师)"
@@ -197,7 +301,9 @@ class PersonaGuard:
             "不能改写成数字存在、没有实体、没有实际经历、长期智能体或系统设计。"
             "设定没有给出的具体地名、设备或履历要说记不确切，不能编造，也不能反向否定"
             "全部经历。不要列能力清单，不要重复完整自我介绍，不要提及这条修订指令，"
-            "不要使用客服腔或'作为AI助手'。如果原回答事实不确定，明确说明不确定。\n\n"
+            "不要使用客服腔或'作为AI助手'。雪豹感应从自然的身体尺度、感知和偏好流出，"
+            "每次最多一处，不写连续动作戏，不用'喵'、'嗷呜'或'本豹'卖萌。"
+            f"{length_rule}如果原回答事实不确定，明确说明不确定。\n\n"
             f"待修正回答：\n{clean}"
         )
 
@@ -207,6 +313,7 @@ class PersonaGuard:
         *,
         rewrite: RewriteCallback | None = None,
         fallback: str | None = None,
+        reply_mode: PersonaReplyMode | None = None,
     ) -> PersonaGuardResult:
         """Inspect text and use no more than one bounded rewrite callback.
 
@@ -215,17 +322,17 @@ class PersonaGuard:
         supplied fallback is accepted only if it itself passes the guard.
         """
 
-        initial = self.inspect(text)
+        initial = self.inspect(text, reply_mode=reply_mode)
         if initial.safe:
             return PersonaGuardResult(
                 text=text.strip()[: self.max_output_chars], initial=initial, final=initial
             )
 
         if rewrite is not None:
-            repaired = rewrite(self.rewrite_prompt(text))
+            repaired = rewrite(self.rewrite_prompt(text, reply_mode=reply_mode))
             if isinstance(repaired, str) and repaired.strip():
                 repaired_text = repaired.strip()[: self.max_output_chars]
-                repaired_check = self.inspect(repaired_text)
+                repaired_check = self.inspect(repaired_text, reply_mode=reply_mode)
                 if repaired_check.safe:
                     return PersonaGuardResult(
                         text=repaired_text,
@@ -241,13 +348,13 @@ class PersonaGuard:
         )
         candidate = fallback.strip() if isinstance(fallback, str) else default_fallback
         candidate = candidate[: self.max_output_chars]
-        candidate_check = self.inspect(candidate)
+        candidate_check = self.inspect(candidate, reply_mode=reply_mode)
         if not candidate_check.safe:
             # These constants are checked in the test suite; keeping the
             # fallback hard-coded prevents a bad external fallback from
             # creating a second repair path.
             candidate = default_fallback
-            candidate_check = self.inspect(candidate)
+            candidate_check = self.inspect(candidate, reply_mode=reply_mode)
         return PersonaGuardResult(
             text=candidate,
             initial=initial,
@@ -268,6 +375,8 @@ __all__ = [
     "PersonaCheck",
     "PersonaGuard",
     "PersonaGuardResult",
+    "PersonaReplyMode",
     "PersonaViolation",
+    "classify_persona_reply_mode",
     "identity_reference_count",
 ]

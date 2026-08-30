@@ -23,7 +23,11 @@ from r_agent.memory import MemoryError
 from r_agent.model_client import ModelError, OpenAICompatibleClient
 from r_agent.owner_commands import OwnerCommandRouter
 from r_agent.persona_bundle import PersonaBundle, PersonaV2Gate
-from r_agent.persona_guard import PersonaGuard
+from r_agent.persona_guard import (
+    PersonaGuard,
+    PersonaReplyMode,
+    classify_persona_reply_mode,
+)
 from r_agent.recall import RecallError
 from r_agent.reminders import (
     SHANGHAI,
@@ -312,25 +316,30 @@ class PersonaBrain:
         text: str,
         *,
         system_prompt: str,
+        reply_mode: PersonaReplyMode,
     ) -> str:
         """Apply at most one model repair before a deterministic fallback."""
 
         guard = self.persona_guard
-        if guard is None or guard.inspect(text).safe:
+        if guard is None or guard.inspect(text, reply_mode=reply_mode).safe:
             return text
         if self.client is not None:
             try:
                 repaired = await self.client.complete_messages(
                     messages=(
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": guard.rewrite_prompt(text)},
-                    )
+                        {
+                            "role": "user",
+                            "content": guard.rewrite_prompt(text, reply_mode=reply_mode),
+                        },
+                    ),
+                    max_tokens=reply_mode.max_tokens,
                 )
             except ModelError:
                 repaired = None
-            if repaired is not None and guard.inspect(repaired).safe:
+            if repaired is not None and guard.inspect(repaired, reply_mode=reply_mode).safe:
                 return repaired
-        return guard.apply(text).text
+        return guard.apply(text, reply_mode=reply_mode).text
 
     async def draft(self, event: InboundEvent) -> str:
         if self.context_builder is not None:
@@ -489,6 +498,7 @@ class PersonaBrain:
                     event,
                     principal_role=principal.role,
                 )
+                persona_reply_mode = classify_persona_reply_mode(event.text)
                 context_kwargs = {
                     "principal_id": principal.principal_id,
                     "principal_role": principal.role,
@@ -496,6 +506,7 @@ class PersonaBrain:
                 }
                 if use_persona_v2:
                     context_kwargs["use_persona_v2"] = True
+                    context_kwargs["persona_reply_mode"] = persona_reply_mode
                 context = await asyncio.to_thread(
                     self.context_builder.build,
                     event,
@@ -503,11 +514,15 @@ class PersonaBrain:
                 )
             except (ConversationError, MemoryError, RecallError, TypeError) as exc:
                 raise ModelError("safe context construction failed") from exc
-            reply = await self.client.complete_messages(messages=context.messages)
+            reply = await self.client.complete_messages(
+                messages=context.messages,
+                max_tokens=(persona_reply_mode.max_tokens if use_persona_v2 else 400),
+            )
             if use_persona_v2:
                 return await self._guard_persona_reply(
                     reply,
                     system_prompt=context.messages[0]["content"],
+                    reply_mode=persona_reply_mode,
                 )
             return reply
         if self.client is None:

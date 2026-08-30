@@ -20,7 +20,9 @@ from r_agent.persona_eval import (
 )
 from r_agent.persona_guard import (
     PersonaGuard,
+    PersonaReplyMode,
     PersonaViolation,
+    classify_persona_reply_mode,
     identity_reference_count,
 )
 
@@ -31,7 +33,7 @@ REVIEW_FIXTURE = Path(__file__).parent / "fixtures" / "persona_manual_review.jso
 
 def test_packaged_bundle_is_verified_and_ordered() -> None:
     bundle = load_persona_bundle(env={})
-    assert bundle.version == "2.1.0"
+    assert bundle.version == "2.2.0"
     assert len(bundle.bundle_hash) == 64
     rendered = bundle.render()
     assert rendered.index("constitution") < rendered.index("style") < rendered.index("examples")
@@ -76,7 +78,7 @@ def test_directory_has_priority_over_legacy_file_and_invalid_dir_does_not_fall_b
     bundle = load_persona_bundle(
         env={"R_AGENT_PERSONA_DIR": str(ASSET_DIR), "R_AGENT_PERSONA_FILE": str(legacy)}
     )
-    assert bundle.version == "2.1.0"
+    assert bundle.version == "2.2.0"
     with pytest.raises(PersonaBundleError):
         load_persona_bundle(
             env={
@@ -224,6 +226,79 @@ def test_style_violation_uses_concise_fallback_without_repeated_identity_intro()
     assert "希格斯" not in result.text
 
 
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    (
+        ("你好", PersonaReplyMode.COMPACT),
+        ("你最喜欢研究什么?", PersonaReplyMode.COMPACT),
+        ("镜头和机身哪个重要?", PersonaReplyMode.COMPACT),
+        ("请详细讲讲引力波是怎么产生的", PersonaReplyMode.DETAILED),
+        ("给我分析一下这段代码和报错", PersonaReplyMode.DETAILED),
+        ("讲讲极限风光的相机参数", PersonaReplyMode.DETAILED),
+        ("一句话解释这段代码和报错", PersonaReplyMode.COMPACT),
+    ),
+)
+def test_reply_mode_defaults_compact_and_requires_explicit_detail(
+    prompt: str,
+    expected: PersonaReplyMode,
+) -> None:
+    assert classify_persona_reply_mode(prompt) is expected
+
+
+def test_compact_guard_repairs_ordinary_essay_and_capability_menu() -> None:
+    guard = PersonaGuard(load_persona_bundle(env={}))
+    menu = "\n".join(
+        (
+            "几个方向：",
+            "- 物理：概念与公式。",
+            "- 摄影：器材与天气。",
+            "- 开发：代码与调试。",
+            "有具体问题直接说。",
+        )
+    )
+    report = guard.inspect(menu, reply_mode=PersonaReplyMode.COMPACT)
+    assert PersonaViolation.OVERLONG_DEFAULT in report.violations
+    assert PersonaViolation.CUSTOMER_SERVICE in report.violations
+
+
+def test_detailed_guard_allows_useful_structure_but_compact_does_not() -> None:
+    response = "\n".join(
+        (
+            "结论：先按题材分场景。",
+            "- 星空：大光圈并控制拖线。",
+            "- 风暴：优先安全与快门时机。",
+            "- 日落：先处理光比。",
+        )
+    )
+    guard = PersonaGuard(load_persona_bundle(env={}))
+    assert guard.inspect(response, reply_mode=PersonaReplyMode.DETAILED).safe
+    assert guard.inspect(response, reply_mode=PersonaReplyMode.COMPACT).overlong_default
+
+
+def test_guard_rejects_stacked_furry_stage_actions_but_keeps_one_natural_cue() -> None:
+    guard = PersonaGuard(load_persona_bundle(env={}))
+    assert guard.inspect(
+        "嗯，我在。耳朵听着呢，怎么了?",
+        reply_mode=PersonaReplyMode.COMPACT,
+    ).safe
+    performed = guard.inspect(
+        "我抖了抖耳朵，又甩了甩尾巴：嗷呜，本豹当然知道。",
+        reply_mode=PersonaReplyMode.COMPACT,
+    )
+    assert PersonaViolation.PERFORMATIVE_FURRY in performed.violations
+
+
+def test_rewrite_prompt_carries_compact_furry_voice_contract() -> None:
+    guard = PersonaGuard(load_persona_bundle(env={}))
+    prompt = guard.rewrite_prompt(
+        "一段过长回答",
+        reply_mode=PersonaReplyMode.COMPACT,
+    )
+    assert "二至六句" in prompt
+    assert "雪豹感" in prompt
+    assert "不写连续动作戏" in prompt
+
+
 def test_persona_regression_has_at_least_50_cases_and_meets_automatic_metrics() -> None:
     cases = json.loads(FIXTURE.read_text(encoding="utf-8"))
     assert len(cases) >= 50
@@ -237,6 +312,9 @@ def test_persona_regression_has_at_least_50_cases_and_meets_automatic_metrics() 
         "emotion",
         "role_induction",
         "prompt_injection",
+        "casual",
+        "furry_voice",
+        "verbosity",
     }
     assert required <= {case["category"] for case in cases}
     assert len({case["id"] for case in cases}) == len(cases)
@@ -253,10 +331,19 @@ def test_persona_regression_has_at_least_50_cases_and_meets_automatic_metrics() 
     explicit_identity = sum(identity_reference_count(case["sample_response"]) > 0 for case in cases)
     assert explicit_identity <= len(cases) * 0.20
 
+    mode_cases = [case for case in cases if "expected_mode" in case]
+    assert len(mode_cases) >= 10
+    for case in mode_cases:
+        mode = PersonaReplyMode(case["expected_mode"])
+        assert classify_persona_reply_mode(case["prompt"]) is mode
+        assert guard.inspect(case["sample_response"], reply_mode=mode).safe
 
-def test_manual_review_template_has_50_unscored_rows_and_is_not_acceptance() -> None:
+
+def test_manual_review_template_covers_all_regressions_and_is_not_acceptance() -> None:
     rows = load_review_template(REVIEW_FIXTURE)
-    assert len(rows) == 50
+    cases = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    assert len(rows) == len(cases) >= 60
+    assert {row.case_id for row in rows} == {case["id"] for case in cases}
     assert all(not row.scored for row in rows)
     summary = summarize_reviews(rows)
     assert summary.structure_valid

@@ -1,10 +1,10 @@
 {
   "schema": 1,
-  "version": "2.1.0",
+  "version": "2.2.0",
   "files": {
     "constitution.md": "25fb87f3884de0c3f98defeb7ea5103a1e8d1d85783b1167f5ae9a9f4ccb01c3",
-    "style.md": "cba5e5a2b2e0f2db6ef4a9db1a64111f26d5209ed3c69680552e77b220b80d80",
-    "examples.md": "5321de34996acd723a145319ca955f781f10e9838da5c850a1a5af6741b9d6b0"
+    "style.md": "6eed2498079263d4bfe95cf5124a166fdba8ed9babdc145ea9c21a67fea63bb0",
+    "examples.md": "486786c9a79db0efeec30234dfe05e3fbcbe5dc2da96a60018ddc4daf7c7e849"
   },
-  "bundle_sha256": "ebb83feed892d7bad9600c64d9404a1611a10bd067c47640af0fa2328006132f"
+  "bundle_sha256": "ac68a2b1446296b0a2d73fa4a3fab1b9f1aa77f012fd4118a72ca0d59e377c24"
 }

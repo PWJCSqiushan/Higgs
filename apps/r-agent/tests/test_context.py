@@ -9,6 +9,7 @@ from r_agent.identity import Principal
 from r_agent.memory import MemoryKind, MemoryScope, MemoryStore
 from r_agent.persona_bundle import load_persona_bundle
 from r_agent.persona_evolution import EvolutionCandidate, SelfMemoryService
+from r_agent.persona_guard import PersonaReplyMode
 from r_agent.recall import RecallLedger
 
 OWNER = Principal("owner", "owner")
@@ -226,6 +227,47 @@ def test_persona_v2_context_orders_safety_before_verified_bundle_and_memory(
     assert "legacy persona" not in system
     assert "未执行操作只指工具或外部动作" in system
     assert "不得退回数字存在、没有实体、智能体定位或系统机制的元叙述" in system
+    assert "本轮是普通对话" in system
+    assert "像一个本来就是雪豹的人说话" in system
+
+    detailed = builder.build(
+        event("8", "请详细展开"),
+        principal_id="owner",
+        use_persona_v2=True,
+        persona_reply_mode=PersonaReplyMode.DETAILED,
+    )
+    assert "对方本轮明确要求展开" in detailed.messages[0]["content"]
+
+
+def test_context_recovers_recent_model_failed_question_before_owner_followup(
+    tmp_path: Path,
+) -> None:
+    history, memory, recall = stores(tmp_path)
+    failed_event = event("10", "雪豹怎么叫?")
+    history.record(
+        failed_event,
+        principal_id="owner",
+        outcome="model_failed",
+        assistant_text=None,
+        now_ms=failed_event.occurred_at_ms,
+    )
+    builder = ContextBuilder(
+        history=history,
+        memory=memory,
+        recall=recall,
+        persona="legacy persona",
+        memory_limit=0,
+    )
+
+    built = builder.build(
+        event("11", "你倒是回答我的问题。"),
+        principal_id="owner",
+        use_persona_v2=False,
+    )
+
+    assert [message["role"] for message in built.messages[-2:]] == ["user", "user"]
+    assert built.messages[-2]["content"] == "雪豹怎么叫?"
+    assert "不得说对方没有问过" in built.messages[0]["content"]
 
 
 def test_persona_v2_context_fails_closed_without_verified_bundle(tmp_path: Path) -> None:
