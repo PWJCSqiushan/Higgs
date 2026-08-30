@@ -462,3 +462,15 @@
 - 本节点只完成离线代码、测试和文档；没有连接生产、部署、改开关、迁移数据库、重建容器、发送消息或改变 Persona 2.1 的 24 小时观察。必须先同步最新远端主线、独立 PR/CI 全绿，再由主人单独确认 Persona 2.2 的 Agent-only 部署。
 - Persona 2.2 已进入 PR #62，基线为最新主线 `30f615e6c7bff1489405171bc298cc8f437240c4`。因 `github.com` Git 传输端点持续超时，使用 GitHub Git Data API 上传，并在建分支前逐层验证远端 tree 与本地 tree 完全一致；没有绕过分支或直接更新 main。
 - push run `33323748799` 与 pull_request run `33323762741` 均成功；Ubuntu 完成 Python 零跳过、Shell 语法、秘密/发布边界、格式、Ruff，以及 Node POSIX/UDS/进程替换、npm 签名、镜像和 Compose 验收。下一步只追加本证据并复验 PR；生产仍保持 Persona 2.1。
+- 追加 CI 证据后的 push/pull_request runs `33323840063`、`33323841589` 再次全绿；PR #62 已合并为主线 `6682be3c33c78b1e486286fb224af986419cb922`，合并后 main run `33323897339` 的 Python 与 official sidecar 两项任务均成功。代码阶段完成，但生产仍是 Persona 2.1；只有主人再次单独确认后，才可构建 Persona 2.2 release 并仅重建 Agent。
+
+## 48. 2026-08-31 Persona 2.2 已受控部署生产
+
+- 主人明确授权“测试通过后直接部署”。部署目标为已通过 PR #62 与 main CI 的主线 `6682be3c33c78b1e486286fb224af986419cb922`，tree `b51fb97520e6667b14a94c00d572ae320b61074d`；本地与 GitHub API 再次确认 tree 一致。617609 字节、302 成员的 Git-only 归档通过 SHA-256 `b11f848cfdb5786a3f1e766cd5860dfeebeb7333c151c73999adf0b1de3a105d`、release gate、秘密模式和 Shell LF 校验，内含 Persona Bundle `2.2.0`。
+- 匿名部署前门确认为生产仍运行 Persona `2.1.0` 与精确旧 release；Agent、official sidecar、NapCat 全部 healthy/零重启，官方 Gateway 单实例，reply 与 owner Persona V2 为 true，`qq_official` transport verified/connected/authenticated/account-match/ok 且回执新鲜，活动批次、rejected 和 fatal 均为零。self-memory schema/mode、群记忆、普通用户 C2C、官方群和 proactive 均保持关闭。
+- 新 Agent 镜像以已验收的 Persona 2.1 Agent 镜像为基座，只替换 PR #62/CI 已验收的 `r_agent` 包；依赖、锁文件与 Dockerfile 未变化。镜像切换前独立验证 Bundle 版本与聚合哈希，随后安装不可变 release。准备阶段没有切换生产，完成后把上传归档、构建文件和包装器移入 `/srv/trash`，保留可恢复副本。
+- 激活脚本在 `/srv/trash` 备份原 `stack.env` 并保存原数字属主和 `0600` 模式，原子切换 `current` 与唯一 `HIGGS_IMAGE`；任一健康门失败会恢复两项并只重建旧 Agent。本次回滚未触发，备份继续保留。Compose 仅执行 `--no-deps --no-build --force-recreate agent`。
+- 独立后验在新 Agent 稳定运行后再次通过：release、Agent 镜像和 Persona Bundle 精确为 `6682be3...`/`2.2.0`；三容器 healthy/零重启、单 Gateway、transport verified 且回执新鲜，活动批次、rejected、fatal、Resume 和 reconnect 均为零。`stack.env` 元数据未漂移，规范化比较确认除 Agent 镜像标签外没有其他配置变化；official sidecar 与 NapCat 容器指纹保持不变。
+- 生产能力边界没有扩大：Persona V2 仍只用于 owner 官方 C2C；self-memory schema/mode、群记忆、普通用户 C2C、官方群和 proactive 继续关闭。没有迁移数据库、导入观点、发送测试消息、读取身份/正文、重新登录或重启 NapCat。
+- `higgs-72` 已重置为 Persona 2.2 上线后的 24 小时只读观察，窗口为 2026-08-31 01:11:51 至 2026-09-01 01:11:51（Asia/Shanghai），每 3 小时检查 Persona 版本、开关、三容器、单 Gateway、官方 transport 和活动批次。主人可立即继续真实对话验收；开发不被观察窗口阻塞，但后续 self-memory 或普通用户/群生产开关仍需单独确认。
+- 生产记录已进入 PR #63；首轮 push run `33324831703` 与 pull_request run `33324845285` 的 Python、official sidecar 四项检查全绿，Ubuntu Python 零跳过并通过 Shell、秘密/发布包、Node POSIX、镜像与 Compose。该文档记录提交没有再次部署、重建或修改生产配置；追加本 CI 证据后仍须复验同一 PR，再合并 main。
