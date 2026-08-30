@@ -778,6 +778,7 @@ async def listen() -> None:
         transport_state=transport_state,
         server_status=server_status,
         model_candidate_shadow_store=model_candidate_store,
+        tool_governance=tool_governance,
     )
     amap_key = _value("R_AGENT_AMAP_WEB_KEY")
     daily_plans = DailyPlanService(

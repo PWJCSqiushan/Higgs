@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +31,13 @@ from r_agent.recall import RecallLedger
 from r_agent.reminders import ReminderError, ReminderStore, format_job
 from r_agent.risk_ledger import RiskLedger
 from r_agent.server_status import ServerStatusCommand
+from r_agent.tool_governance import (
+    ToolGovernance,
+    ToolReceiptState,
+    ToolRequest,
+    ToolRequestSource,
+    ToolSpec,
+)
 from r_agent.transport_state import TransportStateStore
 from r_agent.vector_memory import MemoryVectorStore
 
@@ -49,6 +57,7 @@ class OwnerCommandRouter:
     """Parse a deliberately small command language after hard owner resolution."""
 
     PREFIX = "/higgs"
+    GOVERNED_TOOL_NAME = "owner_command_mutation"
 
     def __init__(
         self,
@@ -67,6 +76,7 @@ class OwnerCommandRouter:
         transport_state: TransportStateStore | None = None,
         server_status: ServerStatusCommand | None = None,
         model_candidate_shadow_store: ModelCandidateShadowStore | None = None,
+        tool_governance: ToolGovernance | None = None,
     ) -> None:
         self.context = context
         self.vectors = vectors
@@ -82,6 +92,159 @@ class OwnerCommandRouter:
         self.transport_state = transport_state
         self.server_status = server_status
         self.model_candidate_shadow_store = model_candidate_shadow_store
+        self.tool_governance = tool_governance
+        if self.tool_governance is not None:
+            if self.tool_governance.registry.has(self.GOVERNED_TOOL_NAME):
+                raise ValueError("owner command mutation tool is already registered")
+            self.tool_governance.register(
+                ToolSpec(
+                    name=self.GOVERNED_TOOL_NAME,
+                    description="Execute one explicit owner-private local mutation.",
+                    input_schema={
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string"},
+                            "actor_principal_id": {"type": "string"},
+                        },
+                        "required": ["command", "actor_principal_id"],
+                        "additionalProperties": False,
+                    },
+                    enabled=True,
+                    requires_explicit_approval=True,
+                    allow_model_execution=False,
+                    timeout_seconds=120,
+                    rate_limit_per_minute=6,
+                    persist_result=True,
+                ),
+                self._execute_governed_mutation,
+            )
+
+    @staticmethod
+    def is_governed_mutation(text: str) -> bool:
+        """Allow only bounded, explicit owner-private mutations on official QQ."""
+
+        parts = " ".join(text.strip().casefold().split()).split()
+        if not parts or parts[0] != "/higgs":
+            return False
+        if parts in (["/higgs", "enable"], ["/higgs", "disable"]):
+            return True
+        if len(parts) == 4 and parts[1] == "keyword" and parts[2] in {"add", "remove"}:
+            return True
+        if len(parts) == 4 and parts[1] == "rate":
+            return True
+        if len(parts) == 3 and parts[1] == "debounce":
+            return True
+        if parts == ["/higgs", "backup", "now"]:
+            return True
+        if len(parts) >= 3 and parts[1] == "remind":
+            action = parts[2]
+            return (action in {"confirm", "ack", "cancel"} and len(parts) == 4) or (
+                action == "snooze" and len(parts) == 5
+            )
+        if len(parts) < 3 or parts[1] != "memory":
+            return False
+        action = parts[2]
+        if action == "auto":
+            return (len(parts) == 4 and parts[3] in {"on", "off"}) or (
+                len(parts) == 5 and parts[3] in {"threshold", "evidence"}
+            )
+        if action == "observations":
+            return len(parts) == 5 and parts[3] == "retry"
+        if action == "backfill":
+            return parts == ["/higgs", "memory", "backfill", "apply"]
+        return action in {"activate", "quarantine", "invalidate", "restore"} and len(parts) >= 4
+
+    @staticmethod
+    def _governed_receipt_reply(command: str) -> str:
+        """Return a durable result that never repeats command parameters or content."""
+
+        parts = command.casefold().split()
+        action = parts[1]
+        if action in {"enable", "disable"}:
+            return "普通回复状态已更新。"
+        if action == "keyword":
+            return "触发关键词已更新。"
+        if action == "rate":
+            return "频率限制已更新。"
+        if action == "debounce":
+            return "连续消息等待已更新。"
+        if action == "backup":
+            return "备份已完成。"
+        if action == "remind":
+            return {
+                "confirm": "提醒已确认。",
+                "ack": "提醒已完成。",
+                "cancel": "提醒已取消。",
+                "snooze": "提醒时间已更新。",
+            }[parts[2]]
+        memory_action = parts[2]
+        if memory_action == "auto":
+            return "记忆自动审核配置已更新。"
+        if memory_action == "observations":
+            return "记忆观察已重新排队。"
+        if memory_action == "backfill":
+            return "记忆候选回填已完成。"
+        return "记忆状态已更新。"
+
+    def _execute_governed_mutation(self, parameters: Mapping[str, object]) -> dict[str, str]:
+        command = parameters.get("command")
+        actor_id = parameters.get("actor_principal_id")
+        if not isinstance(command, str) or not isinstance(actor_id, str) or not actor_id:
+            raise OperatorControlError("主人变更命令参数无效")
+        if not self.is_governed_mutation(command):
+            raise OperatorControlError("该命令不属于已迁移的主人变更边界")
+        reply = self.handle(command, actor=Principal(actor_id, "owner"), surface="private")
+        if reply is None:
+            raise OperatorControlError("主人变更命令未被处理")
+        if reply.startswith("操作未执行：") or reply.startswith("未知主人命令"):
+            raise OperatorControlError("主人变更命令未完成")
+        return {"reply": self._governed_receipt_reply(command)}
+
+    async def handle_governed(
+        self,
+        text: str,
+        *,
+        actor: Principal,
+        surface: str,
+        idempotency_key: str,
+    ) -> str:
+        if actor.role != "owner" or surface.strip().casefold() != "private":
+            return "该变更命令仅允许系统配置确认的主人私聊使用。"
+        if self.tool_governance is None:
+            return "主人变更命令治理模块未启用。"
+        command = " ".join(text.strip().split())
+        if not self.is_governed_mutation(command):
+            return "该主人变更命令尚未迁移到官方 QQ 安全边界。"
+        request = ToolRequest(
+            tool_name=self.GOVERNED_TOOL_NAME,
+            parameters={
+                "command": command,
+                "actor_principal_id": actor.principal_id,
+            },
+            actor_role=actor.role,
+            actor_id=actor.principal_id,
+            source=ToolRequestSource.OWNER_COMMAND.value,
+            surface="owner_command_private",
+            idempotency_key=idempotency_key,
+            request_id=f"owner-{idempotency_key}",
+        )
+        decision = self.tool_governance.decide(
+            request,
+            approved=True,
+            approved_by=actor.principal_id,
+        )
+        receipt = await self.tool_governance.execute(request, decision=decision)
+        if receipt.state in {ToolReceiptState.SUCCEEDED, ToolReceiptState.DUPLICATE}:
+            if isinstance(receipt.result, dict) and isinstance(receipt.result.get("reply"), str):
+                return str(receipt.result["reply"])
+            return "该操作已有终态回执。为避免重复执行，请先查询当前状态。"
+        if receipt.state in {ToolReceiptState.UNKNOWN, ToolReceiptState.TIMED_OUT}:
+            return "操作结果未知，系统不会自动重试。请先查询当前状态。"
+        if receipt.state is ToolReceiptState.RATE_LIMITED:
+            return "主人变更操作过于频繁，本次未执行。"
+        if receipt.state is ToolReceiptState.DENIED:
+            return "主人变更操作未获执行许可，或幂等键与参数冲突。"
+        return "主人变更操作未完成。请查询状态后再决定是否发起新请求。"
 
     def handle(self, text: str, *, actor: Principal, surface: str = "private") -> str | None:
         clean = text.strip()

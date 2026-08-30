@@ -357,3 +357,12 @@
 - 自然提醒按原会话和 source message 幂等创建；日计划节点提醒使用内容无关的稳定 SHA-256 内部来源键。计划确认中断后重放会复用已创建节点并补齐缺失节点，不重复确认、不重复提醒；投递通道、Bot 和目标绑定冲突仍失败关闭。
 - 新增请求键复用/冲突、同事件双次草案、自然提醒双次准备、确认重复、任务状态重复，以及“首个节点已创建后注入中断并恢复”的测试。当前 Windows 完整 Python 为 `349 passed, 5 skipped`；Ruff、格式、release gate、秘密边界、Shell LF、Node 语法与 Node `37 passed, 8 skipped` 均通过。
 - 修复提交 `bb965cf` 已进入 PR #50。首轮 push 与 pull request 两套 Ubuntu CI 共四项全绿，Linux Python 零跳过、Node POSIX/真实进程替换、Shell 语法、npm 签名、镜像与 Compose 均通过。当前只追加 CI 证据并等待复验；尚未合并或部署，复验通过后才继续主人控制命令迁移。
+
+## 37. 2026-08-30 官方主人低风险变更进入持久治理边界
+
+- PR #50 已完成复验并合并为主线 `9f2c2f42277fb5de0dc6a59c537765e55a1efddd`；合并后主线 CI run `33294165462` 的 Python 与 official sidecar 两项任务均成功。该合并没有部署生产，固定 72 小时观察窗口和现有生产配置未改变。
+- 独立分支 `codex/higgs-official-owner-mutations-20260830` 复用既有 `tool_audit.sqlite`，没有增加第 14 个数据库。官方 owner C2C 的每条变更命令先以通道、Bot account 和平台消息标识生成内容无关的 SHA-256 操作键，再由 Stage 3 工具治理在执行前持久领取；同键同参数重放复用终态，同键参数漂移拒绝，领取后崩溃保持 `UNKNOWN` 且不得自动重试。
+- 迁移范围仅含明确、低风险的普通回复开关、触发词、频率、连续消息等待、记忆自动审核/观察重试/候选回填/状态审核、备份和提醒状态操作。官方 OpenID 与个人 QQ 数字身份不得混用，因此好友/群白名单和自然触发群变更继续拒绝；测试群仍须走既有双阶段私有绑定流程。
+- 治理审计只保存 actor/参数哈希和不含命令参数、提醒正文、记忆内容、身份或平台标识的固定结果摘要。旧命令路由返回的“操作未执行”会转换为失败终态，不再伪记成功；提醒等可能包含业务正文的旧展示回复不会进入持久回执。
+- 故障测试覆盖成功回放只执行一次、同键参数冲突、执行前领取后进程替换得到 `UNKNOWN`、真实配置与记忆变更重复回放只产生一次状态转换，以及失败不持久化为成功。当前本地 Python `368 passed, 5 skipped`，Node `37 passed, 8 skipped`；Ruff、格式、发布门、秘密边界、Shell LF 和 `git diff --check` 全部通过。
+- 功能提交 `34a7039` 已进入 PR #51；push run `33294949353` 与 pull request run `33294958839` 的 Python、official sidecar 四项任务全绿，Ubuntu Python 零跳过，Node POSIX/UDS/进程替换、Shell 语法、npm 签名、镜像和 Compose 均通过。当前只追加 CI 证据并复验；尚未合并或部署生产。
