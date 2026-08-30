@@ -449,3 +449,4 @@
 - 独立匿名后验通过：三容器 healthy/零重启，官方 Gateway 为一个，reply=true，`qq_official` transport 为 verified/connected/authenticated/account-match/ok，健康回执小于 120 秒，rejected、fatal 与 active batches 均为零。`stack.env` 的模式和数字属主与备份一致。
 - 生产能力边界没有扩大：Persona V2 仍只用于 owner 官方 C2C；self-memory schema/mode、群记忆、普通用户 C2C、官方群和 proactive 均保持关闭。未迁移数据库、导入摄影观点、发送测试消息、读取身份或正文、重登或重启 NapCat。
 - `higgs-72` 已重置为 Persona 2.1 新基线后的 24 小时观察，窗口为 2026-08-30 23:26:02 至 2026-08-31 23:26:02（Asia/Shanghai），每 3 小时只读检查。下一步由主人继续真实 owner C2C 对话验收；本次生产记录仍须独立分支、PR、CI 后合并，不得直接推送 `main`。
+- 生产记录已进入 PR #61。首轮 CI 在上海深夜暴露 8 个日计划测试仍用真实入站时间、而只冻结业务模块时钟的夹具缺陷；测试事件现与既有固定上午时钟使用同一常量，避免按 CI 运行时刻误判“当天无法完成”。本地 Python `439 passed, 5 skipped`、Node `47 passed, 9 skipped`、Ruff/格式和 release gate 通过；修正后的 push/PR runs `33320282139`、`33320283690` 四项全绿，Ubuntu Python 零跳过并通过 Node、Shell、镜像与 Compose。该测试修正不改变生产代码或运行状态。

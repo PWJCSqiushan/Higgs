@@ -448,3 +448,4 @@
 - 上线后匿名门禁为三容器 healthy/零重启、单 Gateway、reply=true、transport verified/connected/authenticated/account-match/ok、健康回执新鲜、零 rejected/fatal/active batches；私有配置元数据未漂移。
 - self-memory schema/mode、群记忆、普通用户、官方群和 proactive 继续关闭；没有迁移数据库、导入观点、发送消息、读取身份/正文、重新登录或重启 NapCat。生产能力只从 owner Persona V2 的 `2.0.0` 更新到 `2.1.0`。
 - `higgs-72` 观察重置为 2026-08-30 23:26:02 至 2026-08-31 23:26:02，每 3 小时只读检查 Persona 版本、开关、三容器、单 Gateway、官方 transport 和活动批次。截止后生成结论并暂停；真实对话沉浸度仍由主人继续验收。
+- 生产记录进入 PR #61。首轮 CI 在上海深夜暴露日计划测试夹具仍用真实事件时间的问题；固定事件与业务模块时钟统一后，本地 Python `439 passed, 5 skipped`、Node `47 passed, 9 skipped`、Ruff/格式/release gate 通过，修正后的 push/PR runs `33320282139`、`33320283690` 四项全绿且 Linux Python 零跳过。修正仅涉及测试，不改变生产代码、配置或容器。
