@@ -71,7 +71,25 @@ def _official_owner_command_allowed(text: str) -> bool:
         "/higgs memory model list",
         "/higgs memory model show",
     )
-    return any(clean == prefix or clean.startswith(f"{prefix} ") for prefix in read_only_memory)
+    read_only_controls = {
+        "/higgs keyword",
+        "/higgs rate",
+        "/higgs debounce",
+        "/higgs memory auto",
+        "/higgs backup",
+    }
+    return (
+        any(clean == prefix or clean.startswith(f"{prefix} ") for prefix in read_only_memory)
+        or clean in read_only_controls
+        or OwnerCommandRouter.is_governed_mutation(clean)
+    )
+
+
+def _official_owner_operation_key(event: InboundEvent) -> str:
+    material = "\0".join(
+        ("owner-command-v1", event.channel.casefold(), event.account_id, event.message_id)
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 class ReplyDecision(StrEnum):
@@ -295,6 +313,13 @@ class PersonaBrain:
                     return plan_reply or "今日计划当前不可用。"
                 if self.owner_commands is None:
                     return "主人命令当前不可用。"
+                if self.owner_commands.is_governed_mutation(clean):
+                    return await self.owner_commands.handle_governed(
+                        clean,
+                        actor=principal,
+                        surface=event.conversation_kind.value,
+                        idempotency_key=_official_owner_operation_key(event),
+                    )
                 command_reply = await asyncio.to_thread(
                     self.owner_commands.handle,
                     clean,

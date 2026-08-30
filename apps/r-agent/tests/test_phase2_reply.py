@@ -53,10 +53,29 @@ class _ForbiddenFeature:
 class _OwnerCommands:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.governed_calls: list[tuple[str, str]] = []
 
     def handle(self, text: str, *, actor: Principal, surface: str) -> str:
         self.calls.append(text)
         return "状态正常"
+
+    @staticmethod
+    def is_governed_mutation(text: str) -> bool:
+        return text.strip().casefold() in {"/higgs enable", "/higgs disable"}
+
+    async def handle_governed(
+        self,
+        text: str,
+        *,
+        actor: Principal,
+        surface: str,
+        idempotency_key: str,
+    ) -> str:
+        assert actor.role == "owner"
+        assert surface == "private"
+        assert len(idempotency_key) == 64
+        self.governed_calls.append((text, idempotency_key))
+        return "变更已治理"
 
 
 class _DailyPlans:
@@ -240,7 +259,7 @@ async def test_official_owner_private_commands_use_an_explicit_allowlist() -> No
         )
         assert await brain.draft(allowed) == "状态正常"
 
-    blocked = InboundEvent(
+    governed = InboundEvent(
         channel=official.channel,
         account_id=official.account_id,
         sender_id=official.sender_id,
@@ -250,6 +269,21 @@ async def test_official_owner_private_commands_use_an_explicit_allowlist() -> No
         conversation_id=official.conversation_id,
         group_id=None,
         text="/higgs enable",
+        mentioned=False,
+    )
+    assert await brain.draft(governed) == "变更已治理"
+    assert len(commands.governed_calls) == 1
+
+    blocked = InboundEvent(
+        channel=official.channel,
+        account_id=official.account_id,
+        sender_id=official.sender_id,
+        message_id="21",
+        occurred_at_ms=official.occurred_at_ms,
+        conversation_kind=official.conversation_kind,
+        conversation_id=official.conversation_id,
+        group_id=None,
+        text="/higgs whitelist group add 700001",
         mentioned=False,
     )
     assert await brain.draft(blocked) == "该主人命令尚未迁移到官方 QQ 安全边界。"
