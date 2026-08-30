@@ -61,6 +61,8 @@ class FailingOwnerRouter(CountingOwnerRouter):
         ("/higgs memory observations retry abcdef12", True),
         ("/higgs memory backfill apply", True),
         ("/higgs memory activate abcdef12 reviewed", True),
+        ("/higgs memory self adopt abcdef12 reviewed", True),
+        ("/higgs memory self why abcdef12", False),
         ("/higgs backup now", True),
         ("/higgs remind snooze abcdef12 10m", True),
         ("/higgs whitelist group add 700001", False),

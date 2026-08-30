@@ -101,3 +101,28 @@ def test_natural_trigger_groups_must_be_reply_groups(
     monkeypatch.setenv("R_AGENT_REPLY_NATURAL_TRIGGER_GROUPS", "700001")
     phase = _phase2_settings(settings(shadow=True, groups=frozenset({"700001"})))
     assert phase.natural_trigger_groups == frozenset({"700001"})
+
+
+def test_self_memory_defaults_off_without_schema_migration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_REPLY_MODE", "draft")
+
+    phase = _phase2_settings(settings(shadow=True))
+
+    assert phase.self_memory_mode == "off"
+    assert phase.self_memory_schema_v4_enabled is False
+
+
+def test_self_memory_shadow_requires_explicit_schema_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_REPLY_MODE", "draft")
+    monkeypatch.setenv("R_AGENT_SELF_MEMORY_MODE", "shadow")
+    with pytest.raises(ConfigError, match="schema v4"):
+        _phase2_settings(settings(shadow=True))
+
+    monkeypatch.setenv("R_AGENT_SELF_MEMORY_SCHEMA_V4_ENABLED", "true")
+    phase = _phase2_settings(settings(shadow=True))
+    assert phase.self_memory_mode == "shadow"
+    assert phase.self_memory_schema_v4_enabled is True

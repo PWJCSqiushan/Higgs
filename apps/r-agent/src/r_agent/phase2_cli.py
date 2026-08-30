@@ -33,7 +33,7 @@ from r_agent.health import HealthReporter
 from r_agent.identity import IdentityStore, Principal
 from r_agent.ingest import IngestResult, IngestService
 from r_agent.journal import Journal
-from r_agent.memory import MemoryStore
+from r_agent.memory import MemoryKind, MemoryStore
 from r_agent.memory_v2 import MemoryObservationStore, MemoryReconciler
 from r_agent.model_client import ModelConfig, ModelError, OpenAICompatibleClient
 from r_agent.model_memory_candidates import (
@@ -59,6 +59,7 @@ from r_agent.persona_bundle import (
     PersonaV2Gate,
     load_persona_bundle,
 )
+from r_agent.persona_evolution import EvolutionSource, ModelEvolutionExtractor, SelfMemoryService
 from r_agent.phase2_outbound import (
     OutboundError,
     get_onebot_account_status,
@@ -140,6 +141,8 @@ class Phase2Settings:
     embedding_dimensions: int
     history_turns: int
     memory_items: int
+    self_memory_mode: str
+    self_memory_schema_v4_enabled: bool
     backup_dir: Path
     backup_interval_minutes: int
     backup_retention: int
@@ -224,6 +227,15 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         raise ConfigError("R_AGENT_DAILY_PLAN_MODE must be off, shadow, or live")
     if daily_plan_mode == "live" and mode != "live":
         raise ConfigError("live daily plans require R_AGENT_REPLY_MODE=live")
+    self_memory_mode = _value("R_AGENT_SELF_MEMORY_MODE", "off").casefold()
+    if self_memory_mode not in {"off", "shadow", "autonomous-low-risk"}:
+        raise ConfigError("R_AGENT_SELF_MEMORY_MODE must be off, shadow, or autonomous-low-risk")
+    self_memory_schema_v4_enabled = _boolean(
+        "R_AGENT_SELF_MEMORY_SCHEMA_V4_ENABLED",
+        False,
+    )
+    if self_memory_mode != "off" and not self_memory_schema_v4_enabled:
+        raise ConfigError("self-memory modes require explicit schema v4 enablement")
     backup_dir_value = _value("R_AGENT_BACKUP_DIR")
     backup_dir = (
         Path(backup_dir_value).expanduser().resolve()
@@ -241,6 +253,8 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         max_per_minute=bounded_int("R_AGENT_REPLY_MAX_PER_MINUTE", "2", 1, 10),
         history_turns=bounded_int("R_AGENT_HISTORY_TURNS", "8", 1, 20),
         memory_items=bounded_int("R_AGENT_MEMORY_CONTEXT_ITEMS", "8", 0, 20),
+        self_memory_mode=self_memory_mode,
+        self_memory_schema_v4_enabled=self_memory_schema_v4_enabled,
         global_max_per_minute=bounded_int("R_AGENT_REPLY_GLOBAL_MAX_PER_MINUTE", "6", 1, 60),
         non_owner_hourly_limit=bounded_int("R_AGENT_REPLY_NON_OWNER_HOURLY_LIMIT", "20", 1, 500),
         non_owner_daily_limit=bounded_int("R_AGENT_REPLY_NON_OWNER_DAILY_LIMIT", "80", 1, 2000),
@@ -426,6 +440,7 @@ async def deliver_prepared_reply(
     sender: Callable[[InboundEvent, str], Awaitable[DeliveryReceipt]],
     risk_ledger: RiskLedger | None = None,
     retry_transport_unavailable: bool = False,
+    on_sent: Callable[[InboundEvent, str, DeliveryReceipt], Awaitable[None]] | None = None,
 ) -> ReplyPlan:
     """Deliver one persisted preparation; the transport owns provider idempotency."""
     if not prepared.requires_delivery:
@@ -454,6 +469,8 @@ async def deliver_prepared_reply(
                 risk_ledger.finish_send, prepared.reservation_id, outcome="failed"
             )
         return ReplyPlan(ReplyDecision.SEND_FAILED, prepared.text)
+    if on_sent is not None:
+        await on_sent(event, prepared.text, receipt)
     if risk_ledger is not None and prepared.reservation_id is not None:
         await asyncio.to_thread(risk_ledger.finish_send, prepared.reservation_id, outcome="sent")
     return ReplyPlan(ReplyDecision.SENT, prepared.text)
@@ -472,6 +489,7 @@ async def process_reply(
     qq_online: bool = True,
     risk_ledger: RiskLedger | None = None,
     risk_idempotency_key: str | None = None,
+    on_sent: Callable[[InboundEvent, str, DeliveryReceipt], Awaitable[None]] | None = None,
 ) -> ReplyPlan:
     """Backward-compatible one-shot pipeline used by the OneBot listener."""
     prepared = await prepare_reply(
@@ -491,6 +509,7 @@ async def process_reply(
         prepared=prepared,
         sender=sender,
         risk_ledger=risk_ledger,
+        on_sent=on_sent,
     )
 
 
@@ -586,7 +605,9 @@ async def listen() -> None:
         raise ConfigError("Persona V2 rollout requires the bound official owner OpenID")
     embeddings = _embedding_client(enabled=phase.embedding_enabled, phase=phase)
     safety = _safety_policy(phase)
-    client = _model_client(required=phase.mode in {"draft", "live"})
+    client = _model_client(
+        required=phase.mode in {"draft", "live"} or phase.self_memory_mode != "off"
+    )
 
     service = IngestService(
         policy=IngressPolicy(
@@ -616,7 +637,13 @@ async def listen() -> None:
     history.initialize()
     await asyncio.to_thread(history.purge_expired, settings.journal_retention_days)
     memory = MemoryStore(settings.data_dir / "memory.sqlite")
-    memory.initialize()
+    memory.initialize(self_memory_v4=phase.self_memory_schema_v4_enabled)
+    self_memory = SelfMemoryService(memory) if phase.self_memory_schema_v4_enabled else None
+    evolution_extractor = (
+        ModelEvolutionExtractor(client)
+        if phase.self_memory_mode != "off" and client is not None
+        else None
+    )
     vectors = MemoryVectorStore(memory.path, memory=memory)
     recall = RecallLedger(settings.data_dir / "memory.sqlite")
     recall.initialize()
@@ -703,6 +730,7 @@ async def listen() -> None:
         recall=recall,
         persona=persona,
         persona_bundle=persona_bundle,
+        self_memory=self_memory,
         history_limit=phase.history_turns,
         memory_limit=phase.memory_items,
         vectors=vectors,
@@ -809,6 +837,7 @@ async def listen() -> None:
         server_status=server_status,
         model_candidate_shadow_store=model_candidate_store,
         tool_governance=tool_governance,
+        self_memory=self_memory,
     )
     amap_key = _value("R_AGENT_AMAP_WEB_KEY")
     daily_plans = DailyPlanService(
@@ -880,6 +909,90 @@ async def listen() -> None:
             )
         return await onebot_adapter.send_reply(event, text)
 
+    async def observe_sent_reply(
+        event: InboundEvent,
+        text: str,
+        receipt: DeliveryReceipt,
+    ) -> None:
+        if self_memory is None or phase.self_memory_mode == "off":
+            return
+        principal = await asyncio.to_thread(
+            service.identities.resolve,
+            event.channel,
+            event.sender_id,
+        )
+        try:
+            await asyncio.to_thread(
+                self_memory.record_delivery,
+                receipt=receipt,
+                text=text,
+                account_id=event.account_id,
+                conversation_id=event.conversation_id,
+                principal_id=principal.principal_id,
+                now_ms=event.occurred_at_ms,
+            )
+        except Exception as exc:
+            _log.warning("self_memory_sent_observation_failed type=%s", type(exc).__name__)
+
+    async def reconcile_self_evolution(
+        event: InboundEvent,
+        *,
+        principal: Principal,
+        reply_text: str,
+    ) -> None:
+        if self_memory is None or evolution_extractor is None:
+            return
+        key = f"reply:{event.channel}:{event.account_id}:{event.message_id}"
+        allow_auto = phase.self_memory_mode == "autonomous-low-risk"
+        try:
+            observation = await asyncio.to_thread(
+                self_memory.get_observation_by_idempotency_key,
+                key,
+            )
+            self_results = await evolution_extractor.extract(
+                EvolutionSource(
+                    message_id=observation.reply_message_id,
+                    principal_id="persona:higgs",
+                    principal_role="owner",
+                    text=reply_text,
+                    observation_id=observation.observation_id,
+                ),
+                allowed_kind=MemoryKind.SELF_STANCE,
+            )
+            for parsed in self_results:
+                if parsed.candidate is None:
+                    continue
+                await asyncio.to_thread(
+                    self_memory.propose_from_self_observation,
+                    observation,
+                    candidate=parsed.candidate,
+                    allow_auto_activate=allow_auto,
+                    now_ms=event.occurred_at_ms,
+                )
+            external_results = await evolution_extractor.extract(
+                EvolutionSource(
+                    message_id=event.message_id,
+                    principal_id=principal.principal_id,
+                    principal_role=principal.role,
+                    text=event.text,
+                ),
+                allowed_kind=MemoryKind.ADOPTED_IDEA,
+            )
+            for parsed in external_results:
+                if parsed.candidate is None:
+                    continue
+                await asyncio.to_thread(
+                    self_memory.submit_candidate,
+                    parsed.candidate,
+                    source_message_id=event.message_id,
+                    source_principal_id=principal.principal_id,
+                    source_principal_role=principal.role,
+                    allow_auto_activate=allow_auto,
+                    now_ms=event.occurred_at_ms,
+                )
+        except Exception as exc:
+            _log.warning("self_memory_evolution_failed type=%s", type(exc).__name__)
+
     async def finalize_event(event: InboundEvent, plan: ReplyPlan) -> None:
         """Persist idempotent audit/history after an outbound outcome is durable."""
         await asyncio.to_thread(audit.record, event, plan)
@@ -917,6 +1030,12 @@ async def listen() -> None:
                 principal_id=principal.principal_id,
                 outcome=plan.decision.value,
                 assistant_text=plan.text,
+            )
+        if principal is not None and plan.decision is ReplyDecision.SENT and plan.text is not None:
+            await reconcile_self_evolution(
+                event,
+                principal=principal,
+                reply_text=plan.text,
             )
         if (
             passive_learner is not None
@@ -957,6 +1076,7 @@ async def listen() -> None:
                 owner_qq=settings.owner_qq,
                 qq_online=online.snapshot().qq_online,
                 risk_ledger=risk_ledger,
+                on_sent=observe_sent_reply,
             )
             await finalize_event(event, plan)
         except Exception as exc:
@@ -1008,6 +1128,7 @@ async def listen() -> None:
             sender=sender,
             risk_ledger=risk_ledger,
             retry_transport_unavailable=True,
+            on_sent=observe_sent_reply,
         )
 
     debouncer = GroupMessageDebouncer(

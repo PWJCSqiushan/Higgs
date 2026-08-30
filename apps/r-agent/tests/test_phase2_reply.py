@@ -441,6 +441,38 @@ async def test_unknown_delivery_receipt_is_not_reported_as_sent() -> None:
     assert plan.decision is ReplyDecision.SEND_FAILED
 
 
+async def test_sent_observer_runs_only_after_final_provider_receipt() -> None:
+    observed: list[tuple[str, DeliveryState]] = []
+
+    async def sender(item: InboundEvent, text: str) -> DeliveryReceipt:
+        return DeliveryReceipt("qq", DeliveryState.SENT, "sent-key", "provider-1")
+
+    async def on_sent(
+        item: InboundEvent,
+        text: str,
+        receipt: DeliveryReceipt,
+    ) -> None:
+        observed.append((text, receipt.state))
+
+    plan = await process_reply(
+        event=event(),
+        result=accepted(),
+        policy=ReplyPolicy(
+            mode="live",
+            private_users=frozenset({"800001"}),
+            groups=frozenset(),
+            require_mention=True,
+            max_per_minute=1,
+        ),
+        brain=PersonaBrain(None, "test"),
+        sender=sender,
+        on_sent=on_sent,
+    )
+
+    assert plan.decision is ReplyDecision.SENT
+    assert observed == [(plan.text, DeliveryState.SENT)]
+
+
 async def test_group_reply_passes_sender_scope_to_both_risk_guards() -> None:
     class Guard:
         def __init__(self) -> None:

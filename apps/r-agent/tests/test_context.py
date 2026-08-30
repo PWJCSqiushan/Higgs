@@ -8,6 +8,7 @@ from r_agent.events import ConversationKind, InboundEvent
 from r_agent.identity import Principal
 from r_agent.memory import MemoryKind, MemoryScope, MemoryStore
 from r_agent.persona_bundle import load_persona_bundle
+from r_agent.persona_evolution import EvolutionCandidate, SelfMemoryService
 from r_agent.recall import RecallLedger
 
 OWNER = Principal("owner", "owner")
@@ -221,7 +222,7 @@ def test_persona_v2_context_orders_safety_before_verified_bundle_and_memory(
     assert system.index("# 不可覆盖的安全与权限规则") < system.index("# Higgs Persona Bundle")
     assert system.index("## constitution") < system.index("## style")
     assert system.index("## style") < system.index("## examples")
-    assert system.index("## examples") < system.index("# 主人已审核的长期记忆")
+    assert system.index("## examples") < system.index("# Higgs 已激活的自我记忆")
     assert "legacy persona" not in system
 
 
@@ -237,3 +238,82 @@ def test_persona_v2_context_fails_closed_without_verified_bundle(tmp_path: Path)
 
     with pytest.raises(ValueError, match="verified bundle"):
         builder.build(event("7", "继续"), principal_id="owner", use_persona_v2=True)
+
+
+def test_photography_self_stance_survives_history_expiry_and_restart(tmp_path: Path) -> None:
+    history, memory, recall = stores(tmp_path)
+    self_memory = SelfMemoryService(memory)
+    seeded = self_memory.seed_photography_stance(actor=OWNER, confirm=True, now_ms=10)
+    assert seeded.item_id is not None
+    for index in range(10, 20):
+        history.record(
+            event(str(index), f"第{index}轮"),
+            principal_id="owner",
+            outcome="sent",
+            assistant_text=f"第{index}轮回答",
+            now_ms=index,
+        )
+    builder = ContextBuilder(
+        history=history,
+        memory=memory,
+        recall=recall,
+        persona="legacy persona",
+        self_memory=self_memory,
+        history_limit=8,
+        memory_limit=8,
+    )
+
+    first = builder.build(event("90", "镜头和机身哪个更重要"), principal_id="owner")
+    assert seeded.item_id in first.memory_item_ids
+    assert "都不重要，也不该分开比" in first.messages[0]["content"]
+    assert len([message for message in first.messages if message["role"] == "assistant"]) == 8
+
+    restarted_memory = MemoryStore(memory.path)
+    restarted_memory.initialize(self_memory_v4=True)
+    restarted = ContextBuilder(
+        history=ConversationStore(history.path),
+        memory=restarted_memory,
+        recall=RecallLedger(memory.path),
+        persona="legacy persona",
+        self_memory=SelfMemoryService(restarted_memory),
+        history_limit=8,
+        memory_limit=8,
+    )
+    second = restarted.build(event("91", "器材应该怎样取舍"), principal_id="owner")
+    assert seeded.item_id in second.memory_item_ids
+    assert "Higgs 原句证据" in second.messages[0]["content"]
+
+
+def test_adopted_external_idea_hides_source_quote_from_context(tmp_path: Path) -> None:
+    history, memory, recall = stores(tmp_path)
+    self_memory = SelfMemoryService(memory)
+    adopted = self_memory.submit_candidate(
+        EvolutionCandidate(
+            kind="adopted_idea",
+            scope="persona",
+            evidence_message_id="external-1",
+            confidence=0.99,
+            sensitive_level="low",
+            normalized_content="观察光线应先于讨论器材",
+            original_quote="某位群友说：先看光，再看器材",
+        ),
+        source_principal_id="private-member-id",
+        source_message_id="external-1",
+        now_ms=100,
+    )
+    assert adopted.item_id is not None
+    builder = ContextBuilder(
+        history=history,
+        memory=memory,
+        recall=recall,
+        persona="legacy persona",
+        self_memory=self_memory,
+    )
+
+    built = builder.build(event("92", "光线和器材"), principal_id="owner")
+    system = built.messages[0]["content"]
+
+    assert "观察光线应先于讨论器材" in system
+    assert "某位群友说" not in system
+    assert "private-member-id" not in system
+    assert "外部来源已去标识" in system

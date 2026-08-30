@@ -27,6 +27,7 @@ from r_agent.operator_control import (
     LiveOperatorControl,
     OperatorControlError,
 )
+from r_agent.persona_evolution import EvidenceKind, SelfMemoryService
 from r_agent.recall import RecallLedger
 from r_agent.reminders import ReminderError, ReminderStore, format_job
 from r_agent.risk_ledger import RiskLedger
@@ -78,6 +79,7 @@ class OwnerCommandRouter:
         server_status: ServerStatusCommand | None = None,
         model_candidate_shadow_store: ModelCandidateShadowStore | None = None,
         tool_governance: ToolGovernance | None = None,
+        self_memory: SelfMemoryService | None = None,
     ) -> None:
         self.context = context
         self.vectors = vectors
@@ -95,6 +97,7 @@ class OwnerCommandRouter:
         self.server_status = server_status
         self.model_candidate_shadow_store = model_candidate_shadow_store
         self.tool_governance = tool_governance
+        self.self_memory = self_memory
         if self.tool_governance is not None:
             if self.tool_governance.registry.has(self.GOVERNED_TOOL_NAME):
                 raise ValueError("owner command mutation tool is already registered")
@@ -154,6 +157,13 @@ class OwnerCommandRouter:
             return len(parts) == 5 and parts[3] == "retry"
         if action == "backfill":
             return parts == ["/higgs", "memory", "backfill", "apply"]
+        if action == "self":
+            return len(parts) >= 5 and parts[3] in {
+                "adopt",
+                "reject",
+                "withdraw",
+                "restore",
+            }
         return action in {"activate", "quarantine", "invalidate", "restore"} and len(parts) >= 4
 
     @staticmethod
@@ -320,6 +330,8 @@ class OwnerCommandRouter:
             "/higgs memory stats | observations [failed [limit]|retry ID]\n"
             "/higgs memory recall [limit] | source status\n"
             "/higgs memory backfill preview|apply\n"
+            "/higgs memory self show|why 记忆ID\n"
+            "/higgs memory self adopt|reject|withdraw|restore 记忆ID [原因]\n"
             "/higgs remind list|show|confirm|ack|cancel|snooze\n"
             "/higgs plan today|add|show|confirm|done|skip|replan|cancel|history\n"
             "/higgs memory activate|quarantine|invalidate|restore 记忆ID或短ID [原因]\n"
@@ -565,6 +577,8 @@ class OwnerCommandRouter:
                 "发送 /higgs memory list candidate 1 查看待审核记忆。"
             )
         action = arguments[0].casefold()
+        if action == "self":
+            return self._self_memory(arguments[1:], actor=actor)
         if action == "stats":
             status = self.vectors.status()
             observation = self.observations.stats() if self.observations else {}
@@ -776,6 +790,50 @@ class OwnerCommandRouter:
                     )
             return f"记忆 {item.item_id} 已变更为 {item.status.value}。"
         raise OperatorControlError("未知记忆操作。发送 /higgs help 查看用法。")
+
+    def _self_memory(self, arguments: list[str], *, actor: Principal) -> str:
+        if self.self_memory is None:
+            raise OperatorControlError("Higgs 自我记忆治理尚未启用。")
+        if len(arguments) < 2:
+            raise OperatorControlError(
+                "用法：/higgs memory self show|why|adopt|reject|withdraw|restore 记忆ID [原因]"
+            )
+        action = arguments[0].casefold()
+        item_id = arguments[1]
+        if action in {"show", "why"}:
+            if len(arguments) != 2:
+                raise OperatorControlError("查看自我记忆时不能附加变更参数。")
+            item = self.memory.get_for_review(item_id, actor=actor)
+            report = self.self_memory.explain(item.item_id, actor=actor)
+            evidence = self.self_memory.list_evidence(item.item_id)
+            counts = {
+                kind.value: sum(entry.evidence_kind is kind for entry in evidence)
+                for kind in EvidenceKind
+            }
+            quote_proven = self.self_memory.context_original_quote(item.item_id) is not None
+            return (
+                f"ID：{item.item_id}\n"
+                f"状态：{item.status.value}\n"
+                f"类型：{item.kind.value}\n"
+                f"观点：{item.text}\n"
+                f"演进状态：{report['state']}\n"
+                f"记住/改变原因：{report['reason'] or '无'}\n"
+                f"证据：自我回复={counts['self_reply']} 支持={counts['support']} "
+                f"反对={counts['opposition']} 原句已验证={'是' if quote_proven else '否'}"
+            )
+        transitions = {
+            "adopt": self.self_memory.adopt,
+            "reject": self.self_memory.reject,
+            "withdraw": self.self_memory.withdraw,
+            "restore": self.self_memory.restore,
+        }
+        if action not in transitions:
+            raise OperatorControlError("未知自我记忆治理动作。")
+        reason = " ".join(arguments[2:]).strip() or "主人通过 QQ 命令治理自我观点"
+        item = transitions[action](item_id, actor=actor, reason=reason)
+        if self.backup is not None:
+            self.backup.create(f"self-memory-{action}")
+        return f"自我记忆 {item.item_id[:8]} 已完成 {action}，状态为 {item.status.value}。"
 
     def _model_candidates(self, arguments: list[str]) -> str:
         """List/show the append-only model queue; there are no mutation branches."""
