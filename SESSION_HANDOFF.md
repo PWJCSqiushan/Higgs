@@ -337,3 +337,4 @@
 - 新增 `activate_official_owner_proactive.sh`，只有同时提供主动发送和 72 小时已验收两个固定确认才可执行。它检查被动服务、单 Gateway、三容器健康、提醒 schema、零活动批次，把两份私有配置备份到 `/srv/trash` 后原子开启双门，只重建 official sidecar 与 Agent；任一后验失败同时回滚配置与服务，并强制验证 NapCat 身份、启动时间和重启计数不变。
 - Windows 本地完整门禁为 Python `342 passed, 5 skipped`，Ruff 检查通过；格式修正后的受影响测试 `35 passed`。Node 语法与测试为 `37 passed, 8 skipped`；跳过项均为既有/新增 POSIX 权限、UDS 和真实进程替换覆盖，必须由 Ubuntu CI 零跳过解除。新增 Shell 因本机无 Bash，真实 `bash -n` 同样必须由 CI 验收。
 - 尚未部署、修改服务器私有配置、重建容器或发送消息。固定 72 小时观察尚未结束，proactive 双门必须继续为 false，测试群白名单也不得提前激活。下一步是暂存后运行基于 Git 索引的 release/secret/LF 门，提交并推送本阶段分支、创建 PR，等待两套 Ubuntu CI 全绿；即使 PR 合并，生产启用仍需窗口结论和主人新的明确确认。
+- 功能与迁移修正已由 `db43583`、`457b0a5` 提交并进入 PR #48。首轮 push 与 pull request 两套 CI 共四项全绿：Ubuntu Shell 语法、Python 零跳过、Node POSIX 持久化、npm 签名、镜像和 Compose 均通过；PR 状态为 clean/mergeable。当前只追加本 CI 证据并复验同一 PR，合并后仍不得提前部署或开启 proactive。

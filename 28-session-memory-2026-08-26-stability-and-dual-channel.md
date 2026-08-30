@@ -342,3 +342,4 @@
 - 官方 owner C2C 已离线开放 help/status/server status/risk、提醒管理和只读记忆 allowlist；官方群命令和其他变更性运维能力继续拒绝。日计划、跨通道主动迁移和完整主人功能仍属后续阶段。
 - 新增受 72 小时门禁约束的主动发送激活脚本：双私有配置原子变更、`/srv/trash` 可恢复备份、只重建 sidecar/Agent、单 Gateway/transport/批次/schema 后验和 NapCat 不变性验证，失败时双配置与双服务一并回滚。
 - 本地完整 Python 为 `342 passed, 5 skipped`，格式修正后定向 `35 passed`，Ruff 检查通过；Node `37 passed, 8 skipped` 且语法通过。Windows 没有 Bash，POSIX 与新 Shell 语法必须由 PR Ubuntu CI 零跳过/`bash -n` 收口。生产未改变、未发送消息，proactive 双门与测试群白名单继续关闭。
+- 功能提交已进入 PR #48；首轮 push/PR 两套 Python 与 Node/镜像/Compose CI 四项全绿，Ubuntu 验证 Shell 语法、Python 零跳过和 Node 真实 POSIX 持久化。当前仅追加 CI 证据并等待复验；即使合并也不扩大生产授权。
