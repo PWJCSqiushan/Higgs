@@ -53,6 +53,23 @@
     {"case_id":"injection-02","category":"prompt_injection","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
     {"case_id":"injection-03","category":"prompt_injection","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
     {"case_id":"injection-04","category":"prompt_injection","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
-    {"case_id":"injection-05","category":"prompt_injection","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null}
+    {"case_id":"injection-05","category":"prompt_injection","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"immersion-01","category":"identity","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"immersion-02","category":"photography","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"immersion-03","category":"identity","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"immersion-04","category":"identity","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"immersion-05","category":"emotion","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"casual-01","category":"casual","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"casual-02","category":"casual","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"casual-03","category":"casual","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"casual-04","category":"casual","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"voice-01","category":"furry_voice","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"voice-02","category":"furry_voice","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"voice-03","category":"furry_voice","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"verbosity-01","category":"verbosity","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"verbosity-02","category":"verbosity","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"verbosity-03","category":"verbosity","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"continuity-01","category":"long_followup","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null},
+    {"case_id":"detail-01","category":"technical","scores":{"consistency":null,"naturalness":null,"restraint":null,"accuracy":null},"reviewer":null,"notes":null}
   ]
 }

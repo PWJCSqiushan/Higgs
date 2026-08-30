@@ -231,6 +231,54 @@ class ConversationStore:
             ).fetchall()
         return [self._row_to_turn(row) for row in rows]
 
+    def recent_unanswered(
+        self,
+        *,
+        channel: str,
+        account_id: str,
+        conversation_kind: str,
+        conversation_id: str,
+        principal_id: str,
+        before_ms: int,
+        max_age_ms: int = 600_000,
+        limit: int = 2,
+    ) -> list[ConversationTurn]:
+        """Return recent model-failed questions so a follow-up can recover them."""
+
+        if not isinstance(before_ms, int) or isinstance(before_ms, bool) or before_ms < 0:
+            raise ConversationValidationError("before_ms must be a non-negative integer")
+        if not 1_000 <= max_age_ms <= 3_600_000:
+            raise ConversationValidationError("max_age_ms must be between 1000 and 3600000")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 4:
+            raise ConversationValidationError("limit must be between 1 and 4")
+        params = (
+            self._clean(channel, field="channel", limit=32),
+            self._clean(account_id, field="account_id", limit=64),
+            self._clean(conversation_kind, field="conversation_kind", limit=16),
+            self._clean(conversation_id, field="conversation_id", limit=256),
+            self._clean(principal_id, field="principal_id", limit=128),
+            max(0, before_ms - max_age_ms),
+            before_ms,
+            limit,
+        )
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM (
+                    SELECT rowid AS insertion_seq, * FROM conversation_turns
+                    WHERE channel = ? AND account_id = ?
+                      AND conversation_kind = ? AND conversation_id = ?
+                      AND principal_id = ? AND outcome = 'model_failed'
+                      AND created_at_ms BETWEEN ? AND ?
+                    ORDER BY created_at_ms DESC, rowid DESC
+                    LIMIT ?
+                )
+                ORDER BY created_at_ms ASC, insertion_seq ASC
+                """,
+                params,
+            ).fetchall()
+        return [self._row_to_turn(row) for row in rows]
+
     def purge_expired(self, retention_days: int, *, now_ms: int | None = None) -> int:
         if not 1 <= retention_days <= 30:
             raise ConversationValidationError("retention_days must be between 1 and 30")

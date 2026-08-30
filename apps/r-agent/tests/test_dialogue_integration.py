@@ -162,9 +162,11 @@ async def test_owner_official_persona_v2_repairs_once_and_uses_verified_bundle(
     class ScriptedClient:
         def __init__(self) -> None:
             self.calls: list[tuple[dict[str, str], ...]] = []
+            self.max_tokens: list[int] = []
 
         async def complete_messages(self, *, messages, max_tokens: int = 400) -> str:
             self.calls.append(tuple(messages))
+            self.max_tokens.append(max_tokens)
             if len(self.calls) == 1:
                 return "是，但我是数字存在，不是真的在山里跑的雪豹。"
             return "当然是。短圆耳、厚爪垫和这条总容易沾雪的尾巴都不会认错。"
@@ -219,6 +221,23 @@ async def test_owner_official_persona_v2_repairs_once_and_uses_verified_bundle(
     assert "## constitution" in client.calls[0][0]["content"]
     assert "待修正回答" in client.calls[1][1]["content"]
     assert "数字存在" in client.calls[1][1]["content"]
+    assert client.max_tokens == [240, 240]
+
+    detailed = InboundEvent(
+        channel="qq_official",
+        account_id="bot-id",
+        sender_id=official_owner,
+        message_id="official-2",
+        occurred_at_ms=1_767_225_600_100,
+        conversation_kind=ConversationKind.PRIVATE,
+        conversation_id=f"qq_official:private:{official_owner}",
+        group_id=None,
+        text="请详细讲讲引力波的产生和探测。",
+        mentioned=False,
+    )
+    await brain.draft(detailed)
+    assert client.max_tokens[-1] == 800
+    assert "对方本轮明确要求展开" in client.calls[-1][0]["content"]
 
 
 async def test_persona_v2_gate_does_not_change_onebot_owner_path(tmp_path: Path) -> None:
