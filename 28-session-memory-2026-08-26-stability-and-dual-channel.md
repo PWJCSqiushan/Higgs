@@ -405,3 +405,12 @@
 - 群公共记忆与 member principal 私有记忆分层。公共候选不保存 raw 成员/消息标识、原句、个人事实或私聊；单人重复不形成 quorum，只有主人批准或两位不同成员独立佐证才 active。召回顺序是 self、当前 group、当前 principal、近期历史，C2C 与其他群无法读取该 group scope。
 - 只有官方群获准 @ 事件且回复最终 SENT 后才运行公共候选提取；失败、UNKNOWN、未 @、OneBot 和 C2C 均不学习。组合本地回归 Python `430 passed, 5 skipped`、Node `47 passed, 9 skipped`，Ruff/格式/Node 语法通过；尚待阶段 PR、Ubuntu 零跳过和 release gate，生产完全未变化。
 - PR #55 的 push/PR runs `33302169174`、`33302181366` 全绿并合并为主线 `81876e14f8af61789ce66e520c59f9467054e1b1`；合并后 main run `33302221595` 亦成功，Linux Python 零跳过并完成 Node POSIX、Shell、镜像和 Compose 验收。72 小时观察仍在固定窗口内，故未部署、迁移、捕获、冻结或开启任何新通道/记忆开关。
+
+## 节点 48：最新功能以全关闭门部署并进入 24 小时观察
+
+- 文档收束后的目标主线为 `e60afd6b0347ed79e2308b64a26d8bb476f21049`，tree `7496deb84f075fcb79ebbee473f1e8ddfcac952f`。593709 字节、302 成员的 Git-only 发布包通过摘要 `e001694cf5334b3dfd9abef90e68ad8640cb8f218b732a8a977f0b3e50c72294`、秘密边界和 LF 校验。
+- 旧观察在约 9.44 小时检查点仍健康，19 次 reconnect/ready 均恢复，rejected、致命转换和活动批次均为零。主人选择不等待固定 72 小时并继续发布；因此旧窗口只作为部分稳定性证据，不能标记为完整通过。
+- 首次发布暴露一次性包装器缺陷：私有 env 备份、原子更新和恢复错误地统一写成 `root:root/0600`，而 Agent 会以 `10001:10001` 再读 `higgs.env`，导致 PermissionError 重启。无参数回滚又选中缺少官方 overlay 的旧 release；显式恢复已知健康版本并纠正 `higgs.env` 属主后，Agent/sidecar/NapCat 全部 healthy，NapCat 未重启。
+- 包装器随后改为保存每个私有 env 的原数字属主、显式健康回滚和不可变 release 幂等校验。已存在 release 必须与签名归档逐文件一致才能重新激活。一次已有目标安全拒绝并 healthy 回滚后，最终发布成功；所有新功能开关仍 false，只有既有 owner 官方被动回复保持 true。
+- 最终门控为 release/两镜像匹配、三容器 healthy、单 Gateway、official transport verified、零活动批次、NapCat 容器不变。未发送消息、读取身份或正文、重登或重启 NapCat。十个临时发布/回滚文件已移入服务器回收区。
+- `higgs-72` 已复用为部署后 24 小时观察：2026-08-30 19:00:18 至 2026-08-31 19:00:18，每 3 小时只读检查。代码开发继续；生产下一步只允许单独确认 owner Persona V2，20 轮真实对话验收之后再推进自我记忆 shadow 与其他用户/群灰度。

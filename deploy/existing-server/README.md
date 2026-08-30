@@ -13,6 +13,11 @@ configuration.
 - Real API keys, QQ identifiers, tokens, persona files, login state, and
   databases live under `/srv/secrets/higgs` or `/srv/data/higgs`; they are not
   included in the release archive or Git.
+- `higgs.env` is read again by the unprivileged Agent through the private
+  runtime mount. Keep it mode `0600` and owned by the Agent runtime identity
+  (`10001:10001`). Atomic env updates, backups, restores, and release rollback
+  must preserve each source file's existing numeric owner instead of forcing
+  every private env file to `root:root`.
 - The OneBot server uses a 64-character random token, reports no self messages,
   and has no HTTP server, HTTP client, or reverse WebSocket client.
 
