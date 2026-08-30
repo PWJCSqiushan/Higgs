@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from dataclasses import dataclass
@@ -168,6 +169,17 @@ class DailyPlanService:
         self.amap = amap
         self.official_proactive_enabled = official_proactive_enabled
 
+    @staticmethod
+    def _request_key(event: InboundEvent, purpose: str) -> str:
+        material = "\0".join(
+            (purpose, event.channel.casefold(), event.account_id, event.message_id)
+        )
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _event_time(event: InboundEvent) -> datetime:
+        return datetime.fromtimestamp(event.occurred_at_ms / 1000, SHANGHAI)
+
     async def handle_event(self, event: InboundEvent, principal: Principal) -> str | None:
         if self.config.mode == "off" or not looks_like_daily_plan(event.text):
             return None
@@ -186,13 +198,20 @@ class DailyPlanService:
             return f"今日计划没有执行：{exc}"
 
     async def _natural_create(self, text: str, *, event: InboundEvent, principal: Principal) -> str:
-        plan_day, tasks = await self.extractor.extract(text)
-        draft_count = await self._run_sync(
-            self.store.count_for_date, principal.principal_id, plan_day
+        request_key = self._request_key(event, "natural-create")
+        existing = await self._run_sync(
+            self.store.get_by_request_key,
+            request_key,
+            principal_id=principal.principal_id,
         )
-        if draft_count >= self.config.drafts_per_day:
-            raise DailyPlanError("今天生成计划草案的次数已达到上限")
-        start = datetime.now(SHANGHAI) + timedelta(minutes=15)
+        if existing is not None:
+            stored_tasks = await self._run_sync(
+                self.store.tasks, existing.plan_id, principal_id=principal.principal_id
+            )
+            return format_plan(existing, stored_tasks, shadow=self.config.mode == "shadow")
+        event_time = self._event_time(event)
+        plan_day, tasks = await self.extractor.extract(text, now=event_time)
+        start = event_time + timedelta(minutes=15)
         rounded_minute = ((start.minute + 4) // 5) * 5
         if rounded_minute >= 60:
             start = (start + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
@@ -208,6 +227,8 @@ class DailyPlanService:
             plan_date=plan_day,
             document=document,
             needs_map_consent=needs_map,
+            request_key=request_key,
+            max_drafts_for_date=self.config.drafts_per_day,
         )
         stored_tasks = await self._run_sync(
             self.store.tasks, plan.plan_id, principal_id=principal.principal_id
@@ -221,12 +242,38 @@ class DailyPlanService:
         return response
 
     async def _append_tasks(self, text: str, *, event: InboundEvent, principal: Principal) -> str:
+        request_key = self._request_key(event, "append-tasks")
+        existing_request = await self._run_sync(
+            self.store.get_by_request_key,
+            request_key,
+            principal_id=principal.principal_id,
+        )
+        if existing_request is not None:
+            if existing_request.parent_plan_id:
+                await self._run_sync(
+                    self.store.supersede,
+                    existing_request.parent_plan_id,
+                    principal_id=principal.principal_id,
+                    actor_principal_id=principal.principal_id,
+                    replacement_plan_id=existing_request.plan_id,
+                )
+            stored_tasks = await self._run_sync(
+                self.store.tasks,
+                existing_request.plan_id,
+                principal_id=principal.principal_id,
+            )
+            return "已生成包含新增任务的新草案；原正式计划尚未改变。\n" + format_plan(
+                existing_request,
+                stored_tasks,
+                shadow=self.config.mode == "shadow",
+            )
+        event_time = self._event_time(event)
         current = await self._run_sync(self.store.latest_pending, principal.principal_id)
         if current is None:
             plans = await self._run_sync(
                 self.store.list_for_principal, principal.principal_id, limit=10
             )
-            today = datetime.now(SHANGHAI).date().isoformat()
+            today = event_time.date().isoformat()
             current = next(
                 (plan for plan in plans if plan.plan_date == today and plan.status == "active"),
                 None,
@@ -235,14 +282,9 @@ class DailyPlanService:
             return await self._natural_create(
                 "今天的待办：" + text, event=event, principal=principal
             )
-        plan_day, added = await self.extractor.extract("今天的待办：" + text)
+        plan_day, added = await self.extractor.extract("今天的待办：" + text, now=event_time)
         if plan_day.isoformat() != current.plan_date:
             raise DailyPlanError("新增任务必须与当前计划属于同一天")
-        draft_count = await self._run_sync(
-            self.store.count_for_date, principal.principal_id, plan_day
-        )
-        if draft_count >= self.config.drafts_per_day:
-            raise DailyPlanError("今天生成计划草案的次数已达到上限")
         existing = await self._run_sync(
             self.store.tasks, current.plan_id, principal_id=principal.principal_id
         )
@@ -275,7 +317,7 @@ class DailyPlanService:
                     }
                 )
             )
-        start_at = datetime.now(SHANGHAI) + timedelta(minutes=15)
+        start_at = event_time + timedelta(minutes=15)
         result = solve_plan(combined, plan_day=plan_day, start_at=start_at)
         replacement = await self._run_sync(
             self.store.create_draft,
@@ -285,6 +327,8 @@ class DailyPlanService:
             document=_plan_document(result, plan_day=plan_day),
             parent_plan_id=current.plan_id,
             needs_map_consent=(sum(item.location_text is not None for item in result.tasks) >= 2),
+            request_key=request_key,
+            max_drafts_for_date=self.config.drafts_per_day,
         )
         if current.status != "active":
             await self._run_sync(
@@ -362,14 +406,32 @@ class DailyPlanService:
             local_midnight = datetime.combine(
                 datetime.now(SHANGHAI).date(), wall_time(0, 0), SHANGHAI
             )
-            map_count = await self._run_sync(
-                self.store.event_count_since,
-                principal.principal_id,
-                "map_consent_granted",
-                since_ms=int(local_midnight.timestamp() * 1000),
+            map_request_key = self._request_key(event, "map-optimize")
+            existing_map = await self._run_sync(
+                self.store.get_by_request_key,
+                map_request_key,
+                principal_id=principal.principal_id,
             )
-            if map_count >= self.config.map_optimizations_per_day:
-                raise DailyPlanError("今天的地图优化次数已达到上限")
+            if existing_map is not None:
+                if existing_map.parent_plan_id != plan.plan_id:
+                    raise DailyPlanError("地图优化请求与既有计划冲突")
+                await self._run_sync(
+                    self.store.supersede,
+                    plan.plan_id,
+                    principal_id=principal.principal_id,
+                    actor_principal_id=principal.principal_id,
+                    replacement_plan_id=existing_map.plan_id,
+                )
+                replacement_tasks = await self._run_sync(
+                    self.store.tasks,
+                    existing_map.plan_id,
+                    principal_id=principal.principal_id,
+                )
+                return "地图路线已经计算，并生成了需要重新确认的新草案。\n" + format_plan(
+                    existing_map,
+                    replacement_tasks,
+                    shadow=self.config.mode == "shadow",
+                )
             locations = [task.location_text for task in tasks if task.location_text]
             parameters = {
                 "plan_id": plan.plan_id,
@@ -385,6 +447,8 @@ class DailyPlanService:
                 principal_id=principal.principal_id,
                 actor_principal_id=principal.principal_id,
                 consent_parameters=parameters,
+                quota_since_ms=int(local_midnight.timestamp() * 1000),
+                max_grants=self.config.map_optimizations_per_day,
             )
             if self.amap is None:
                 return (
@@ -395,7 +459,7 @@ class DailyPlanService:
                 return (
                     "地图授权已记录，但地点仍有歧义。请先提供各任务的具体地点，系统不会自行猜测。"
                 )
-            return await self._optimize_with_map(updated, tasks, principal=principal)
+            return await self._optimize_with_map(updated, tasks, event=event, principal=principal)
         if command == "confirm":
             plan_id = args[0] if args else None
             if plan_id is None:
@@ -463,6 +527,25 @@ class DailyPlanService:
             plan = await self._run_sync(
                 self.store.get, args[0], principal_id=principal.principal_id
             )
+            request_key = self._request_key(event, "replan")
+            existing_request = await self._run_sync(
+                self.store.get_by_request_key,
+                request_key,
+                principal_id=principal.principal_id,
+            )
+            if existing_request is not None:
+                if existing_request.parent_plan_id != plan.plan_id:
+                    raise DailyPlanError("重新规划请求与既有计划冲突")
+                draft_tasks = await self._run_sync(
+                    self.store.tasks,
+                    existing_request.plan_id,
+                    principal_id=principal.principal_id,
+                )
+                return "已生成重新规划草案，原计划尚未改变。\n" + format_plan(
+                    existing_request,
+                    draft_tasks,
+                    shadow=self.config.mode == "shadow",
+                )
             tasks = await self._run_sync(
                 self.store.tasks, plan.plan_id, principal_id=principal.principal_id
             )
@@ -488,6 +571,8 @@ class DailyPlanService:
                 document=_plan_document(result, plan_day=date.fromisoformat(plan.plan_date)),
                 parent_plan_id=plan.plan_id,
                 needs_map_consent=sum(item.location_text is not None for item in result.tasks) >= 2,
+                request_key=request_key,
+                max_drafts_for_date=self.config.drafts_per_day,
             )
             draft_tasks = await self._run_sync(
                 self.store.tasks, draft.plan_id, principal_id=principal.principal_id
@@ -567,12 +652,12 @@ class DailyPlanService:
                 active.parent_plan_id,
                 principal_id=principal.principal_id,
             )
+            parent_tasks = await self._run_sync(
+                self.store.tasks,
+                parent.plan_id,
+                principal_id=principal.principal_id,
+            )
             if parent.status == "active":
-                parent_tasks = await self._run_sync(
-                    self.store.tasks,
-                    parent.plan_id,
-                    principal_id=principal.principal_id,
-                )
                 await self._run_sync(
                     self.store.supersede,
                     parent.plan_id,
@@ -580,6 +665,7 @@ class DailyPlanService:
                     actor_principal_id=principal.principal_id,
                     replacement_plan_id=active.plan_id,
                 )
+            if parent.status in {"active", "superseded"}:
                 await self._run_sync(
                     self.reminders.cancel_by_source,
                     source_kind="agenda_plan",
@@ -599,6 +685,7 @@ class DailyPlanService:
         plan: DailyPlan,
         tasks: list[AgendaTask],
         *,
+        event: InboundEvent,
         principal: Principal,
     ) -> str:
         if self.amap is None:
@@ -671,6 +758,8 @@ class DailyPlanService:
             document=_plan_document(result, plan_day=plan_day),
             parent_plan_id=plan.plan_id,
             needs_map_consent=False,
+            request_key=self._request_key(event, "map-optimize"),
+            max_drafts_for_date=self.config.drafts_per_day,
         )
         await self._run_sync(
             self.store.supersede,

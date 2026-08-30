@@ -352,3 +352,12 @@
 - 提醒创建进一步校验官方 canonical origin 与 delivery Bot/owner 完全一致，防止跨 Bot OpenID 复用。OneBot 既有 `create_scheduled` 调用继续兼容。
 - 本地 Python `345 passed, 5 skipped`，Ruff 通过；Node `37 passed, 8 skipped`。尚待 release gate、提交 PR 与 Ubuntu 零跳过；生产状态未改变。
 - 功能提交 `5e1b8ed` 已进入 PR #49，首轮 push/PR 四项 CI 全绿，Ubuntu Python 与 Node POSIX 项零跳过，镜像/Compose 通过。仅追加 CI 证据后复验，生产仍未改变。
+
+## 节点 42：日计划与提醒 prepare 崩溃重放阻断已修复
+
+- PR #49 已复验全绿并合并为主线 `4827add4edc0a6847b66290d69420be243e9a083`，合并后主线 CI run `33293097006` 成功；生产没有部署该功能，proactive 与群白名单仍关闭。
+- 上线前审计确认 `OfficialDurableProcessor` 会把中断的 `preparing` 批次恢复后重新执行 reply prepare，而日计划/提醒在 prepare 内含数据库副作用。若进程恰在业务库提交后、prepared reply 提交前中断，旧实现可能产生重复草案、版本或节点提醒。该风险在生产暴露前被阻断，后续变更性主人命令迁移暂停到本修复完成。
+- 计划草案新增内容无关的 64 位 SHA-256 请求键与 partial unique index；旧库在线补列，新建与每日限额在单一 `BEGIN IMMEDIATE` 中执行。同事件同参数返回既有计划，参数漂移失败关闭。自然计划和提醒的相对时间以事件发生时间为锚，不再依赖重放时墙钟。
+- 地图授权、精确版本确认、任务终态、计划取消和替换改为幂等转换。自然提醒按原会话与 source message 复用；日计划总览/T-10/T0 使用稳定内部来源键，创建、确认和 reminder link 可在部分成功后重放修复而不重复记录。
+- 故障注入覆盖“计划已确认且第一个提醒已创建后中断”：恢复后既有 job ID 保留、其余节点补齐、来源键无重复、`plan_confirmed` 事件仍只有一条。另覆盖草案/提醒请求键冲突、同事件双准备、确认与任务转换双执行。
+- 当前本地完整 Python `349 passed, 5 skipped`，Ruff 格式/检查、release gate、秘密边界和 Shell LF 通过；Node 语法及 `37 passed, 8 skipped` 通过。尚未提交 PR/CI 或部署，固定 72 小时生产观察和既有生产配置均未改变。

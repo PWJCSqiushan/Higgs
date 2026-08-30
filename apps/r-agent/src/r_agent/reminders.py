@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
 import time
@@ -480,8 +481,6 @@ class ReminderStore:
         clean = " ".join(content.split())
         if not 1 <= len(clean) <= 500:
             raise ReminderError("提醒内容长度必须为1到500字")
-        if not now + 5_000 <= due_at_ms <= now + 366 * 86_400_000:
-            raise ReminderError("提醒时间必须在5秒后到366天内")
         normalized_origin_channel = origin_channel.strip().casefold()
         if origin_surface not in {"private", "group"}:
             raise ReminderError("invalid reminder origin surface")
@@ -535,8 +534,67 @@ class ReminderStore:
             raise ReminderError("reminder source kind and ID must be provided together")
         if expires_at_ms is not None and expires_at_ms <= due_at_ms:
             raise ReminderError("reminder expiry must be after due time")
+        normalized_source_message_id = (
+            source_message_id.strip() if source_message_id is not None else None
+        )
+        if (
+            normalized_source_message_id is not None
+            and not 1 <= len(normalized_source_message_id) <= 255
+        ):
+            raise ReminderError("invalid reminder source message ID")
         job_id = str(uuid.uuid4())
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if normalized_source_message_id is not None:
+                prior = conn.execute(
+                    """
+                    SELECT * FROM reminder_jobs
+                    WHERE origin_channel=? AND origin_conversation_id=?
+                      AND source_message_id=?
+                    LIMIT 1
+                    """,
+                    (
+                        normalized_origin_channel,
+                        origin_conversation_id.strip(),
+                        normalized_source_message_id,
+                    ),
+                ).fetchone()
+                if prior is not None:
+                    expected = (
+                        owner_principal_id,
+                        owner_qq,
+                        clean,
+                        due_at_ms,
+                        origin_surface,
+                        normalized_delivery_channel,
+                        normalized_delivery_surface,
+                        normalized_delivery_account,
+                        normalized_delivery_target,
+                        delivery_policy,
+                        source_kind,
+                        source_id,
+                        expires_at_ms,
+                    )
+                    actual = (
+                        str(prior["owner_principal_id"]),
+                        str(prior["owner_qq"]),
+                        str(prior["content"]),
+                        int(prior["due_at_ms"]),
+                        str(prior["origin_surface"]),
+                        str(prior["delivery_channel"]),
+                        str(prior["delivery_surface"]),
+                        str(prior["delivery_account_id"]),
+                        str(prior["delivery_target_id"]),
+                        str(prior["delivery_policy"]),
+                        str(prior["source_kind"]) if prior["source_kind"] else None,
+                        str(prior["source_id"]) if prior["source_id"] else None,
+                        int(prior["expires_at_ms"]) if prior["expires_at_ms"] is not None else None,
+                    )
+                    if actual != expected:
+                        raise ReminderError("提醒消息幂等键与既有参数冲突")
+                    return self._row(prior)
+            if not now + 5_000 <= due_at_ms <= now + 366 * 86_400_000:
+                raise ReminderError("提醒时间必须在5秒后到366天内")
             conn.execute(
                 """
                 INSERT INTO reminder_jobs(
@@ -559,7 +617,7 @@ class ReminderStore:
                     normalized_origin_channel,
                     origin_surface,
                     origin_conversation_id.strip(),
-                    source_message_id,
+                    normalized_source_message_id,
                     normalized_delivery_channel,
                     normalized_delivery_surface,
                     normalized_delivery_account,
@@ -592,6 +650,19 @@ class ReminderStore:
         now_ms: int | None = None,
     ) -> ReminderJob:
         """Create an agenda-owned one-shot reminder after plan-level confirmation."""
+        creation_material = "\0".join(
+            (
+                "agenda-reminder-v1",
+                source_kind,
+                source_id,
+                str(due_at_ms),
+                origin_channel.casefold(),
+                origin_conversation_id,
+                str(delivery_channel or ""),
+                str(delivery_account_id or ""),
+                str(delivery_target_id or ""),
+            )
+        )
         pending = self.create_pending(
             owner_principal_id=owner_principal_id,
             owner_qq=owner_qq,
@@ -604,6 +675,7 @@ class ReminderStore:
             delivery_surface=delivery_surface,
             delivery_account_id=delivery_account_id,
             delivery_target_id=delivery_target_id,
+            source_message_id=hashlib.sha256(creation_material.encode("utf-8")).hexdigest(),
             delivery_policy="agenda_once",
             source_kind=source_kind,
             source_id=source_id,
@@ -733,10 +805,15 @@ class ReminderStore:
         job_id = self._resolve(short_id)
         now = int(time.time() * 1000)
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT * FROM reminder_jobs WHERE job_id=?", (job_id,)).fetchone()
-            if row is None or str(row["status"]) != "pending_confirmation":
+            if row is None:
                 raise ReminderError("reminder state does not allow confirmation")
             digest = normalized_parameter_hash(self._approved_parameters(row))
+            if str(row["status"]) == "scheduled" and row["approved_parameter_sha256"] == digest:
+                return self._row(row)
+            if str(row["status"]) != "pending_confirmation":
+                raise ReminderError("reminder state does not allow confirmation")
             conn.execute(
                 """
                 UPDATE reminder_jobs SET status='scheduled', confirmed_at_ms=?,
@@ -747,9 +824,15 @@ class ReminderStore:
         return self.get(job_id)
 
     def acknowledge(self, short_id: str) -> ReminderJob:
+        existing = self.get(short_id)
+        if existing.status == "completed":
+            return existing
         return self._transition(short_id, allowed={"awaiting_ack", "scheduled"}, target="completed")
 
     def cancel(self, short_id: str) -> ReminderJob:
+        existing = self.get(short_id)
+        if existing.status == "cancelled":
+            return existing
         return self._transition(
             short_id,
             allowed={"pending_confirmation", "scheduled", "awaiting_ack"},

@@ -110,6 +110,7 @@ class AgendaStore:
                     version INTEGER NOT NULL,
                     parameter_sha256 TEXT NOT NULL,
                     parent_plan_id TEXT,
+                    request_key TEXT,
                     map_consent_sha256 TEXT,
                     map_consent_expires_at_ms INTEGER,
                     route_verified INTEGER NOT NULL DEFAULT 0,
@@ -196,6 +197,17 @@ class AgendaStore:
                     kind TEXT NOT NULL,
                     PRIMARY KEY(plan_id, reminder_job_id)
                 );
+                """
+            )
+            columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(daily_plans)").fetchall()
+            }
+            if "request_key" not in columns:
+                conn.execute("ALTER TABLE daily_plans ADD COLUMN request_key TEXT")
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_agenda_request_key
+                ON daily_plans(request_key) WHERE request_key IS NOT NULL
                 """
             )
 
@@ -305,22 +317,58 @@ class AgendaStore:
         document: dict[str, Any],
         parent_plan_id: str | None = None,
         needs_map_consent: bool = False,
+        request_key: str | None = None,
+        max_drafts_for_date: int | None = None,
         now_ms: int | None = None,
     ) -> DailyPlan:
         self._validate_document(document)
+        if request_key is not None and (
+            len(request_key) != 64 or any(char not in "0123456789abcdef" for char in request_key)
+        ):
+            raise AgendaError("计划请求幂等键无效")
+        if max_drafts_for_date is not None and not 1 <= max_drafts_for_date <= 50:
+            raise AgendaError("计划草案限额无效")
         now = int(time.time() * 1000) if now_ms is None else now_ms
-        plan_id = str(uuid.uuid4())
         digest = normalized_parameter_hash(document)
         status = "awaiting_map_consent" if needs_map_consent else "awaiting_confirmation"
         encoded = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if request_key is not None:
+                prior = conn.execute(
+                    "SELECT * FROM daily_plans WHERE request_key=?",
+                    (request_key,),
+                ).fetchone()
+                if prior is not None:
+                    expected = (
+                        principal_id,
+                        plan_date.isoformat(),
+                        digest,
+                        parent_plan_id,
+                    )
+                    actual = (
+                        str(prior["principal_id"]),
+                        str(prior["plan_date"]),
+                        str(prior["parameter_sha256"]),
+                        str(prior["parent_plan_id"]) if prior["parent_plan_id"] else None,
+                    )
+                    if actual != expected:
+                        raise AgendaError("计划请求幂等键与既有参数冲突")
+                    return self._plan(prior)
+            if max_drafts_for_date is not None:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM daily_plans WHERE principal_id=? AND plan_date=?",
+                    (principal_id, plan_date.isoformat()),
+                ).fetchone()
+                if count is not None and int(count[0]) >= max_drafts_for_date:
+                    raise AgendaError("今天生成计划草案的次数已达到上限")
+            plan_id = str(uuid.uuid4())
             conn.execute(
                 """
                 INSERT INTO daily_plans(
                     plan_id, principal_id, plan_date, status, version, parameter_sha256,
-                    parent_plan_id, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
+                    parent_plan_id, request_key, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
                 """,
                 (
                     plan_id,
@@ -329,6 +377,7 @@ class AgendaStore:
                     status,
                     digest,
                     parent_plan_id,
+                    request_key,
                     now,
                     now,
                 ),
@@ -419,6 +468,16 @@ class AgendaStore:
             raise AgendaError("未找到计划")
         return self._plan(row)
 
+    def get_by_request_key(self, request_key: str, *, principal_id: str) -> DailyPlan | None:
+        if len(request_key) != 64 or any(char not in "0123456789abcdef" for char in request_key):
+            raise AgendaError("计划请求幂等键无效")
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM daily_plans WHERE request_key=? AND principal_id=?",
+                (request_key, principal_id),
+            ).fetchone()
+        return self._plan(row) if row is not None else None
+
     def tasks(self, short_id: str, *, principal_id: str | None) -> list[AgendaTask]:
         plan_id = self._resolve(short_id, principal_id=principal_id)
         with self._connect() as conn:
@@ -480,14 +539,44 @@ class AgendaStore:
         principal_id: str,
         actor_principal_id: str,
         consent_parameters: dict[str, Any],
+        quota_since_ms: int | None = None,
+        max_grants: int | None = None,
         now_ms: int | None = None,
     ) -> DailyPlan:
         plan = self.get(short_id, principal_id=principal_id)
-        if plan.status != "awaiting_map_consent":
-            raise AgendaError("当前计划不等待地图授权")
         now = int(time.time() * 1000) if now_ms is None else now_ms
         digest = normalized_parameter_hash(consent_parameters)
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM daily_plans WHERE plan_id=?", (plan.plan_id,)
+            ).fetchone()
+            if row is None:
+                raise AgendaError("未找到计划")
+            if (
+                str(row["status"]) == "awaiting_confirmation"
+                and (str(row["map_consent_sha256"]) if row["map_consent_sha256"] else None)
+                == digest
+            ):
+                return self._plan(row)
+            if str(row["status"]) != "awaiting_map_consent":
+                raise AgendaError("当前计划不等待地图授权")
+            if (quota_since_ms is None) != (max_grants is None):
+                raise AgendaError("地图授权限额参数不完整")
+            if quota_since_ms is not None and max_grants is not None:
+                if max_grants < 0:
+                    raise AgendaError("地图授权限额无效")
+                count = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM agenda_events e
+                    JOIN daily_plans p ON p.plan_id=e.plan_id
+                    WHERE p.principal_id=? AND e.event_type='map_consent_granted'
+                      AND e.created_at_ms>=?
+                    """,
+                    (principal_id, quota_since_ms),
+                ).fetchone()
+                if count is not None and int(count[0]) >= max_grants:
+                    raise AgendaError("今天的地图优化次数已达到上限")
             conn.execute(
                 """
                 UPDATE daily_plans SET map_consent_sha256=?, map_consent_expires_at_ms=?,
@@ -516,20 +605,30 @@ class AgendaStore:
         now_ms: int | None = None,
     ) -> DailyPlan:
         plan = self.get(short_id, principal_id=principal_id)
-        if plan.status != "awaiting_confirmation":
-            raise AgendaError("当前计划不能确认")
-        if not parameter_sha256 or parameter_sha256 != plan.parameter_sha256:
-            raise AgendaError("计划已经变化，请重新查看后确认")
         now = int(time.time() * 1000) if now_ms is None else now_ms
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
+            row = conn.execute(
+                "SELECT * FROM daily_plans WHERE plan_id=?", (plan.plan_id,)
+            ).fetchone()
+            if row is None:
+                raise AgendaError("未找到计划")
+            current = self._plan(row)
+            if not parameter_sha256 or parameter_sha256 != current.parameter_sha256:
+                raise AgendaError("计划已经变化，请重新查看后确认")
+            if current.status == "active":
+                return current
+            if current.status != "awaiting_confirmation":
+                raise AgendaError("当前计划不能确认")
+            cursor = conn.execute(
                 """
                 UPDATE daily_plans SET status='active', confirmed_at_ms=?, updated_at_ms=?
                 WHERE plan_id=? AND status='awaiting_confirmation' AND parameter_sha256=?
                 """,
                 (now, now, plan.plan_id, parameter_sha256),
             )
+            if cursor.rowcount != 1:
+                raise AgendaError("计划确认发生并发冲突，请重新查看")
             conn.execute(
                 "UPDATE agenda_tasks SET status='scheduled' WHERE plan_id=? AND status='draft'",
                 (plan.plan_id,),
@@ -540,7 +639,7 @@ class AgendaStore:
                 actor_principal_id=actor_principal_id,
                 event_type="plan_confirmed",
                 reason=None,
-                detail={"version": plan.version, "parameter_sha256": parameter_sha256},
+                detail={"version": current.version, "parameter_sha256": parameter_sha256},
                 now_ms=now,
             )
         return self.get(plan.plan_id, principal_id=principal_id)
@@ -555,6 +654,8 @@ class AgendaStore:
     ) -> DailyPlan:
         plan = self.get(short_id, principal_id=principal_id)
         replacement = self.get(replacement_plan_id, principal_id=principal_id)
+        if plan.status == "superseded" and replacement.parent_plan_id == plan.plan_id:
+            return plan
         if plan.status not in {
             "draft",
             "awaiting_map_consent",
@@ -608,6 +709,8 @@ class AgendaStore:
             if len(rows) != 1:
                 raise AgendaError("未找到唯一任务")
             row = rows[0]
+            if str(row["status"]) == target:
+                return self._task(row)
             if str(row["status"]) not in {"scheduled", "in_progress"}:
                 raise AgendaError("当前任务状态不允许该操作")
             conn.execute(
@@ -651,6 +754,8 @@ class AgendaStore:
         reason: str | None = None,
     ) -> DailyPlan:
         plan = self.get(short_id, principal_id=principal_id)
+        if plan.status == "cancelled":
+            return plan
         if plan.status not in {
             "draft",
             "awaiting_map_consent",

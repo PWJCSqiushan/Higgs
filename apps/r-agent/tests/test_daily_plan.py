@@ -11,7 +11,7 @@ from r_agent.daily_plan import DailyPlanConfig, DailyPlanService
 from r_agent.events import ConversationKind, InboundEvent
 from r_agent.identity import Principal
 from r_agent.planner import SHANGHAI, parse_simple_plan, solve_plan
-from r_agent.reminders import ReminderStore
+from r_agent.reminders import ReminderError, ReminderStore
 from r_agent.skills import SkillApprovalStore, default_skill_registry
 
 
@@ -124,10 +124,81 @@ def test_agenda_store_isolates_principals_and_binds_confirmation(tmp_path: Path)
         actor_principal_id="owner",
         parameter_sha256=plan.parameter_sha256,
     )
+    replayed = store.confirm_exact_version(
+        plan.plan_id,
+        principal_id="owner",
+        actor_principal_id="owner",
+        parameter_sha256=plan.parameter_sha256,
+    )
+    assert replayed.plan_id == active.plan_id
+    assert store.event_count_since("owner", "plan_confirmed", since_ms=0) == 1
     assert active.status == "active"
-    assert {task.status for task in store.tasks(plan.plan_id, principal_id="owner")} == {
-        "scheduled"
+    scheduled = store.tasks(plan.plan_id, principal_id="owner")
+    assert {task.status for task in scheduled} == {"scheduled"}
+    completed = store.transition_task(
+        scheduled[0].task_id,
+        principal_id="owner",
+        actor_principal_id="owner",
+        target="completed",
+    )
+    repeated_completion = store.transition_task(
+        scheduled[0].task_id,
+        principal_id="owner",
+        actor_principal_id="owner",
+        target="completed",
+    )
+    assert repeated_completion.task_id == completed.task_id
+    assert store.event_count_since("owner", "task_completed", since_ms=0) == 1
+
+
+def test_agenda_draft_request_key_is_idempotent_and_conflicts_fail_closed(
+    tmp_path: Path,
+) -> None:
+    store = AgendaStore(tmp_path / "agenda.sqlite")
+    store.initialize()
+    day, tasks = parse_simple_plan(
+        "今天的待办：背单词、写代码，帮我安排",
+        now=datetime(2026, 8, 9, 9, 0, tzinfo=SHANGHAI),
+    )
+    result = solve_plan(
+        tasks,
+        plan_day=day,
+        start_at=datetime(2026, 8, 9, 9, 0, tzinfo=SHANGHAI),
+    )
+    document = {
+        "plan_date": day.isoformat(),
+        "tasks": [task.as_document() for task in result.tasks],
     }
+    request_key = "a" * 64
+    first = store.create_draft(
+        principal_id="owner",
+        actor_principal_id="owner",
+        plan_date=day,
+        document=document,
+        request_key=request_key,
+        max_drafts_for_date=1,
+    )
+    replay = store.create_draft(
+        principal_id="owner",
+        actor_principal_id="owner",
+        plan_date=day,
+        document=document,
+        request_key=request_key,
+        max_drafts_for_date=1,
+    )
+    assert replay.plan_id == first.plan_id
+    assert store.count_for_date("owner", day) == 1
+    assert store.event_count_since("owner", "draft_created", since_ms=0) == 1
+    changed = {**document, "tasks": [{**document["tasks"][0], "title": "冲突"}]}
+    with pytest.raises(AgendaError, match="幂等键"):
+        store.create_draft(
+            principal_id="owner",
+            actor_principal_id="owner",
+            plan_date=day,
+            document=changed,
+            request_key=request_key,
+            max_drafts_for_date=1,
+        )
 
 
 @pytest.mark.asyncio
@@ -147,6 +218,20 @@ async def test_shadow_plan_never_creates_real_reminders(
     assert confirmation is not None and "不会激活计划" in confirmation
     assert planner.store.get(plan.plan_id, principal_id="owner").status == ("awaiting_confirmation")
     assert planner.reminders.list() == []
+
+
+@pytest.mark.asyncio
+async def test_same_plan_event_replay_returns_one_draft(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freeze_morning(monkeypatch)
+    planner = service(tmp_path, mode="shadow")
+    principal = Principal("owner", "owner")
+    inbound = event("今天的待办：背单词、写代码，帮我安排")
+    first = await planner.handle_event(inbound, principal)
+    replay = await planner.handle_event(inbound, principal)
+    assert replay == first
+    assert len(planner.store.list_for_principal("owner")) == 1
 
 
 @pytest.mark.asyncio
@@ -187,6 +272,43 @@ async def test_live_plan_confirmation_creates_one_shot_nodes(
     assert jobs
     assert {job.delivery_policy for job in jobs} == {"agenda_once"}
     assert all(job.status == "scheduled" for job in jobs)
+
+
+@pytest.mark.asyncio
+async def test_plan_confirmation_replay_repairs_partial_schedule_without_duplicates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freeze_morning(monkeypatch)
+    planner = service(tmp_path, mode="live")
+    principal = Principal("owner", "owner")
+    await planner.handle_event(event("今天的待办：背单词、写代码，帮我安排"), principal)
+    plan = planner.store.latest_pending("owner")
+    assert plan is not None
+    confirmation = event(f"/higgs plan confirm {plan.plan_id[:8]}")
+    original_create = planner.reminders.create_scheduled
+    calls = 0
+
+    def fail_after_first(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ReminderError("injected crash boundary")
+        return original_create(**kwargs)
+
+    monkeypatch.setattr(planner.reminders, "create_scheduled", fail_after_first)
+    failed = await planner.handle_event(confirmation, principal)
+    assert failed is not None and "injected crash boundary" in failed
+    first_jobs = planner.reminders.list(limit=20)
+    assert len(first_jobs) == 1
+
+    monkeypatch.setattr(planner.reminders, "create_scheduled", original_create)
+    recovered = await planner.handle_event(confirmation, principal)
+    assert recovered is not None and "计划已确认" in recovered
+    jobs = planner.reminders.list(limit=20)
+    assert first_jobs[0].job_id in {job.job_id for job in jobs}
+    assert len(jobs) == len({job.source_message_id for job in jobs})
+    assert len(jobs) > 1
+    assert planner.store.event_count_since("owner", "plan_confirmed", since_ms=0) == 1
 
 
 @pytest.mark.asyncio
