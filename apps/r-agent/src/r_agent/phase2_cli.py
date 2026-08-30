@@ -526,6 +526,15 @@ def _official_reminder_target(
     )
 
 
+def _official_event_quiet_seconds(
+    event: InboundEvent,
+    control: LiveOperatorControl,
+) -> float:
+    """Read the live debounce value instead of the startup configuration."""
+
+    return control.debounce_seconds_for(private=event.conversation_kind is ConversationKind.PRIVATE)
+
+
 def _build_official_adapter(
     config: OfficialQQConfig,
     *,
@@ -776,6 +785,7 @@ async def listen() -> None:
         risk_ledger=risk_ledger,
         recall_ledger=recall,
         transport_state=transport_state,
+        official_transport_state=(official_transport_state if official_config.enabled else None),
         server_status=server_status,
         model_candidate_shadow_store=model_candidate_store,
         tool_governance=tool_governance,
@@ -1032,16 +1042,11 @@ async def listen() -> None:
                 principal_role=principal.role,
             )
         if event.channel == "qq_official":
-            quiet_seconds = (
-                phase.private_debounce_seconds
-                if event.conversation_kind is ConversationKind.PRIVATE
-                else phase.group_debounce_seconds
-            )
             await asyncio.to_thread(
                 official_processing.enqueue,
                 event,
                 result,
-                quiet_seconds=quiet_seconds,
+                quiet_seconds=_official_event_quiet_seconds(event, operator_control),
             )
             return
         await debouncer.submit(event, result)

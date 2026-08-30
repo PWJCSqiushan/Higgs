@@ -366,3 +366,12 @@
 - 治理审计只保存 actor/参数哈希和不含命令参数、提醒正文、记忆内容、身份或平台标识的固定结果摘要。旧命令路由返回的“操作未执行”会转换为失败终态，不再伪记成功；提醒等可能包含业务正文的旧展示回复不会进入持久回执。
 - 故障测试覆盖成功回放只执行一次、同键参数冲突、执行前领取后进程替换得到 `UNKNOWN`、真实配置与记忆变更重复回放只产生一次状态转换，以及失败不持久化为成功。当前本地 Python `368 passed, 5 skipped`，Node `37 passed, 8 skipped`；Ruff、格式、发布门、秘密边界、Shell LF 和 `git diff --check` 全部通过。
 - 功能提交 `34a7039` 已进入 PR #51；push run `33294949353` 与 pull request run `33294958839` 的 Python、official sidecar 四项任务全绿，Ubuntu Python 零跳过，Node POSIX/UDS/进程替换、Shell 语法、npm 签名、镜像和 Compose 均通过。当前只追加 CI 证据并复验；尚未合并或部署生产。
+
+## 38. 2026-08-30 官方热控制与双通道状态一致性修复
+
+- PR #51 已复验全绿并通过 PR 合并为主线 `ec7929705627d363f59dd79f9b01005174a6bec0`；合并提交自己的主线 CI run `33295067908` 的 Python 与 official sidecar 两项任务均成功。主人低风险变更代码尚未部署，72 小时生产观察与现有开关没有改变。
+- 新分支 `codex/higgs-official-parity-20260830` 审计运行时控制后确认一处差距：`/higgs debounce` 会热更新 OneBot 内存合并器并持久化配置，但官方 durable enqueue 仍读取进程启动时的静态 private/group 值。本切片让官方事件从同一个加锁的 live control 读取当前 quiet-window；启动时仍保留私聊/群聊各自初值，主人热更新后两条 transport 立即使用新值。
+- `/higgs status` 现同时读取 `transport.sqlite` 的 OneBot 与 `qq_official` 行。个人 QQ 继续展示 NapCat、OneBot、权威在线和踢线原因；官方通道单独展示 Gateway 可达、官方账号在线、Bot 身份匹配、匿名健康回执和持续时间，不输出账号、OpenID 或平台标识。官方关闭时不会为了展示状态创建虚假行。
+- README、主人命令说明、双通道路线和官方配置模块说明已从旧的“Gateway 尚未启用”更新为当前真实边界：owner C2C 被动回复已验收，测试群和 proactive 仍受固定 72 小时、双层白名单/双开关与单独生产确认约束，生产 Gateway 由固定 Node sidecar 独占，Python SDK 只保留隔离兼容路径。
+- 当前本地完整 Python `369 passed, 5 skipped`，Ruff 格式/检查通过；Node 语法和 `37 passed, 8 skipped` 通过。暂存后的 release gate、秘密边界、Shell LF 与 diff 检查同样通过；没有部署、改配置、重建容器或发送消息。
+- 功能提交 `bf93a7d` 已进入 PR #52；push run `33295771506` 与 pull request run `33295778538` 四项 CI 全绿，Ubuntu Python 零跳过，Node POSIX/UDS/进程替换、Shell 语法、npm 签名、镜像和 Compose 均通过。当前仅追加 CI 证据并复验，尚未合并或部署。

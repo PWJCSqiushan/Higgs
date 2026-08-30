@@ -3,6 +3,7 @@
 [![Higgs CI](https://github.com/PWJCSqiushan/Higgs/actions/workflows/ci.yml/badge.svg)](https://github.com/PWJCSqiushan/Higgs/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![OneBot](https://img.shields.io/badge/OneBot-v11-7B61FF)
+![Official QQ](https://img.shields.io/badge/QQ%20Bot-official-1677FF)
 ![Status](https://img.shields.io/badge/status-V2.1%20active-2EA44F)
 
 Higgs 是一个面向个人长期使用的、自托管的 QQ 智能体。它不只负责“调用大模型回复消息”，还把主人权限、人格、长期记忆、提醒、限频、审计和备份放进同一套可治理的系统中。
@@ -13,24 +14,26 @@ Higgs 是一个面向个人长期使用的、自托管的 QQ 智能体。它不�
 
 | 能力 | 当前实现 |
 | --- | --- |
-| QQ 对话 | NapCat + OneBot v11；支持主人私聊、精确私聊白名单、群白名单、`@`、引用和关键词触发 |
+| QQ 对话 | 双通道：NapCat + OneBot v11 保留既有好友/群；官方 QQ Bot 已完成主人 C2C 被动回复真实验收，测试群与主动发送继续分门灰度 |
 | 独立人格 | 从私有人格文件注入稳定设定；聊天内容不能修改 `self_core` 或主人关系 |
 | 模型接入 | OpenAI-compatible API；已验证智谱 GLM；支持 `live`、`draft`、`off` 三种模式 |
-| 回复治理 | 连续短消息合并、纯文本输出、敏感内容过滤、OneBot 回执校验、会话与全局限频 |
+| 回复治理 | 连续短消息合并、纯文本输出、敏感内容过滤、通道回执校验、会话与全局限频；官方群处理和发送边界均持久化 |
 | Memory V2.1 | 观察队列、原子事实提取、候选/隔离/激活/失效状态机、FTS5 + 向量混合召回、短 ID 审核与召回台账 |
 | 智能提醒 | 自然语言创建、二次确认、持久化调度、到点及 `+5/+15/+30` 分钟追发、确认后停止 |
 | 今日计划 | 多待办提取、硬约束排程、版本化草案、地图单次授权、计划确认和 T-10/T0 节点提醒 |
-| 主人运维 | 在 QQ 对话框中管理白名单、关键词、发言频率、记忆、提醒、运行开关和备份 |
+| 主人运维 | OneBot 保留完整聊天运维；官方 owner C2C 已接入只读命令及受持久治理的低风险变更，数字 QQ 白名单不与 OpenID 混用 |
 | 云端运行 | Docker 自托管、开机恢复、私有 WebUI/OneBot 网络、SQLite 一致性备份和资源限制 |
 
-当前集成分支代码质量基线为 **251 项测试通过、4 项平台相关跳过**，并在每次 push 和 pull request 时运行发布安全门、Ruff、格式检查与完整 pytest。Linux CI 要求零跳过，并负责覆盖 Windows 无法创建符号链接的健康标记、发布脚本和只读状态文件场景。
+每次 push 和 pull request 都运行发布安全门、Ruff、格式检查、完整 pytest、官方 sidecar 测试、npm 签名校验、镜像构建与 Compose 校验。Linux CI 要求零跳过，并覆盖 Windows 无法执行的 POSIX 权限、Unix Socket、进程替换和发布脚本场景；准确测试数量以当前 CI 为准，不在 README 固定一个容易过期的数字。
 
 ## 系统结构
 
 ```mermaid
 flowchart LR
-    QQ["QQ 私聊 / 群聊"] --> NC["NapCat / OneBot"]
-    NC --> Gate["身份、白名单、触发与限频门"]
+    QQ["个人 QQ 私聊 / 群聊"] --> NC["NapCat / OneBot"]
+    OQQ["官方 Bot C2C / 群 @"] --> Sidecar["官方 Node Gateway / durable UDS"]
+    NC --> Gate["统一身份、白名单、触发与限频门"]
+    Sidecar --> Gate
     Gate --> Journal["原始事件日志"]
     Gate --> Reply["人格 + 短期上下文 + 模型"]
     Journal --> Obs["Memory Observations"]
@@ -42,6 +45,7 @@ flowchart LR
     Recall --> Reply
     Reply --> Safety["纯文本化、敏感过滤、回执校验"]
     Safety --> NC
+    Safety --> Sidecar
     Recall --> Ledger["Recall Ledger"]
 ```
 
@@ -388,7 +392,7 @@ GitHub Actions 会执行同样的质量门。提交前还应确认 `.env`、SQLi
 ## 当前限制与路线
 
 - 当前原子事实提取器故意保守，大量普通闲聊会被标记为 `no_atomic_fact`；受限结构化模型提取仍在 shadow 设计阶段，模型未来也只能提出候选。
-- NapCat 属于非官方 QQ 自动化通道，存在账号风控与登录态失效风险；官方 QQ Bot 适配器已有 fail-closed 骨架，但尚未启用 Gateway。
+- NapCat 属于非官方 QQ 自动化通道，仍存在账号风控与登录态失效风险。官方 Bot 已承担主人 C2C 被动回复，但测试群、主动提醒和更多用户范围仍必须按独立门禁逐步开放；两条通道不做透明故障切换。
 - 默认本地 trigram-hash 向量更重视隐私和可重复性，不等于高质量中文语义模型；远程 embedding 必须显式开启。
 - 自主进化只允许走“主人纠正 → 改进提案 → shadow 测试 → 人工批准 → 可回滚发布”，群友和模型不能直接修改核心代码。
 

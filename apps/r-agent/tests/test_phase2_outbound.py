@@ -7,6 +7,7 @@ from r_agent.phase2_cli import (
     ONLINE_PROBE_INTERVAL_SECONDS,
     ONLINE_PROBE_MAX_DETECTION_SECONDS,
     ONLINE_PROBE_TIMEOUT_SECONDS,
+    _official_event_quiet_seconds,
     _official_reminder_target,
     _onebot_reminder_target,
 )
@@ -18,6 +19,11 @@ from r_agent.phase2_outbound import (
     send_onebot_reply,
 )
 from r_agent.reminders import DueOccurrence
+
+
+class QuietWindowControl:
+    def debounce_seconds_for(self, *, private: bool) -> float:
+        return 1.25 if private else 3.5
 
 
 def event() -> InboundEvent:
@@ -33,6 +39,25 @@ def event() -> InboundEvent:
         text="hello",
         mentioned=False,
     )
+
+
+def test_official_quiet_window_reads_live_control_for_each_surface() -> None:
+    private = event()
+    group = InboundEvent(
+        channel="qq_official",
+        account_id="bot-id",
+        sender_id="member-id",
+        message_id="43",
+        occurred_at_ms=private.occurred_at_ms,
+        conversation_kind=ConversationKind.GROUP,
+        conversation_id="qq_official:group:bot-id:group-id",
+        group_id="group-id",
+        text="hello",
+        mentioned=True,
+    )
+    control = QuietWindowControl()
+    assert _official_event_quiet_seconds(private, control) == 1.25  # type: ignore[arg-type]
+    assert _official_event_quiet_seconds(group, control) == 3.5  # type: ignore[arg-type]
 
 
 def reminder_occurrence(*, channel: str = "qq_official") -> DueOccurrence:

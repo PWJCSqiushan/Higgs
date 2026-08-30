@@ -38,7 +38,7 @@ from r_agent.tool_governance import (
     ToolRequestSource,
     ToolSpec,
 )
-from r_agent.transport_state import TransportStateStore
+from r_agent.transport_state import TransportSnapshot, TransportStateStore
 from r_agent.vector_memory import MemoryVectorStore
 
 
@@ -74,6 +74,7 @@ class OwnerCommandRouter:
         risk_ledger: RiskLedger | None = None,
         recall_ledger: RecallLedger | None = None,
         transport_state: TransportStateStore | None = None,
+        official_transport_state: TransportStateStore | None = None,
         server_status: ServerStatusCommand | None = None,
         model_candidate_shadow_store: ModelCandidateShadowStore | None = None,
         tool_governance: ToolGovernance | None = None,
@@ -90,6 +91,7 @@ class OwnerCommandRouter:
         self.risk_ledger = risk_ledger
         self.recall_ledger = recall_ledger
         self.transport_state = transport_state
+        self.official_transport_state = official_transport_state
         self.server_status = server_status
         self.model_candidate_shadow_store = model_candidate_shadow_store
         self.tool_governance = tool_governance
@@ -378,9 +380,25 @@ class OwnerCommandRouter:
 
     def _transport_status(self) -> str:
         """Format anonymous persisted transport dimensions for the owner."""
-        if self.transport_state is None:
-            return ""
-        snapshot = self.transport_state.snapshot()
+        reports: list[str] = []
+        if self.transport_state is not None:
+            reports.append(self._format_transport_status(self.transport_state.snapshot()))
+        if self.official_transport_state is not None:
+            reports.append(
+                self._format_transport_status(
+                    self.official_transport_state.snapshot(),
+                    official=True,
+                )
+            )
+        return "".join(reports)
+
+    @staticmethod
+    def _format_transport_status(
+        snapshot: TransportSnapshot,
+        *,
+        official: bool = False,
+    ) -> str:
+        """Format one channel without exposing account or platform identifiers."""
 
         def flag(value: bool | None) -> str:
             if value is None:
@@ -404,6 +422,21 @@ class OwnerCommandRouter:
         action = snapshot.last_action_state
         action_name = {"ok": "正常", "failed": "失败", "unknown": "未知"}.get(action, "未知")
         duration_seconds = max(0, snapshot.duration_ms // 1000)
+        if official:
+            return (
+                f"\n官方QQ通道：{state_name}\n"
+                f"Gateway可达：{flag(snapshot.onebot_reachable)}\n"
+                f"官方账号在线：{flag(snapshot.qq_online)}\n"
+                f"Bot身份匹配：{flag(snapshot.account_match)}\n"
+                f"最近状态回执：{action_name}({snapshot.last_action_reason or '无'}，"
+                f"{age(snapshot.last_action_at_ms)})\n"
+                f"最近健康回执：{snapshot.last_health_state}("
+                f"{snapshot.last_health_reason or '无'}，{age(snapshot.last_health_at_ms)})\n"
+                f"状态开始：{timestamp(snapshot.state_started_at_ms)}\n"
+                f"故障持续：{snapshot.fault_duration_ms // 1000}秒\n"
+                f"状态持续：{duration_seconds}秒\n"
+                f"恢复结果：{snapshot.recovery_result or '无'}"
+            )
         return (
             f"\nQQ通道：{state_name}\n"
             f"NapCat容器存活：{flag(snapshot.napcat_container_alive)}\n"

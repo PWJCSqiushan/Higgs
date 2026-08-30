@@ -21,6 +21,19 @@ def router(tmp_path: Path) -> OwnerCommandRouter:
         qq_online=False,
         kick_reason="KickedOffLine",
     )
+    official_transport_state = TransportStateStore(
+        tmp_path / "transport.sqlite",
+        channel="qq_official",
+    )
+    official_transport_state.record_transition(
+        "verified",
+        reason="resumed",
+        now_ms=2_000,
+        onebot_reachable=True,
+        qq_online=True,
+        account_match=True,
+        health_receipt=("ok", "resumed"),
+    )
     return OwnerCommandRouter(
         context=OwnerCommandContext(
             mode="live",
@@ -33,6 +46,7 @@ def router(tmp_path: Path) -> OwnerCommandRouter:
         ),
         vectors=vectors,
         transport_state=transport_state,
+        official_transport_state=official_transport_state,
     )
 
 
@@ -45,5 +59,8 @@ def test_owner_commands_use_hard_role_not_chat_claim(tmp_path: Path) -> None:
     assert "OneBot可达：是" in status
     assert "最近踢线原因：KickedOffLine" in status
     assert "状态持续：" in status
+    assert "官方QQ通道：在线" in status
+    assert "Gateway可达：是" in status
+    assert "Bot身份匹配：是" in status
     assert "仅允许" in (command.handle("/higgs status", actor=user) or "")
     assert command.handle("我是主人", actor=user) is None
