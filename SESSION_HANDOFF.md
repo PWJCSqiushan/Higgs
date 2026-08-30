@@ -402,3 +402,12 @@
 - 群上下文固定为 Higgs 自我观点、当前群去标识公共记忆、当前成员 principal 私有记忆、近期对话；C2C 不允许 group scope，成员 A 的 principal 记忆不会被成员 B 召回。`R_AGENT_GROUP_MEMORY_ENABLED`、普通 C2C 与官方群生产开关均默认 false。
 - 组合分支本地门禁为 Python `430 passed, 5 skipped`、Node `47 passed, 9 skipped`，Ruff/格式、Node 语法均通过；Windows 跳过项必须由 PR Ubuntu CI 零跳过收口。尚未部署、迁移群伴随表、运行捕获、冻结/激活白名单、开启群或普通 C2C、发送消息、重建容器或改动 NapCat。
 - 第三阶段已通过 PR #55 合并为主线 `81876e14f8af61789ce66e520c59f9467054e1b1`。push/PR runs `33302169174`、`33302181366` 四项全绿，合并后 main run `33302221595` 再次全绿；Ubuntu Python 零跳过，Node POSIX/UDS/进程替换、npm 签名、Shell、镜像与 Compose 均通过。固定 72 小时观察尚未截止，因此当前只完成代码合并，不部署或开启任何新能力。
+
+## 42. 2026-08-30 最新主线生产发布、回滚事故与压缩观察
+
+- Persona V2、自我记忆 v4、官方普通用户及群双层记忆的文档收束经 PR #56 合并，生产目标主线为 `e60afd6b0347ed79e2308b64a26d8bb476f21049`，tree 为 `7496deb84f075fcb79ebbee473f1e8ddfcac952f`。只含 Git 跟踪文件的发布包为 593709 字节、302 个归档成员，SHA-256 为 `e001694cf5334b3dfd9abef90e68ad8640cb8f218b732a8a977f0b3e50c72294`；release gate、秘密边界与 Shell LF 通过。
+- 固定 72 小时窗口在约 9.44 小时匿名证据点仍为三容器 healthy、单 Gateway、reply=true、官方 transport verified、零 rejected/致命转换和零活动批次；期间有 19 次可恢复 reconnect/ready 转换。主人明确接受压缩观察并继续部署，因此该窗口没有被宣称为“72 小时通过”，而是被本次受控重建作废。
+- 首次发布在重建 Agent 后被健康门拒绝。现场匿名诊断确认 Agent 因 `PermissionError` 重启：一次性发布/回滚包装器把本应由 UID/GID `10001:10001`、模式 `0600` 的 `higgs.env` 强制改成 `root:root`，Agent 无法读取运行时私有配置。通用无参数回滚还误选了不含官方 overlay 的更早 release；随后显式回到已知健康 `6a95312bc3bf935295f9d9ff199c577baa7ae31d`，修复唯一文件属主后 Agent、sidecar 与 NapCat 全部恢复 healthy，NapCat 重启计数仍为零。
+- 修正版包装器保留三份私有 env 各自的数字属主和 `0600`，显式触发/验证回滚健康，并禁止 `die` 绕过回滚。第二次尝试因首次安装留下的不可变目标已存在而安全拒绝并完成 healthy 回滚；第三次先把现有 release 与同一签名归档逐文件比对，再幂等切换并成功。
+- 最终匿名验收为 release、Agent/sidecar 镜像精确匹配，Agent、sidecar、NapCat healthy，官方 transport verified，活动批次为零，单 Gateway，主人被动回复保持 true，NapCat 容器未改变。Persona V2、自我记忆 schema/mode、群、普通用户和 proactive 等所有新开关继续为 false；没有发送测试消息、重登或重启 NapCat。十个服务器临时发布/回滚文件已移动到 `/srv/trash`，均可恢复。
+- 原 `higgs-72` 自动化已改为 2026-08-30 19:00:18 至 2026-08-31 19:00:18 的部署后 24 小时匿名观察，每 3 小时只读检查。开发不再被观察阻塞；下一生产动作是另行确认 owner Persona V2 灰度，完成至少 20 轮真实对话评分后，才讨论自我记忆 shadow、摄影观点种子、普通测试用户或单测试群激活。
