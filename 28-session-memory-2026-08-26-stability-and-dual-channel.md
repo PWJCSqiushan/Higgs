@@ -371,3 +371,11 @@
 - 持久回执只保存固定、无内容结果摘要，不保存命令参数、提醒正文、记忆内容、身份或平台消息标识。旧路由的“操作未执行”明确落为失败，不再伪报成功。
 - 本地故障覆盖成功回放、参数冲突、预领取崩溃、真实配置与记忆状态重复执行以及失败终态；Python `368 passed, 5 skipped`，Node `37 passed, 8 skipped`，Ruff、格式、发布门、秘密边界、Shell LF 和 diff 检查通过。
 - 功能提交 `34a7039` 已进入 PR #51；push run `33294949353` 与 pull request run `33294958839` 四项 CI 全绿，Ubuntu Python 零跳过并通过 Node POSIX/UDS/进程替换、Shell 语法、npm 签名、镜像和 Compose。当前仅追加 CI 证据并复验，尚未合并或部署。
+
+## 节点 44：官方热配置与双通道状态语义对齐
+
+- PR #51 已复验全绿并合并为主线 `ec7929705627d363f59dd79f9b01005174a6bec0`，合并后主线 CI run `33295067908` 成功；生产未部署，72 小时观察与既有开关未改变。
+- 新分支 `codex/higgs-official-parity-20260830` 修复 `/higgs debounce` 的官方运行时差距：官方 durable quiet-window 改从加锁的 live control 读取，启动时保持 private/group 各自配置，热更新后与 OneBot 同步立即生效。
+- `/higgs status` 现在匿名分列 OneBot 与官方 transport；官方群只展示 Gateway、鉴权在线、Bot 身份匹配、健康回执和时长，不复用 NapCat 标签，也不输出身份或平台标识。官方未启用时不初始化仅供展示的状态行。
+- README、聊天命令和双通道路线已更新为真实现状：主人 C2C 被动回复已验收，测试群与 proactive 仍需 72 小时和单独生产确认；Node sidecar 独占生产 Gateway，Python SDK 仅为隔离兼容路径。
+- 本地 Python `369 passed, 5 skipped`，Node `37 passed, 8 skipped`，Ruff 与格式通过；尚待 staged release gate、PR/CI，生产无变化。

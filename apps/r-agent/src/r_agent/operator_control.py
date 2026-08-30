@@ -76,6 +76,16 @@ class LiveOperatorControl:
             self._debouncer = debouncer
             debouncer.quiet_seconds = self._debounce_seconds
 
+    def debounce_seconds_for(self, *, private: bool) -> float:
+        """Return the live quiet-window used by both transport pipelines."""
+
+        with self._lock:
+            if self._debouncer is None:
+                return self._debounce_seconds
+            if private:
+                return self._debouncer.private_quiet_seconds
+            return self._debouncer.quiet_seconds
+
     def attach_risk_ledger(self, ledger: RiskLedger) -> None:
         with self._lock:
             self._risk_ledger = ledger

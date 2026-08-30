@@ -54,8 +54,14 @@ async def test_hot_controls_persist_without_overwriting_secrets(tmp_path: Path) 
     async def unused_handler(*args: object) -> None:
         return None
 
-    debouncer = GroupMessageDebouncer(quiet_seconds=2.5, handler=unused_handler)
+    debouncer = GroupMessageDebouncer(
+        quiet_seconds=2.5,
+        private_quiet_seconds=1.25,
+        handler=unused_handler,
+    )
     control.attach_debouncer(debouncer)
+    assert control.debounce_seconds_for(private=False) == 2.5
+    assert control.debounce_seconds_for(private=True) == 1.25
     control.change_private("add", "800002")
     control.change_group("add", "700001")
     control.change_natural_group("add", "700001")
@@ -74,6 +80,9 @@ async def test_hot_controls_persist_without_overwriting_secrets(tmp_path: Path) 
     assert snapshot.global_max_per_minute == 12
     assert snapshot.debounce_seconds == 3.5
     assert debouncer.quiet_seconds == 3.5
+    assert debouncer.private_quiet_seconds == 3.5
+    assert control.debounce_seconds_for(private=False) == 3.5
+    assert control.debounce_seconds_for(private=True) == 3.5
     assert service.policy.allowed_groups == frozenset({"700001"})
     assert reply.groups == frozenset({"700001"})
 

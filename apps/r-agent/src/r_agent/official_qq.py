@@ -1,10 +1,9 @@
-"""Fail-closed configuration scaffold for the official QQ Bot channel.
+"""Fail-closed configuration for the isolated official QQ Bot transport.
 
-This is deliberately not a live network client yet.  It establishes the
-credential and adapter boundary while keeping the current NapCat login
-unchanged.  Enabling it before the gateway implementation exists produces an
-explicit unavailable status instead of silently sending through another
-channel.
+Production uses the durable Node sidecar over a private Unix Socket; the
+pinned Python SDK adapter remains an isolated compatibility path.  Neither
+transport can silently fall back to NapCat or receive credentials belonging to
+the other process.
 """
 
 from __future__ import annotations
