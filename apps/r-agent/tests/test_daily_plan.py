@@ -14,6 +14,8 @@ from r_agent.planner import SHANGHAI, parse_simple_plan, solve_plan
 from r_agent.reminders import ReminderError, ReminderStore
 from r_agent.skills import SkillApprovalStore, default_skill_registry
 
+FIXED_MORNING = datetime(2026, 8, 9, 9, 0, tzinfo=SHANGHAI)
+
 
 def event(text: str, *, group: bool = False, channel: str = "qq") -> InboundEvent:
     conversation_id = (
@@ -30,7 +32,7 @@ def event(text: str, *, group: bool = False, channel: str = "qq") -> InboundEven
         account_id="bot-qq",
         sender_id="owner-openid" if channel == "qq_official" else "owner-qq",
         message_id=f"message-{abs(hash(text))}",
-        occurred_at_ms=int(datetime.now(SHANGHAI).timestamp() * 1000),
+        occurred_at_ms=int(FIXED_MORNING.timestamp() * 1000),
         conversation_kind=ConversationKind.GROUP if group else ConversationKind.PRIVATE,
         conversation_id=conversation_id,
         group_id="1" if group else None,
@@ -64,7 +66,7 @@ def service(
 def freeze_morning(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep today-plan tests independent from the CI runner's wall clock."""
 
-    fixed = datetime(2026, 8, 9, 9, 0, tzinfo=SHANGHAI)
+    fixed = FIXED_MORNING
 
     class MorningDateTime(datetime):
         @classmethod
