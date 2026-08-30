@@ -309,3 +309,12 @@
 - 首个基线点为 Agent、official sidecar、NapCat 均 healthy 且重启计数为零，Gateway 为一，reply=true，transport verified/连接/认证/身份匹配/健康回执全部通过，活动 durable 批次为零。观察启动后已出现一次短暂 `pending/gateway_reconnecting → verified/ready` 自愈，没有 rejected、致命转换或容器重启；该事件将保留在最终稳定性证据中。
 - 72 小时结论前不开放测试群生产白名单。观察期间可以离线完成群 OpenID 受控绑定、双层白名单和仅 `GROUP_AT_MESSAGE_CREATE` 回复的测试/PR，但生产启用仍必须等待本窗口通过并另行验收。
 - 本切片本地门禁已通过：远端真实 Bash 语法与只读基线执行成功；release gate 为 245 个跟踪文件、267 个归档成员、秘密边界与 Shell LF 全通过；Ruff 格式/检查通过；Python `332 passed, 5 skipped`，Node `31 passed, 7 skipped`（Windows 既有 Linux 专用跳过）。下一步提交观察脚本与起点记录的独立 PR，等待 Ubuntu 零跳过后合并；该 PR 不包含生产开关、容器或白名单变更。
+
+## 32. 2026-08-30 官方测试群受控绑定与激活完成本地收束
+
+- 新分支 `codex/higgs-official-test-group-bind-20260830` 实现一次性测试群绑定器。它只有在显式给出“主人只绑定一个测试群”和“72 小时观察已通过”两个确认后才运行；需要现有 owner 私有绑定、reply=true、健康单 Gateway、活动 durable 批次为零且首个群槽为空。
+- 绑定窗口只接受 READY/首 ACK 后、由既有 owner OpenID 在 `GROUP_AT_MESSAGE_CREATE` 中发送且正文包含固定短语“绑定测试群”的事件。C2C、非主人、普通群消息、错误短语、READY 前或畸形事件均不能绑定。候选群 OpenID 直接写入 `0600` create-once 私有文件，不输出身份、正文、消息 ID、附件或凭据。
+- 绑定脚本只暂时停止 official sidecar，运行唯一 capture-only Gateway，随后恢复原 sidecar 并等待官方 transport 重新 verified；Agent 与 NapCat 不重建，NapCat 身份、启动时间和重启计数必须不变。绑定成功后生产双层群白名单仍为空，候选只留在私有文件；失败产物移入 `/srv/trash`。
+- 激活是第二个独立显式动作，同样硬性要求 72 小时观察已通过。它先把两份 `0600` 私有环境备份到 `/srv/trash`，再把同一候选原子写入 Agent 与 sidecar 的官方群白名单，仅重建 official sidecar 和 Agent，并验证单 Gateway、双运行时值一致、reply=true、transport verified、零活动批次及 NapCat 不变；任一失败恢复两份配置和旧服务。
+- 生产业务面继续只接受 `GROUP_AT_MESSAGE_CREATE`，因此普通群消息不会进入 Journal、身份、记忆、模型或回复流水线。官方群成员按 `channel + member OpenID` 建立独立 principal；不会因字符串相同自动与 NapCat QQ 身份、owner 或其他成员合并。
+- 本地回归为 Python `335 passed, 5 skipped`、Node `36 passed, 7 skipped`；Ruff、格式、Node 语法和两份新 Shell 的真实远端 Bash 语法检查通过。staged release gate 以 249 个跟踪文件、268 个归档成员通过，秘密边界与 Shell LF 均干净。尚未提交 PR 或部署；72 小时观察仍在进行，当前生产群白名单没有变化。
