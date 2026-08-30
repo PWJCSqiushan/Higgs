@@ -378,4 +378,5 @@
 - 新分支 `codex/higgs-official-parity-20260830` 修复 `/higgs debounce` 的官方运行时差距：官方 durable quiet-window 改从加锁的 live control 读取，启动时保持 private/group 各自配置，热更新后与 OneBot 同步立即生效。
 - `/higgs status` 现在匿名分列 OneBot 与官方 transport；官方群只展示 Gateway、鉴权在线、Bot 身份匹配、健康回执和时长，不复用 NapCat 标签，也不输出身份或平台标识。官方未启用时不初始化仅供展示的状态行。
 - README、聊天命令和双通道路线已更新为真实现状：主人 C2C 被动回复已验收，测试群与 proactive 仍需 72 小时和单独生产确认；Node sidecar 独占生产 Gateway，Python SDK 仅为隔离兼容路径。
-- 本地 Python `369 passed, 5 skipped`，Node `37 passed, 8 skipped`，Ruff 与格式通过；尚待 staged release gate、PR/CI，生产无变化。
+- 本地 Python `369 passed, 5 skipped`，Node `37 passed, 8 skipped`，Ruff、格式、staged release gate、秘密边界、Shell LF 和 diff 检查通过；生产无变化。
+- 功能提交 `bf93a7d` 已进入 PR #52；push run `33295771506` 与 pull request run `33295778538` 四项 CI 全绿，Ubuntu Python 零跳过并通过 Node POSIX/UDS/进程替换、Shell 语法、npm 签名、镜像和 Compose。当前仅追加 CI 证据并复验，尚未合并或部署。

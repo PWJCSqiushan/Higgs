@@ -373,4 +373,5 @@
 - 新分支 `codex/higgs-official-parity-20260830` 审计运行时控制后确认一处差距：`/higgs debounce` 会热更新 OneBot 内存合并器并持久化配置，但官方 durable enqueue 仍读取进程启动时的静态 private/group 值。本切片让官方事件从同一个加锁的 live control 读取当前 quiet-window；启动时仍保留私聊/群聊各自初值，主人热更新后两条 transport 立即使用新值。
 - `/higgs status` 现同时读取 `transport.sqlite` 的 OneBot 与 `qq_official` 行。个人 QQ 继续展示 NapCat、OneBot、权威在线和踢线原因；官方通道单独展示 Gateway 可达、官方账号在线、Bot 身份匹配、匿名健康回执和持续时间，不输出账号、OpenID 或平台标识。官方关闭时不会为了展示状态创建虚假行。
 - README、主人命令说明、双通道路线和官方配置模块说明已从旧的“Gateway 尚未启用”更新为当前真实边界：owner C2C 被动回复已验收，测试群和 proactive 仍受固定 72 小时、双层白名单/双开关与单独生产确认约束，生产 Gateway 由固定 Node sidecar 独占，Python SDK 只保留隔离兼容路径。
-- 当前本地完整 Python `369 passed, 5 skipped`，Ruff 格式/检查通过；Node 语法和 `37 passed, 8 skipped` 通过。尚待暂存后的 release gate、秘密边界、Shell LF、提交 PR 与 Ubuntu 零跳过；没有部署、改配置、重建容器或发送消息。
+- 当前本地完整 Python `369 passed, 5 skipped`，Ruff 格式/检查通过；Node 语法和 `37 passed, 8 skipped` 通过。暂存后的 release gate、秘密边界、Shell LF 与 diff 检查同样通过；没有部署、改配置、重建容器或发送消息。
+- 功能提交 `bf93a7d` 已进入 PR #52；push run `33295771506` 与 pull request run `33295778538` 四项 CI 全绿，Ubuntu Python 零跳过，Node POSIX/UDS/进程替换、Shell 语法、npm 签名、镜像和 Compose 均通过。当前仅追加 CI 证据并复验，尚未合并或部署。
