@@ -224,6 +224,8 @@ def test_persona_v2_context_orders_safety_before_verified_bundle_and_memory(
     assert system.index("## style") < system.index("## examples")
     assert system.index("## examples") < system.index("# Higgs 已激活的自我记忆")
     assert "legacy persona" not in system
+    assert "未执行操作只指工具或外部动作" in system
+    assert "不得退回数字存在、没有实体、智能体定位或系统机制的元叙述" in system
 
 
 def test_persona_v2_context_fails_closed_without_verified_bundle(tmp_path: Path) -> None:

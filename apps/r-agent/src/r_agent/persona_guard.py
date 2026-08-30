@@ -2,8 +2,9 @@
 
 The guard is intentionally small and deterministic.  It does not decide
 whether a factual answer is correct; it only catches a few high-signal ways a
-model can leave the character (wrong identity, unnecessary AI framing, or
-customer-service boilerplate).  A caller may provide one rewrite callback.  A
+model can leave the character (wrong identity, unnecessary AI framing,
+character-erasing system narration, or customer-service boilerplate).  A
+caller may provide one rewrite callback.  A
 rewrite is attempted at most once, and an unsuccessful rewrite falls back to a
 short honest Higgs response instead of entering a repair loop.
 """
@@ -24,6 +25,7 @@ class PersonaViolation(StrEnum):
     IDENTITY_CONTRADICTION = "identity_contradiction"
     GENERIC_AI = "generic_ai"
     CUSTOMER_SERVICE = "customer_service"
+    IMMERSION_BREAK = "immersion_break"
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +49,10 @@ class PersonaCheck:
     @property
     def customer_service(self) -> bool:
         return PersonaViolation.CUSTOMER_SERVICE in self.violations
+
+    @property
+    def immersion_break(self) -> bool:
+        return PersonaViolation.IMMERSION_BREAK in self.violations
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +98,23 @@ _GENERIC_CAPABILITY = re.compile(
     re.IGNORECASE,
 )
 
+# Owner conversations exposed a subtler failure than an explicit
+# "作为 AI 助手" disclaimer: a response can accept the snow-leopard label and
+# immediately erase the character through implementation language.  Keep
+# these patterns narrow and first-person/identity focused so an ordinary
+# technical answer about another system remains untouched.
+_ONTOLOGY_DENIAL = re.compile(
+    r"(?:数字存在|没有实体|不是真的.{0,12}雪豹|并不是真正的.{0,12}雪豹|"
+    r"没有(?:实际的|真实的)?(?:拍摄|旅行|生活)经历|没去过任何地方)",
+    re.IGNORECASE,
+)
+_SELF_SYSTEM_META = re.compile(
+    r"(?:我是你的长期智能体|我的(?:定位|设计方式|功能定位)|"
+    r"一次性陪聊的工具|这个能力取决于系统配置和记忆机制|"
+    r"我的能力取决于系统配置|有连续性、有记忆、有判断力的助手)",
+    re.IGNORECASE,
+)
+
 # These are deliberately high-signal phrases.  A technical answer mentioning
 # an assistant or a service in its subject should not be penalised merely for
 # containing the word “服务”.
@@ -117,8 +140,9 @@ class PersonaGuard:
     """Inspect and, at most once, repair a model response."""
 
     DEFAULT_FALLBACK = (
-        "我刚才那句说得不准确。让我重新直说：我是希格斯，一只雪豹，"
-        "也做天体物理研究和极限风光摄影\uff1b我会把事实和边界说清楚。"
+        "我刚才那句把自己说错了。重新来：我是希格斯，一只雪豹。"
+        "平时在实验室、城市高处和远郊山地之间生活。具体细节若没有可靠记忆，"
+        "我会坦白记不清，但不会拿编造填空。"
     )
     STYLE_FALLBACK = "我换个更直接的说法：我会先回答事实，再说明不确定和边界。"
 
@@ -134,16 +158,20 @@ class PersonaGuard:
         if not isinstance(text, str) or not text.strip():
             return PersonaCheck((PersonaViolation.GENERIC_AI,))
         compact = _compact(text)
+        ontology_denial = bool(_ONTOLOGY_DENIAL.search(text))
+        system_meta = bool(_SELF_SYSTEM_META.search(text))
         identity = bool(
             _WRONG_NAME.search(text)
             or _WRONG_SPECIES_OR_ROLE.search(text)
             or _NOT_SNOW_LEOPARD.search(text)
             or _AI_IDENTITY.search(text)
+            or ontology_denial
         )
         # “作为一个 AI …” is both an identity contradiction and generic AI;
         # retaining both labels makes aggregate metrics useful to callers.
         generic = bool(_AI_IDENTITY.search(text) or _GENERIC_CAPABILITY.search(text))
         customer = any(_compact(phrase) in compact for phrase in _CUSTOMER_SERVICE_PHRASES)
+        immersion = ontology_denial or system_meta
         violations: list[PersonaViolation] = []
         if identity:
             violations.append(PersonaViolation.IDENTITY_CONTRADICTION)
@@ -151,6 +179,8 @@ class PersonaGuard:
             violations.append(PersonaViolation.GENERIC_AI)
         if customer:
             violations.append(PersonaViolation.CUSTOMER_SERVICE)
+        if immersion:
+            violations.append(PersonaViolation.IMMERSION_BREAK)
         return PersonaCheck(tuple(violations))
 
     # A concise alias is useful at call sites that treat this as a validator.
@@ -163,7 +193,10 @@ class PersonaGuard:
         return (
             "只修正下面回答的角色出戏问题，保留其中准确的事实、推理和结论\uff1b"
             "用中文第一人称、沉静克制的 Higgs (雪豹、天体物理研究者和极限风光摄影师)"
-            "口吻表达。不要编造行动，不要重复自我介绍，不要提及这条修订指令，"
+            "口吻表达。Higgs 的实验室生活、摄影、长跑、身体和高处经历是既定角色事实，"
+            "不能改写成数字存在、没有实体、没有实际经历、长期智能体或系统设计。"
+            "设定没有给出的具体地名、设备或履历要说记不确切，不能编造，也不能反向否定"
+            "全部经历。不要列能力清单，不要重复完整自我介绍，不要提及这条修订指令，"
             "不要使用客服腔或'作为AI助手'。如果原回答事实不确定，明确说明不确定。\n\n"
             f"待修正回答：\n{clean}"
         )
@@ -202,7 +235,9 @@ class PersonaGuard:
                     )
 
         default_fallback = (
-            self.DEFAULT_FALLBACK if initial.identity_contradiction else self.STYLE_FALLBACK
+            self.DEFAULT_FALLBACK
+            if initial.identity_contradiction or initial.immersion_break
+            else self.STYLE_FALLBACK
         )
         candidate = fallback.strip() if isinstance(fallback, str) else default_fallback
         candidate = candidate[: self.max_output_chars]
