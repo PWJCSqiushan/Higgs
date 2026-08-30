@@ -65,6 +65,28 @@ def test_node_owner_binding_is_single_user_private_and_fail_closed() -> None:
     assert ".unlink(" not in text
 
 
+def test_official_stability_observer_is_anonymous_and_read_only() -> None:
+    text = (ROOT / "deploy/existing-server/observe_official_stability.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "mode=ro" in text
+    assert "PRAGMA query_only = ON" in text
+    assert "transport_transitions" in text
+    assert "official_processing_batches" in text
+    assert "official_gateway_count=" in text
+    assert "recreated_during_window=" in text
+    assert "rejected_transition_count=" in text
+    assert "fatal_transition_count=" in text
+    assert "docker logs" not in text
+    assert "docker restart" not in text
+    assert "compose up" not in text
+    assert "compose down" not in text
+    assert "send_text" not in text
+    assert "provider_message_id" not in text
+    assert "message_id" not in text
+    assert "QQBOT_APP_SECRET" not in text
+
+
 def test_opencloudos_build_prefetches_locked_dependencies_before_offline_sync() -> None:
     text = (ROOT / "apps/r-agent/Dockerfile.opencloudos").read_text(encoding="utf-8")
     pyproject = (ROOT / "apps/r-agent/pyproject.toml").read_text(encoding="utf-8")

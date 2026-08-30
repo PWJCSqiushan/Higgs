@@ -149,6 +149,30 @@ files, moves the intermediate file to `/srv/trash`, and exits. It never exposes
 the OpenID, message ID, content, credentials, or attachments and never enables
 the official Agent transport. A separate deployment gate is still required.
 
+## Anonymous official-channel observation
+
+After the first real passive reply succeeds, run a bounded 72-hour observation
+before allowlisting a test group. Supply UTC epoch milliseconds for the exact
+window boundaries:
+
+```bash
+bash observe_official_stability.sh <window-start-epoch-ms> <window-end-epoch-ms>
+```
+
+The helper is read-only. It checks the three container health states and restart
+counts, a single official Gateway, the private reply gate, the anonymous
+`qq_official` transport state and freshness, bounded transition counters, and
+the number of active durable batches. SQLite is opened with `mode=ro` and
+`query_only`; the script does not read logs or print container IDs, identities,
+message content, platform message IDs, receipt IDs, or credentials. It never
+sends a message, restarts a container, changes configuration, or logs in.
+
+Treat any rejected or fatal transition, account mismatch, non-singleton
+Gateway, stale health receipt, unhealthy container, or durable batch that does
+not converge as an incident requiring manual review. A recovered reconnect is
+still evidence to retain in the final observation result; do not erase it by
+resetting the observation start time.
+
 Run these from `/srv/apps/higgs/current/deploy/existing-server`:
 
 ```bash
