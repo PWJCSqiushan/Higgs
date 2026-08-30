@@ -439,3 +439,12 @@
 - 匿名前置门为三容器 healthy/零重启、单 Gateway、reply=true、官方 transport verified 且健康回执新鲜，零 rejected/fatal/active batches。服务器直连 GitHub 的首次非切换准备因网络中断安全退出，staging 移入 `/srv/trash`，生产未改变。
 - 本机经 GitHub API取得同一提交并生成 604685 字节、303 成员、SHA-256 `558e9b17f3e20ff85e03be35aee57869a1d6321bb0bf56d6a4fbb73d61158d74` 的 Persona 2.1 发布包，已上传 `/root`。关机时云端只在校验、构建新 Agent 镜像和安装待激活 immutable release，超时 600 秒；它不会切 current、改私有 env 或调用 Compose。
 - 恢复时先查云任务终态和当前生产匿名基线。只有确认准备成功与生产仍健康后，才允许原子切换 current/Agent 镜像并只重建 Agent；任一后验失败回滚。Sidecar、NapCat、其他开关和数据库均不得改变。
+
+## 节点 52：Persona 2.1 生产激活与新观察基线
+
+- 恢复后的准备态复核确认旧生产仍健康，待激活 `f8354699fb84f61e1d30a64ca229d03232ded1a4` Agent 镜像与 release 完整存在，镜像内 Persona Bundle 为 `2.1.0`。因为 PR #60 不含依赖、锁文件或 Dockerfile 变化，新镜像基于既有已验收 Agent 镜像并精确覆盖 CI 通过的 `r_agent` 包。
+- 原子激活前把 `stack.env` 按原数字属主/模式备份到 `/srv/trash`，并保留旧 `current` 目标；失败路径只恢复这两项并只重建旧 Agent。本次规范 release 安装、`current`/镜像标签切换和 Agent 强制重建成功，未触发回滚。
+- official sidecar 与 NapCat 没有重建：两者容器标识、启动时间和重启计数与前置指纹完全一致。Agent 以精确新镜像启动并 healthy，Persona Bundle 从运行容器内再次验证为 `2.1.0`。
+- 上线后匿名门禁为三容器 healthy/零重启、单 Gateway、reply=true、transport verified/connected/authenticated/account-match/ok、健康回执新鲜、零 rejected/fatal/active batches；私有配置元数据未漂移。
+- self-memory schema/mode、群记忆、普通用户、官方群和 proactive 继续关闭；没有迁移数据库、导入观点、发送消息、读取身份/正文、重新登录或重启 NapCat。生产能力只从 owner Persona V2 的 `2.0.0` 更新到 `2.1.0`。
+- `higgs-72` 观察重置为 2026-08-30 23:26:02 至 2026-08-31 23:26:02，每 3 小时只读检查 Persona 版本、开关、三容器、单 Gateway、官方 transport 和活动批次。截止后生成结论并暂停；真实对话沉浸度仍由主人继续验收。
