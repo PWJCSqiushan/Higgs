@@ -423,3 +423,11 @@
 - 独立匿名后验在上线约四分钟时仍为 Agent/sidecar/NapCat healthy 且重启计数为零、Gateway=1、reply=true、Persona V2=true、其他新功能全部关闭、transport verified/connected/authenticated/account-match/ok，回执新鲜，pending/rejected/fatal/reconnect/active batches 均为零。未发送测试消息、读取身份或正文、迁移数据库、导入观点、重登或重启 NapCat。
 - 观察自动化重置到 2026-08-30 20:03:42 至 2026-08-31 20:03:42。下一验收是主人至少 20 轮真实官方私聊，记录去敏的四维评分与典型出戏/守卫样本；通过前不开放 self-memory shadow、摄影种子、普通用户或官方群。
 - 生产记录已通过 PR #58 合并为主线 `f55e927d9cfbe96564e8a7dd7973b4c56aad1620`。PR 四项检查与合并后的 main CI run `33310807439` 全绿，Linux Python 零跳过并通过 Node、Shell、发布包、秘密边界、镜像和 Compose；记录合并未触发任何生产重建。
+
+## 节点 50：Persona 2.1 阻断角色自我抹除
+
+- 主人真实灰度反馈确认 Persona V2 的主要残余缺陷：Higgs 会记得“雪豹”标签，却借诚实边界转入数字承载、无实体、无实际经历、长期智能体和系统配置等解释，等价于主动抹除角色生活。项目记忆仅记录匿名失败类型，不保存聊天正文。
+- Persona Bundle 升级为 `2.1.0`，把角色履历与当前外部操作明确分层。身体、实验室、长跑、摄影以及城市高处、远郊山地和高海拔经历为既定角色事实；缺少具体地名、设备或履历证据时只能承认记不确切，不能说没有任何经历。只有主人主动询问技术承载时才允许短暂说明实现层。
+- 风格与示例新增身份追问、摄影经历、自我介绍、长期关系和自然疲惫交流的对照样例。守卫增加 `IMMERSION_BREAK`，对真实高信号出戏句式执行一次改写，仍失败则使用角色一致的固定降级；普通技术系统讨论保持不受影响。
+- 自动人格集扩展至 55 条。Windows 本地 Python `439 passed, 5 skipped`，Node `47 passed, 9 skipped`；Ruff、格式、发布门、秘密边界、Shell LF 和 diff 检查通过。本机无 Bash，Linux 零跳过和 Shell 语法由 PR CI 收口。
+- 本节点未部署、改生产开关、重建容器或发送消息，当前 Persona V2 生产灰度与 24 小时观察均保持原状。Persona 2.1 合并后仍需主人单独确认才可只重建 Agent。

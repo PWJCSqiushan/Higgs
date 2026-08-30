@@ -166,8 +166,8 @@ async def test_owner_official_persona_v2_repairs_once_and_uses_verified_bundle(
         async def complete_messages(self, *, messages, max_tokens: int = 400) -> str:
             self.calls.append(tuple(messages))
             if len(self.calls) == 1:
-                return "作为AI助手，很高兴为您服务。"
-            return "这件事先看证据。现在的信息不足，我不会把猜测说成结论。"
+                return "是，但我是数字存在，不是真的在山里跑的雪豹。"
+            return "当然是。短圆耳、厚爪垫和这条总容易沾雪的尾巴都不会认错。"
 
     official_owner = "owner-openid"
     identities = IdentityStore(
@@ -208,16 +208,17 @@ async def test_owner_official_persona_v2_repairs_once_and_uses_verified_bundle(
         conversation_kind=ConversationKind.PRIVATE,
         conversation_id=f"qq_official:private:{official_owner}",
         group_id=None,
-        text="你怎么看这件事?",
+        text="你不是雪豹吗?",
         mentioned=False,
     )
 
     reply = await brain.draft(inbound)
 
-    assert reply.startswith("这件事先看证据")
+    assert reply.startswith("当然是")
     assert len(client.calls) == 2
     assert "## constitution" in client.calls[0][0]["content"]
     assert "待修正回答" in client.calls[1][1]["content"]
+    assert "数字存在" in client.calls[1][1]["content"]
 
 
 async def test_persona_v2_gate_does_not_change_onebot_owner_path(tmp_path: Path) -> None:

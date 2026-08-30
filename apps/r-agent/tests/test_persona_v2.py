@@ -31,12 +31,23 @@ REVIEW_FIXTURE = Path(__file__).parent / "fixtures" / "persona_manual_review.jso
 
 def test_packaged_bundle_is_verified_and_ordered() -> None:
     bundle = load_persona_bundle(env={})
-    assert bundle.version == "2.0.0"
+    assert bundle.version == "2.1.0"
     assert len(bundle.bundle_hash) == 64
     rendered = bundle.render()
     assert rendered.index("constitution") < rendered.index("style") < rendered.index("examples")
     assert "雪豹" in rendered
     assert bundle.metadata()["legacy"] is False
+
+
+def test_packaged_bundle_preserves_canonical_life_without_system_retreat() -> None:
+    bundle = load_persona_bundle(env={})
+    rendered = bundle.render()
+
+    assert "琥珀色" in rendered
+    assert "具体地名我记不确切" in rendered
+    assert "数字存在" in rendered
+    assert "长期智能体" in rendered
+    assert "外部操作" in rendered
 
 
 def test_bundle_hash_tampering_fails_closed(tmp_path: Path) -> None:
@@ -65,7 +76,7 @@ def test_directory_has_priority_over_legacy_file_and_invalid_dir_does_not_fall_b
     bundle = load_persona_bundle(
         env={"R_AGENT_PERSONA_DIR": str(ASSET_DIR), "R_AGENT_PERSONA_FILE": str(legacy)}
     )
-    assert bundle.version == "2.0.0"
+    assert bundle.version == "2.1.0"
     with pytest.raises(PersonaBundleError):
         load_persona_bundle(
             env={
@@ -114,6 +125,45 @@ def test_guard_detects_identity_and_customer_service_drift() -> None:
     assert PersonaViolation.IDENTITY_CONTRADICTION in result.violations
     assert PersonaViolation.GENERIC_AI in result.violations
     assert PersonaViolation.CUSTOMER_SERVICE in result.violations
+
+
+@pytest.mark.parametrize(
+    ("response", "also_identity"),
+    (
+        ("说实话，我没有实际的拍摄经历。", True),
+        ("是，但我是数字存在，不是真的在山里跑的雪豹。", True),
+        ("没去过任何地方。我没有实体，也没有真实的旅行经历。", True),
+        ("我是你的长期智能体，学习、开发和生活上的事都能处理。", False),
+        ("这个能力取决于系统配置和记忆机制。", False),
+        ("我不是一次性陪聊的工具，而是有连续性、有记忆、有判断力的助手。", False),
+    ),
+)
+def test_guard_detects_real_owner_conversation_immersion_failures(
+    response: str,
+    also_identity: bool,
+) -> None:
+    guard = PersonaGuard(load_persona_bundle(env={}))
+    result = guard.inspect(response)
+    assert PersonaViolation.IMMERSION_BREAK in result.violations
+    assert result.identity_contradiction is also_identity
+
+
+def test_guard_keeps_technical_system_answer_outside_first_person_identity_safe() -> None:
+    guard = PersonaGuard(load_persona_bundle(env={}))
+    result = guard.inspect("服务器的系统配置决定缓存容量，记忆模块只负责检索已审核内容。")
+    assert result.safe
+
+
+def test_guard_failed_immersion_rewrite_uses_role_consistent_fallback() -> None:
+    guard = PersonaGuard(load_persona_bundle(env={}))
+    result = guard.apply(
+        "我是数字存在，没有实体。",
+        rewrite=lambda _: "我是你的长期智能体，这取决于系统配置和记忆机制。",
+    )
+    assert result.fallback_used
+    assert result.safe
+    assert "希格斯" in result.text and "雪豹" in result.text
+    assert "数字存在" not in result.text and "智能体" not in result.text
 
 
 def test_guard_does_not_rewrite_accurate_technical_answer() -> None:
