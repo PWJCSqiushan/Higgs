@@ -301,3 +301,11 @@
 - 部署后匿名门控确认 Agent、official sidecar 与 NapCat 容器均 healthy，官方 Gateway 单实例，官方 transport 保持 `verified`，reply=true，活动 durable 批次为零。先前两个 `complete/model_failed` 批次保持终态，未重放。
 - 主人随后从官方入口发送一条新消息。脱敏验收显示 durable batch 进入 `complete`，处理生命周期出现预期的三个转换节点，最终发送结果与回复审计均为 `sent`，活动批次回归零；官方 transport 仍 verified，三个容器仍 healthy，Gateway 仍为一个。
 - 这是 Higgs 官方 QQ Bot 的首次真实“平台入站 → 持久处理 → 模型回复 → 平台发送 → 审计收敛”端到端验收。当前已正式开放 owner 官方 C2C 被动回复 MVP；提醒仍由 NapCat 发送，不做跨通道自动转发或透明故障切换。下一阶段是 72 小时官方通道观察，然后再以单个测试群、仅 `@` 触发的方式灰度。
+
+## 31. 2026-08-30 官方通道 72 小时匿名观察已启动
+
+- 观察窗口固定为 2026-08-30 08:09:26 至 2026-09-02 08:09:26（Asia/Shanghai）。已创建当前任务内的 `higgs-72` 心跳观察，每 6 小时执行一次，截止后生成结论并暂停；不会把截止后的 72 小时窗口自动延长。
+- 新增 `deploy/existing-server/observe_official_stability.sh`，只读检查三个容器健康与重启计数、单 Gateway、reply=true、官方 transport 验证/认证/身份匹配/健康新鲜度、窗口内转换计数和活动批次。SQLite 使用 `mode=ro` 与 `query_only`，不读日志，不输出容器 ID、身份、正文、平台消息/回执 ID 或凭据，不发送消息、重启容器、修改配置或重新登录。
+- 首个基线点为 Agent、official sidecar、NapCat 均 healthy 且重启计数为零，Gateway 为一，reply=true，transport verified/连接/认证/身份匹配/健康回执全部通过，活动 durable 批次为零。观察启动后已出现一次短暂 `pending/gateway_reconnecting → verified/ready` 自愈，没有 rejected、致命转换或容器重启；该事件将保留在最终稳定性证据中。
+- 72 小时结论前不开放测试群生产白名单。观察期间可以离线完成群 OpenID 受控绑定、双层白名单和仅 `GROUP_AT_MESSAGE_CREATE` 回复的测试/PR，但生产启用仍必须等待本窗口通过并另行验收。
+- 本切片本地门禁已通过：远端真实 Bash 语法与只读基线执行成功；release gate 为 245 个跟踪文件、267 个归档成员、秘密边界与 Shell LF 全通过；Ruff 格式/检查通过；Python `332 passed, 5 skipped`，Node `31 passed, 7 skipped`（Windows 既有 Linux 专用跳过）。下一步提交观察脚本与起点记录的独立 PR，等待 Ubuntu 零跳过后合并；该 PR 不包含生产开关、容器或白名单变更。
