@@ -54,6 +54,7 @@ class ReminderJob:
     delivery_surface: str
     delivery_account_id: str
     delivery_target_id: str
+    delivery_binding_version: int
     source_message_id: str | None
     approved_parameter_sha256: str | None
     delivery_policy: str = "persistent_ack"
@@ -247,11 +248,20 @@ class ReminderStore:
             "content": str(row["content"]),
             "due_at_ms": int(row["due_at_ms"]),
             "origin_conversation_id": str(row["origin_conversation_id"]),
-            "delivery_channel": str(row["delivery_channel"]),
-            "delivery_surface": str(row["delivery_surface"]),
-            "delivery_account_id": str(row["delivery_account_id"]),
-            "delivery_target_id": str(row["delivery_target_id"]),
         }
+        # Version 1 rows were confirmed before explicit delivery bindings
+        # existed. Preserve their original approval only for the historical
+        # OneBot path; all newly created rows are version 2 and bind the exact
+        # channel, surface, bot account and target into owner approval.
+        if int(row["delivery_binding_version"]) >= 2:
+            parameters.update(
+                {
+                    "delivery_channel": str(row["delivery_channel"]),
+                    "delivery_surface": str(row["delivery_surface"]),
+                    "delivery_account_id": str(row["delivery_account_id"]),
+                    "delivery_target_id": str(row["delivery_target_id"]),
+                }
+            )
         policy = str(row["delivery_policy"])
         source_kind = row["source_kind"]
         source_id = row["source_id"]
@@ -295,6 +305,7 @@ class ReminderStore:
                     delivery_surface TEXT,
                     delivery_account_id TEXT,
                     delivery_target_id TEXT,
+                    delivery_binding_version INTEGER NOT NULL DEFAULT 2,
                     source_message_id TEXT,
                     approved_parameter_sha256 TEXT,
                     delivery_policy TEXT NOT NULL DEFAULT 'persistent_ack',
@@ -344,6 +355,7 @@ class ReminderStore:
                 "delivery_surface": "TEXT",
                 "delivery_account_id": "TEXT",
                 "delivery_target_id": "TEXT",
+                "delivery_binding_version": "INTEGER NOT NULL DEFAULT 1",
                 "source_message_id": "TEXT",
                 "approved_parameter_sha256": "TEXT",
                 "delivery_policy": "TEXT NOT NULL DEFAULT 'persistent_ack'",
@@ -418,6 +430,7 @@ class ReminderStore:
             str(row["delivery_surface"]),
             str(row["delivery_account_id"]),
             str(row["delivery_target_id"]),
+            int(row["delivery_binding_version"]),
             str(row["source_message_id"]) if row["source_message_id"] is not None else None,
             str(row["approved_parameter_sha256"])
             if row["approved_parameter_sha256"] is not None
@@ -529,9 +542,9 @@ class ReminderStore:
                     status, created_at_ms, updated_at_ms, origin_channel,
                     origin_surface, origin_conversation_id, source_message_id,
                     delivery_channel, delivery_surface, delivery_account_id,
-                    delivery_target_id,
+                    delivery_target_id, delivery_binding_version,
                     delivery_policy, source_kind, source_id, expires_at_ms
-                ) VALUES (?, ?, ?, ?, ?, 'pending_confirmation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, 'pending_confirmation', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 2, ?, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -800,6 +813,15 @@ class ReminderStore:
                 ).fetchall()
             for row in jobs:
                 job_id = str(row["job_id"])
+                binding_version = int(row["delivery_binding_version"])
+                if binding_version < 2 and str(row["delivery_channel"]) != "qq":
+                    # A legacy approval never authorized an official Bot/OpenID
+                    # target. It must not cross the channel boundary.
+                    conn.execute(
+                        "UPDATE reminder_jobs SET status='failed', updated_at_ms=? WHERE job_id=?",
+                        (now, job_id),
+                    )
+                    continue
                 approved_digest = row["approved_parameter_sha256"]
                 actual_digest = normalized_parameter_hash(self._approved_parameters(row))
                 if approved_digest is None or str(approved_digest) != actual_digest:

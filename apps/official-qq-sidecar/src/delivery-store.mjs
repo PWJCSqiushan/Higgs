@@ -405,7 +405,7 @@ export class SecureDeliveryStore {
         }
         return false;
       }
-+      this.receipts.set(
+      this.receipts.set(
         key,
         Object.freeze({
           fingerprint,

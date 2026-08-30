@@ -334,3 +334,11 @@
 - Node sidecar 与 Agent 增加默认关闭的独立 proactive 能力。主动请求不携带 reply message ID，只允许 owner C2C；sidecar 在 provider 边界前持久写入请求指纹与 UNKNOWN claim，崩溃后不得重发。该实现依据腾讯官方 `openclaw-qqbot` 主动发送和提醒代码，但尚未真实启用或发送。
 - 主人私聊命令先开放严格 allowlist 的只读状态/记忆查询及提醒管理；群内主人命令与其他变更性运维命令继续拒绝。日计划仍未迁移。
 - 暂停前定向门禁为 Python `67 passed`、Node `37 passed, 8 skipped`，Ruff 与 Node 语法通过。尚需完整测试、Linux 零跳过、release gate、秘密扫描、PR/CI；生产 proactive 配置仍为 false，没有部署或容器变化。
+
+## 节点 40：主动提醒本地实现与迁移边界收束
+
+- 旧提醒迁移改为版本化绑定：升级前已确认的 OneBot version 1 记录继续使用原审批哈希且只能投递到 `qq`；任何 version 1 官方目标都会失败关闭。新记录统一为 version 2，审批哈希覆盖通道、会话面、Bot account 与 target，避免升级静默取消既有提醒，也禁止旧审批跨到 OpenID。
+- 官方主动发送保持 Agent/sidecar 双开关默认 false，只允许 owner C2C。Sidecar 在平台调用前持久 claim 为 UNKNOWN；崩溃或响应不确定时同一幂等键不得再次调用 provider。被动 reply authorization 与 proactive claim 分离，群主动发送仍禁止。
+- 官方 owner C2C 已离线开放 help/status/server status/risk、提醒管理和只读记忆 allowlist；官方群命令和其他变更性运维能力继续拒绝。日计划、跨通道主动迁移和完整主人功能仍属后续阶段。
+- 新增受 72 小时门禁约束的主动发送激活脚本：双私有配置原子变更、`/srv/trash` 可恢复备份、只重建 sidecar/Agent、单 Gateway/transport/批次/schema 后验和 NapCat 不变性验证，失败时双配置与双服务一并回滚。
+- 本地完整 Python 为 `342 passed, 5 skipped`，格式修正后定向 `35 passed`，Ruff 检查通过；Node `37 passed, 8 skipped` 且语法通过。Windows 没有 Bash，POSIX 与新 Shell 语法必须由 PR Ubuntu CI 零跳过/`bash -n` 收口。生产未改变、未发送消息，proactive 双门与测试群白名单继续关闭。

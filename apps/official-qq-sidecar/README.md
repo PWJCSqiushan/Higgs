@@ -101,3 +101,11 @@ The Agent has two independent gates: `R_AGENT_OFFICIAL_QQ_ENABLED` permits
 ingestion, while `R_AGENT_OFFICIAL_QQ_REPLY_ENABLED` permits passive replies.
 The second gate defaults to false and stays false for the first shadow/Resume
 deployment even if the Node Gateway and UDS adapter are online.
+
+Official proactive delivery has two additional independent gates:
+`R_AGENT_OFFICIAL_QQ_PROACTIVE_ENABLED` in the Agent and
+`HIGGS_OFFICIAL_QQ_PROACTIVE_ENABLED` in the sidecar. Both default to false and
+must remain false through the fixed 72-hour observation. When separately
+approved, proactive sends are limited to the explicitly bound owner C2C target,
+omit `msgId`, and durably claim the idempotency key as `UNKNOWN` before crossing
+the provider boundary. They never provide a transparent fallback to OneBot.
