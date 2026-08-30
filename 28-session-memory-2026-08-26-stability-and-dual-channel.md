@@ -325,4 +325,4 @@
 - 绑定阶段暂时用唯一 capture-only Gateway 替换 sidecar，完成后恢复原 sidecar并等待 transport verified；Agent 与 NapCat 不重建。候选不会自动进入生产白名单，失败文件只移入 `/srv/trash`。
 - 独立激活脚本再次要求 72 小时确认，把两份私有配置备份到 `/srv/trash` 后原子写入 Agent/sidecar 双层 allowlist，仅重建 sidecar 与 Agent；运行时值、单 Gateway、reply、transport、活动批次和 NapCat 不变性任一失败都会回滚。
 - 协议和业务仍只接收群 `@` 事件，普通群消息不进入业务与记忆。官方群成员按通道和 member OpenID 隔离，不自动跨到个人 QQ、owner 或其他成员 principal。
-- 本地 Python `335 passed, 5 skipped`，Node `36 passed, 7 skipped`；Ruff、格式、Node/远端 Bash 语法通过。staged release gate 以 249 个跟踪文件、268 个归档成员通过，秘密边界与 Shell LF 干净。代码尚未提交 PR 或部署；生产群白名单保持为空，必须等待固定 72 小时窗口完成后再决定绑定与灰度。
+- 本地 Python `335 passed, 5 skipped`，Node `36 passed, 7 skipped`；Ruff、格式、Node/远端 Bash 语法通过。release gate 以 249 个跟踪文件、272 个归档成员通过，秘密边界与 Shell LF 干净。PR #47 首轮四项 CI 全绿，增强后尚待重新推送复验。代码未部署；生产群白名单保持为空，必须等待固定 72 小时窗口完成后再决定绑定与灰度。

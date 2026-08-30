@@ -86,6 +86,8 @@ docker exec "$agent_id" python -c "import sqlite3,sys; c=sqlite3.connect('file:/
 
 napcat_started=$(docker inspect --format '{{.State.StartedAt}}' "$napcat_id")
 napcat_restarts=$(docker inspect --format '{{.RestartCount}}' "$napcat_id")
+agent_started=$(docker inspect --format '{{.State.StartedAt}}' "$agent_id")
+agent_restarts=$(docker inspect --format '{{.RestartCount}}' "$agent_id")
 
 exec 9>"$config_dir/.official-node-group-bind.lock"
 chmod 0600 "$config_dir/.official-node-group-bind.lock"
@@ -146,6 +148,12 @@ restore_sidecar() {
     fi
     mv "$failed_file" "$trash_dir/$(basename "$failed_file")"
   done
+  current_agent_id=$(compose ps -q agent)
+  if [ "$current_agent_id" != "$agent_id" ] || \
+    [ "$(docker inspect --format '{{.State.StartedAt}}' "$current_agent_id")" != "$agent_started" ] || \
+    [ "$(docker inspect --format '{{.RestartCount}}' "$current_agent_id")" != "$agent_restarts" ]; then
+    result=1
+  fi
   current_napcat_id=$(compose ps -q napcat)
   if [ "$current_napcat_id" != "$napcat_id" ] || \
     [ "$(docker inspect --format '{{.State.StartedAt}}' "$current_napcat_id")" != "$napcat_started" ] || \

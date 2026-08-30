@@ -317,4 +317,4 @@
 - 绑定脚本只暂时停止 official sidecar，运行唯一 capture-only Gateway，随后恢复原 sidecar 并等待官方 transport 重新 verified；Agent 与 NapCat 不重建，NapCat 身份、启动时间和重启计数必须不变。绑定成功后生产双层群白名单仍为空，候选只留在私有文件；失败产物移入 `/srv/trash`。
 - 激活是第二个独立显式动作，同样硬性要求 72 小时观察已通过。它先把两份 `0600` 私有环境备份到 `/srv/trash`，再把同一候选原子写入 Agent 与 sidecar 的官方群白名单，仅重建 official sidecar 和 Agent，并验证单 Gateway、双运行时值一致、reply=true、transport verified、零活动批次及 NapCat 不变；任一失败恢复两份配置和旧服务。
 - 生产业务面继续只接受 `GROUP_AT_MESSAGE_CREATE`，因此普通群消息不会进入 Journal、身份、记忆、模型或回复流水线。官方群成员按 `channel + member OpenID` 建立独立 principal；不会因字符串相同自动与 NapCat QQ 身份、owner 或其他成员合并。
-- 本地回归为 Python `335 passed, 5 skipped`、Node `36 passed, 7 skipped`；Ruff、格式、Node 语法和两份新 Shell 的真实远端 Bash 语法检查通过。staged release gate 以 249 个跟踪文件、268 个归档成员通过，秘密边界与 Shell LF 均干净。尚未提交 PR 或部署；72 小时观察仍在进行，当前生产群白名单没有变化。
+- 本地回归为 Python `335 passed, 5 skipped`、Node `36 passed, 7 skipped`；Ruff、格式、Node 语法和两份新 Shell 的真实远端 Bash 语法检查通过。release gate 以 249 个跟踪文件、272 个归档成员通过，秘密边界与 Shell LF 均干净。PR #47 已建立且首轮四项 CI 全绿；后续增强尚待推送复验。尚未部署；72 小时观察仍在进行，当前生产群白名单没有变化。

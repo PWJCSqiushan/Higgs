@@ -101,6 +101,8 @@ def test_official_test_group_binding_is_owner_only_bounded_and_non_activating() 
     assert "compose stop -t 20 official-qq-sidecar" in text
     assert "compose up -d --no-deps official-qq-sidecar" in text
     assert "production allowlist remains unchanged" in text
+    assert "agent_started=" in text
+    assert "agent_restarts=" in text
     assert "group.openid" in text
     assert "/srv/trash/higgs-official-group-bind-failed-" in text
     assert "NapCat" not in text
@@ -125,6 +127,7 @@ def test_official_test_group_activation_is_atomic_and_reversible() -> None:
     assert "official_processing_batches WHERE state!='complete'" in text
     assert "--force-recreate official-qq-sidecar" in text
     assert "--force-recreate agent" in text
+    assert "R_AGENT_OFFICIAL_QQ_REPLY_ENABLED=true" in text
     assert "only group-at events are accepted" in text
     assert 'echo "$group' not in text
     assert 'cat "$group_file"' not in text
