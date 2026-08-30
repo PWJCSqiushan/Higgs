@@ -364,4 +364,5 @@
 - 独立分支 `codex/higgs-official-owner-mutations-20260830` 复用既有 `tool_audit.sqlite`，没有增加第 14 个数据库。官方 owner C2C 的每条变更命令先以通道、Bot account 和平台消息标识生成内容无关的 SHA-256 操作键，再由 Stage 3 工具治理在执行前持久领取；同键同参数重放复用终态，同键参数漂移拒绝，领取后崩溃保持 `UNKNOWN` 且不得自动重试。
 - 迁移范围仅含明确、低风险的普通回复开关、触发词、频率、连续消息等待、记忆自动审核/观察重试/候选回填/状态审核、备份和提醒状态操作。官方 OpenID 与个人 QQ 数字身份不得混用，因此好友/群白名单和自然触发群变更继续拒绝；测试群仍须走既有双阶段私有绑定流程。
 - 治理审计只保存 actor/参数哈希和不含命令参数、提醒正文、记忆内容、身份或平台标识的固定结果摘要。旧命令路由返回的“操作未执行”会转换为失败终态，不再伪记成功；提醒等可能包含业务正文的旧展示回复不会进入持久回执。
-- 故障测试覆盖成功回放只执行一次、同键参数冲突、执行前领取后进程替换得到 `UNKNOWN`、真实配置与记忆变更重复回放只产生一次状态转换，以及失败不持久化为成功。当前本地 Python `368 passed, 5 skipped`，Node `37 passed, 8 skipped`；Ruff、格式、发布门、秘密边界、Shell LF 和 `git diff --check` 全部通过。尚未提交 PR 或部署生产。
+- 故障测试覆盖成功回放只执行一次、同键参数冲突、执行前领取后进程替换得到 `UNKNOWN`、真实配置与记忆变更重复回放只产生一次状态转换，以及失败不持久化为成功。当前本地 Python `368 passed, 5 skipped`，Node `37 passed, 8 skipped`；Ruff、格式、发布门、秘密边界、Shell LF 和 `git diff --check` 全部通过。
+- 功能提交 `34a7039` 已进入 PR #51；push run `33294949353` 与 pull request run `33294958839` 的 Python、official sidecar 四项任务全绿，Ubuntu Python 零跳过，Node POSIX/UDS/进程替换、Shell 语法、npm 签名、镜像和 Compose 均通过。当前只追加 CI 证据并复验；尚未合并或部署生产。

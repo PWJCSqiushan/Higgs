@@ -369,4 +369,5 @@
 - 新分支 `codex/higgs-official-owner-mutations-20260830` 复用 `tool_audit.sqlite` 为官方 owner C2C 变更建立执行前持久领取、参数指纹、冲突拒绝和结果回放边界。同一平台事件只能执行一次；领取后崩溃保持 `UNKNOWN`，不会自动再次执行。
 - 当前只迁移普通回复开关、关键词、频率、连续消息等待、记忆自动审核/观察重试/候选回填/状态审核、备份和提醒状态操作。白名单与自然触发群涉及个人 QQ 数字身份，继续从官方命令边界拒绝；官方群仍须经过独立绑定与 72 小时门禁。
 - 持久回执只保存固定、无内容结果摘要，不保存命令参数、提醒正文、记忆内容、身份或平台消息标识。旧路由的“操作未执行”明确落为失败，不再伪报成功。
-- 本地故障覆盖成功回放、参数冲突、预领取崩溃、真实配置与记忆状态重复执行以及失败终态；Python `368 passed, 5 skipped`，Node `37 passed, 8 skipped`，Ruff、格式、发布门、秘密边界、Shell LF 和 diff 检查通过。尚未提交 PR、CI 或部署。
+- 本地故障覆盖成功回放、参数冲突、预领取崩溃、真实配置与记忆状态重复执行以及失败终态；Python `368 passed, 5 skipped`，Node `37 passed, 8 skipped`，Ruff、格式、发布门、秘密边界、Shell LF 和 diff 检查通过。
+- 功能提交 `34a7039` 已进入 PR #51；push run `33294949353` 与 pull request run `33294958839` 四项 CI 全绿，Ubuntu Python 零跳过并通过 Node POSIX/UDS/进程替换、Shell 语法、npm 签名、镜像和 Compose。当前仅追加 CI 证据并复验，尚未合并或部署。
