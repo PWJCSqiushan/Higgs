@@ -355,4 +355,5 @@
 - 独立分支 `codex/higgs-official-owner-controls-20260830` 先暂停继续迁移变更性主人命令，改为修复这条阻断路径。计划草案使用由 purpose、channel、Bot account 和入站 message 计算的 SHA-256 请求键；数据库在 `BEGIN IMMEDIATE` 内先复用同请求，再原子执行每日限额和新建。相同键参数变化一律失败关闭。
 - 相对时间解析和计划起点固定到入站事件发生时间，避免同一事件重放时因墙钟变化产生另一份参数。地图授权限额与确认状态转换也在事务内幂等；确认、任务完成、计划取消及替换重放不再重复追加审计事件。
 - 自然提醒按原会话和 source message 幂等创建；日计划节点提醒使用内容无关的稳定 SHA-256 内部来源键。计划确认中断后重放会复用已创建节点并补齐缺失节点，不重复确认、不重复提醒；投递通道、Bot 和目标绑定冲突仍失败关闭。
-- 新增请求键复用/冲突、同事件双次草案、自然提醒双次准备、确认重复、任务状态重复，以及“首个节点已创建后注入中断并恢复”的测试。当前 Windows 完整 Python 为 `349 passed, 5 skipped`；Ruff、格式、release gate、秘密边界、Shell LF、Node 语法与 Node `37 passed, 8 skipped` 均通过。尚未提交、PR、CI 或部署；下一步只提交此修复，等待 Ubuntu 零跳过后再继续主人控制命令迁移。
+- 新增请求键复用/冲突、同事件双次草案、自然提醒双次准备、确认重复、任务状态重复，以及“首个节点已创建后注入中断并恢复”的测试。当前 Windows 完整 Python 为 `349 passed, 5 skipped`；Ruff、格式、release gate、秘密边界、Shell LF、Node 语法与 Node `37 passed, 8 skipped` 均通过。
+- 修复提交 `bb965cf` 已进入 PR #50。首轮 push 与 pull request 两套 Ubuntu CI 共四项全绿，Linux Python 零跳过、Node POSIX/真实进程替换、Shell 语法、npm 签名、镜像与 Compose 均通过。当前只追加 CI 证据并等待复验；尚未合并或部署，复验通过后才继续主人控制命令迁移。

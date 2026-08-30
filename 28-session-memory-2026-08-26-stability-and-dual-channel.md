@@ -360,4 +360,5 @@
 - 计划草案新增内容无关的 64 位 SHA-256 请求键与 partial unique index；旧库在线补列，新建与每日限额在单一 `BEGIN IMMEDIATE` 中执行。同事件同参数返回既有计划，参数漂移失败关闭。自然计划和提醒的相对时间以事件发生时间为锚，不再依赖重放时墙钟。
 - 地图授权、精确版本确认、任务终态、计划取消和替换改为幂等转换。自然提醒按原会话与 source message 复用；日计划总览/T-10/T0 使用稳定内部来源键，创建、确认和 reminder link 可在部分成功后重放修复而不重复记录。
 - 故障注入覆盖“计划已确认且第一个提醒已创建后中断”：恢复后既有 job ID 保留、其余节点补齐、来源键无重复、`plan_confirmed` 事件仍只有一条。另覆盖草案/提醒请求键冲突、同事件双准备、确认与任务转换双执行。
-- 当前本地完整 Python `349 passed, 5 skipped`，Ruff 格式/检查、release gate、秘密边界和 Shell LF 通过；Node 语法及 `37 passed, 8 skipped` 通过。尚未提交 PR/CI 或部署，固定 72 小时生产观察和既有生产配置均未改变。
+- 当前本地完整 Python `349 passed, 5 skipped`，Ruff 格式/检查、release gate、秘密边界和 Shell LF 通过；Node 语法及 `37 passed, 8 skipped` 通过。
+- 修复提交 `bb965cf` 已进入 PR #50；首轮 push/PR 四项 Ubuntu CI 全绿，Python 零跳过、Node POSIX/进程替换、Shell 语法、npm 签名、镜像与 Compose 均通过。只追加本 CI 证据并等待复验，尚未合并或部署；固定 72 小时生产观察和既有生产配置均未改变。
