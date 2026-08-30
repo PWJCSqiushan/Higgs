@@ -337,6 +337,61 @@ export class ReplyAuthorizationCache {
   }
 }
 
+export class ChannelGate {
+  constructor({
+    ratePerMinute,
+    failureLimit,
+    cooldownSeconds,
+    now = () => Date.now(),
+  }) {
+    if (
+      !Number.isSafeInteger(ratePerMinute) ||
+      ratePerMinute < 1 ||
+      !Number.isSafeInteger(failureLimit) ||
+      failureLimit < 1 ||
+      !Number.isSafeInteger(cooldownSeconds) ||
+      cooldownSeconds < 1
+    ) {
+      throw new TypeError("invalid channel gate limits");
+    }
+    this.ratePerMinute = ratePerMinute;
+    this.failureLimit = failureLimit;
+    this.cooldownMs = cooldownSeconds * 1000;
+    this.now = now;
+    this.events = [];
+    this.failures = 0;
+    this.openUntil = 0;
+  }
+
+  allow(now = this.now()) {
+    if (!Number.isSafeInteger(now) || now < 0) return false;
+    if (now < this.openUntil) return false;
+    if (this.openUntil !== 0) {
+      this.openUntil = 0;
+      this.failures = 0;
+    }
+    const cutoff = now - 60_000;
+    this.events = this.events.filter((value) => value > cutoff);
+    if (this.events.length >= this.ratePerMinute) return false;
+    this.events.push(now);
+    return true;
+  }
+
+  recordFailure(now = this.now()) {
+    if (!Number.isSafeInteger(now) || now < 0) return;
+    this.failures += 1;
+    if (this.failures >= this.failureLimit) this.openUntil = now + this.cooldownMs;
+  }
+
+  recordSuccess() {
+    this.failures = 0;
+  }
+
+  isOpen(now = this.now()) {
+    return Number.isSafeInteger(now) && now >= 0 && now < this.openUntil;
+  }
+}
+
 export function newGeneration() {
   return randomUUID();
 }

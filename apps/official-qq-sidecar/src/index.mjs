@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 
 import { OfficialQQClient } from "./qq-client.mjs";
 import { SecureDeliveryStore } from "./delivery-store.mjs";
+import { readFrozenPrivateAllowlist } from "./private-capture.mjs";
 import { SecureOfficialQQSessionStore } from "./session-store.mjs";
 import {
   MAX_BODY_BYTES,
@@ -22,13 +23,44 @@ function boolEnv(value, fallback = false) {
   throw new Error("invalid boolean configuration");
 }
 
+function boundedNumber(value, fallback, minimum, maximum, name) {
+  if (value === undefined || value === "") return fallback;
+  if (!/^\d+$/u.test(String(value))) throw new Error(`invalid ${name} configuration`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new Error(`invalid ${name} configuration`);
+  }
+  return parsed;
+}
+
+function safeIdList(value) {
+  return [...new Set(
+    String(value ?? "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  )];
+}
+
+function isSafePolicyId(value) {
+  return isSafeId(value) && !value.includes("*");
+}
+
 export function loadConfig(env = process.env) {
   const enabled = boolEnv(env.HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED, false);
   const captureOnly = boolEnv(env.HIGGS_OFFICIAL_QQ_CAPTURE_ONLY, true);
   const proactiveEnabled = boolEnv(env.HIGGS_OFFICIAL_QQ_PROACTIVE_ENABLED, false);
+  const ordinaryPrivateEnabled = boolEnv(
+    env.HIGGS_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED,
+    false,
+  );
+  const groupEnabled = boolEnv(env.HIGGS_OFFICIAL_QQ_GROUP_ENABLED, false);
   const appId = String(env.QQBOT_APP_ID ?? "").trim();
   const appSecret = String(env.QQBOT_APP_SECRET ?? "").trim();
   const ownerOpenId = String(env.HIGGS_OFFICIAL_QQ_OWNER_OPENID ?? "").trim();
+  const allowedPrivateOpenIds = safeIdList(
+    env.HIGGS_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS,
+  );
   const allowedGroupOpenIds = Object.freeze(
     String(env.HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS ?? "")
       .split(",")
@@ -48,6 +80,16 @@ export function loadConfig(env = process.env) {
     throw new Error("invalid delivery state configuration");
   }
   const deliveryStateFile = resolve(deliveryValue);
+  const privateAllowlistValue =
+    env.HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FILE ??
+    "/var/lib/higgs-official/allowed-private-openids.json";
+  if (
+    !isAbsolute(privateAllowlistValue) ||
+    basename(privateAllowlistValue) !== "allowed-private-openids.json"
+  ) {
+    throw new Error("invalid private allowlist configuration");
+  }
+  const privateAllowlistFile = resolve(privateAllowlistValue);
   if (proactiveEnabled && (!enabled || captureOnly)) {
     throw new Error("proactive sends require enabled full mode");
   }
@@ -56,21 +98,85 @@ export function loadConfig(env = process.env) {
     if (appSecret.length < 16 || appSecret.length > 512) {
       throw new Error("invalid AppSecret configuration");
     }
-    if (!captureOnly && !isSafeId(ownerOpenId)) {
+    if (!captureOnly && !isSafePolicyId(ownerOpenId)) {
       throw new Error("invalid owner OpenID configuration");
     }
-    if (allowedGroupOpenIds.some((value) => !isSafeId(value))) {
-      throw new Error("invalid group OpenID configuration");
-    }
   }
+  if (ownerOpenId && !isSafePolicyId(ownerOpenId)) {
+    throw new Error("invalid owner OpenID configuration");
+  }
+  if (allowedPrivateOpenIds.some((value) => !isSafePolicyId(value))) {
+    throw new Error("invalid private OpenID configuration");
+  }
+  if (allowedGroupOpenIds.some((value) => !isSafePolicyId(value))) {
+    throw new Error("invalid group OpenID configuration");
+  }
+  if (!enabled && (ordinaryPrivateEnabled || groupEnabled)) {
+    throw new Error("official channel switches require an enabled sidecar");
+  }
+  if (captureOnly && (ordinaryPrivateEnabled || groupEnabled)) {
+    throw new Error("ordinary and group channels require full mode");
+  }
+  if (ordinaryPrivateEnabled && !isSafePolicyId(ownerOpenId)) {
+    throw new Error("ordinary private channel requires an owner OpenID");
+  }
+  const privatePolicy = new Set(allowedPrivateOpenIds);
+  if (isSafePolicyId(ownerOpenId)) privatePolicy.add(ownerOpenId);
   return Object.freeze({
     enabled,
     captureOnly,
     proactiveEnabled,
+    ordinaryPrivateEnabled,
+    groupEnabled,
     appId,
     appSecret,
     ownerOpenId,
+    allowedPrivateOpenIds: Object.freeze([...privatePolicy]),
+    privateAllowlistFile,
+    requirePrivateAllowlist: ordinaryPrivateEnabled,
     allowedGroupOpenIds,
+    privateRatePerMinute: boundedNumber(
+      env.HIGGS_OFFICIAL_QQ_PRIVATE_RATE_PER_MINUTE,
+      30,
+      1,
+      120,
+      "private rate",
+    ),
+    groupRatePerMinute: boundedNumber(
+      env.HIGGS_OFFICIAL_QQ_GROUP_RATE_PER_MINUTE,
+      60,
+      1,
+      240,
+      "group rate",
+    ),
+    privateCircuitFailureLimit: boundedNumber(
+      env.HIGGS_OFFICIAL_QQ_PRIVATE_CIRCUIT_FAILURE_LIMIT,
+      5,
+      1,
+      20,
+      "private circuit failure limit",
+    ),
+    groupCircuitFailureLimit: boundedNumber(
+      env.HIGGS_OFFICIAL_QQ_GROUP_CIRCUIT_FAILURE_LIMIT,
+      5,
+      1,
+      20,
+      "group circuit failure limit",
+    ),
+    privateCircuitCooldownSeconds: boundedNumber(
+      env.HIGGS_OFFICIAL_QQ_PRIVATE_CIRCUIT_COOLDOWN_SECONDS,
+      300,
+      1,
+      3600,
+      "private circuit cooldown",
+    ),
+    groupCircuitCooldownSeconds: boundedNumber(
+      env.HIGGS_OFFICIAL_QQ_GROUP_CIRCUIT_COOLDOWN_SECONDS,
+      300,
+      1,
+      3600,
+      "group circuit cooldown",
+    ),
     socketPath,
     sessionFile,
     deliveryStateFile,
@@ -225,6 +331,10 @@ export async function run(env = process.env) {
     ...config,
     sessionStore,
     deliveryStore,
+    privateAllowlist: config.ordinaryPrivateEnabled
+      ? readFrozenPrivateAllowlist(config.privateAllowlistFile)
+      : null,
+    requirePrivateAllowlist: config.requirePrivateAllowlist,
     onFatal: () => {
       fatalRequested = true;
       process.exitCode = 1;

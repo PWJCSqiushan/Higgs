@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 import {
   EventQueue,
+  ChannelGate,
   GROUP_AND_C2C_INTENT,
   ProtocolError,
   ReceiptCache,
@@ -42,6 +43,10 @@ function readyBotId(value) {
   return isSafeId(user.id) ? user.id : null;
 }
 
+function isSafePolicyId(value) {
+  return isSafeId(value) && !value.includes("*");
+}
+
 function boundedReason(value) {
   const allowed = new Set([
     "disabled",
@@ -58,6 +63,9 @@ function boundedReason(value) {
     "session_store_error",
     "delivery_store_error",
     "owner_bind_error",
+    "private_capture_error",
+    "private_allowlist_bot_mismatch",
+    "private_allowlist_config_mismatch",
     "group_bind_error",
     "protocol_error",
     "stopped",
@@ -80,7 +88,19 @@ export class OfficialQQClient {
     maxReconnects = DEFAULT_MAX_RECONNECTS,
     sendTimeoutMs = DEFAULT_SEND_TIMEOUT_MS,
     ownerOpenId = null,
+    allowedPrivateOpenIds = [],
     allowedGroupOpenIds = [],
+    ordinaryPrivateEnabled = false,
+    groupEnabled = false,
+    privateRatePerMinute = 30,
+    groupRatePerMinute = 60,
+    privateCircuitFailureLimit = 5,
+    groupCircuitFailureLimit = 5,
+    privateCircuitCooldownSeconds = 300,
+    groupCircuitCooldownSeconds = 300,
+    privateAllowlist = null,
+    requirePrivateAllowlist = false,
+    onPrivateCandidate = null,
     onOwnerCandidate = null,
     onGroupCandidate = null,
     groupBindPhrase = null,
@@ -101,7 +121,27 @@ export class OfficialQQClient {
     this.maxReconnects = maxReconnects;
     this.sendTimeoutMs = sendTimeoutMs;
     this.ownerOpenId = ownerOpenId;
+    this.allowedPrivateOpenIds = new Set(allowedPrivateOpenIds);
+    if (isSafeId(ownerOpenId)) this.allowedPrivateOpenIds.add(ownerOpenId);
     this.allowedGroupOpenIds = new Set(allowedGroupOpenIds);
+    this.ordinaryPrivateEnabled = ordinaryPrivateEnabled;
+    this.groupEnabled = groupEnabled;
+    this.privateAllowlist = privateAllowlist;
+    this.requirePrivateAllowlist = requirePrivateAllowlist;
+    this.privateBotBinding = null;
+    this.privateGate = new ChannelGate({
+      ratePerMinute: privateRatePerMinute,
+      failureLimit: privateCircuitFailureLimit,
+      cooldownSeconds: privateCircuitCooldownSeconds,
+      now,
+    });
+    this.groupGate = new ChannelGate({
+      ratePerMinute: groupRatePerMinute,
+      failureLimit: groupCircuitFailureLimit,
+      cooldownSeconds: groupCircuitCooldownSeconds,
+      now,
+    });
+    this.onPrivateCandidate = onPrivateCandidate;
     this.onOwnerCandidate = onOwnerCandidate;
     this.onGroupCandidate = onGroupCandidate;
     this.groupBindPhrase = groupBindPhrase;
@@ -251,6 +291,32 @@ export class OfficialQQClient {
     if (!this.enabled) return;
     if (!this.state.configured) throw new ProtocolError("sidecar_not_configured", 503);
     if (this.bot) throw new ProtocolError("sidecar_already_started", 409);
+    if (this.requirePrivateAllowlist) {
+      if (
+        !this.privateAllowlist ||
+        this.privateAllowlist.app_id !== this.appId ||
+        !isSafePolicyId(this.privateAllowlist.bot_id) ||
+        !Array.isArray(this.privateAllowlist.openids) ||
+        this.privateAllowlist.openids.some(
+          (value) => !isSafePolicyId(value),
+        )
+      ) {
+        throw new ProtocolError("private_allowlist_unavailable", 503);
+      }
+      const configuredOpenIds = new Set(this.allowedPrivateOpenIds);
+      const frozenOpenIds = new Set(this.privateAllowlist.openids);
+      if (isSafeId(this.ownerOpenId)) configuredOpenIds.add(this.ownerOpenId);
+      if (isSafeId(this.ownerOpenId)) frozenOpenIds.add(this.ownerOpenId);
+      if (
+        configuredOpenIds.size !== frozenOpenIds.size ||
+        [...configuredOpenIds].some((value) => !frozenOpenIds.has(value))
+      ) {
+        throw new ProtocolError("private_allowlist_config_mismatch", 503);
+      }
+      this.privateBotBinding = this.privateAllowlist.bot_id;
+      this.allowedPrivateOpenIds = frozenOpenIds;
+      if (isSafeId(this.ownerOpenId)) this.allowedPrivateOpenIds.add(this.ownerOpenId);
+    }
 
     const bot = new this.BotClass({
       appId: this.appId,
@@ -277,6 +343,11 @@ export class OfficialQQClient {
       if (!botId) {
         this.state.bot_id = null;
         this._failFatal("ready_identity_invalid");
+        return;
+      }
+      if (this.requirePrivateAllowlist && botId !== this.privateBotBinding) {
+        this.state.bot_id = null;
+        this._failFatal("private_allowlist_bot_mismatch");
         return;
       }
       const persistedBotId = this.sessionStore?.getBotId();
@@ -307,6 +378,10 @@ export class OfficialQQClient {
       const restoredBotId = this.state.bot_id ?? this.sessionStore?.getBotId();
       if (!isSafeId(restoredBotId)) {
         this._failFatal("ready_identity_invalid");
+        return;
+      }
+      if (this.requirePrivateAllowlist && restoredBotId !== this.privateBotBinding) {
+        this._failFatal("private_allowlist_bot_mismatch");
         return;
       }
       this.state.gateway_connected = true;
@@ -343,6 +418,20 @@ export class OfficialQQClient {
       }
       if (
         this.captureOnly &&
+        normalized.kind === "c2c" &&
+        typeof this.onPrivateCandidate === "function"
+      ) {
+        try {
+          // Deliberately pass only identities needed by the private capture
+          // store.  The callback cannot observe message content or IDs.
+          this.onPrivateCandidate(normalized.sender_id, this.state.bot_id);
+        } catch {
+          this._failFatal("private_capture_error");
+          return;
+        }
+      }
+      if (
+        this.captureOnly &&
         normalized.kind === "group" &&
         typeof this.onGroupCandidate === "function" &&
         isSafeId(this.ownerOpenId) &&
@@ -360,8 +449,15 @@ export class OfficialQQClient {
       }
       if (
         !this.captureOnly &&
-        ((normalized.kind === "c2c" && normalized.sender_id !== this.ownerOpenId) ||
-          (normalized.kind === "group" && !this.allowedGroupOpenIds.has(normalized.group_id)))
+        ((normalized.kind === "c2c" &&
+          (normalized.sender_id !== this.ownerOpenId &&
+            (!this.ordinaryPrivateEnabled ||
+              !this.allowedPrivateOpenIds.has(normalized.sender_id) ||
+              !this.privateGate.allow()))) ||
+          (normalized.kind === "group" &&
+            (!this.groupEnabled ||
+              !this.allowedGroupOpenIds.has(normalized.group_id) ||
+              !this.groupGate.allow())))
       ) {
         return;
       }
@@ -508,6 +604,21 @@ export class OfficialQQClient {
         fingerprint,
       );
     } else {
+      if (request.kind === "c2c") {
+        const isOwner = request.target_id === this.ownerOpenId;
+        if (
+          (!isOwner &&
+            (!this.ordinaryPrivateEnabled ||
+              !this.allowedPrivateOpenIds.has(request.target_id))) ||
+          (!isOwner && this.privateGate.isOpen())
+        ) {
+          throw new ProtocolError("private_channel_disabled", 403);
+        }
+      } else if (!this.groupEnabled || !this.allowedGroupOpenIds.has(request.target_id)) {
+        throw new ProtocolError("group_channel_disabled", 403);
+      } else if (this.groupGate.isOpen()) {
+        throw new ProtocolError("channel_circuit_open", 403);
+      }
       newlyClaimed = this.replyAuthorizations.claim(
         request.reply_message_id,
         request.kind,
@@ -555,11 +666,21 @@ export class OfficialQQClient {
           return Object.freeze({ state: "unknown", provider_message_id: null });
         }
         const result = settled.result;
+        const ordinary =
+          request.kind !== "c2c" || request.target_id !== this.ownerOpenId;
+        const gate = request.kind === "c2c" ? this.privateGate : this.groupGate;
+        if (ordinary) {
+          if (isSafeId(result?.id)) gate.recordSuccess();
+          else gate.recordFailure();
+        }
         return Object.freeze({
           state: isSafeId(result?.id) ? "sent" : "unknown",
           provider_message_id: isSafeId(result?.id) ? result.id : null,
         });
       } catch {
+        if (request.kind !== "c2c" || request.target_id !== this.ownerOpenId) {
+          (request.kind === "c2c" ? this.privateGate : this.groupGate).recordFailure();
+        }
         return Object.freeze({ state: "unknown", provider_message_id: null });
       }
     })();

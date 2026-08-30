@@ -149,6 +149,50 @@ files, moves the intermediate file to `/srv/trash`, and exits. It never exposes
 the OpenID, message ID, content, credentials, or attachments and never enables
 the official Agent transport. A separate deployment gate is still required.
 
+## Bounded official ordinary-user capture
+
+Ordinary C2C is a separate opt-in gate. A missing or empty allowlist never
+disables the already-bound owner C2C, but it also never acts as a wildcard for
+other users. To capture the QQ Bot platform test users, keep the production
+Agent and sidecar disabled and run the bounded helper from the active release:
+
+```bash
+sh run_official_node_private_capture.sh \
+  CAPTURE_OFFICIAL_TEST_USERS \
+  higgs-official-qq:<40-character-commit>
+```
+
+The helper accepts C2C events only during its 10--900 second window. It stores
+only unique, Bot-account-bound OpenIDs in a private `0600` state file; message
+content, message IDs, and platform receipts are never written. It refuses to
+overwrite an existing capture or frozen list and leaves ordinary C2C disabled.
+After reviewing the candidate count out of band, freeze exactly that count:
+
+```bash
+sh freeze_official_private_users.sh \
+  FREEZE_OFFICIAL_TEST_USERS \
+  <candidate-count> \
+  higgs-official-qq:<40-character-commit>
+```
+
+Freezing writes an atomic `0600` allowlist bound to the captured AppID and Bot
+account, then copies the same OpenID set into both private environment files.
+The ordinary switch remains false, so this step does not activate any new
+user. Before a later activation, validate the two files without printing
+their values:
+
+```bash
+python3 validate_official_channels.py
+```
+
+Use `--release` only as a separate, explicitly reviewed preflight; it fails
+closed while the sidecar is capture-only or either official transport is off.
+The runtime checks the frozen AppID and Bot identity on READY/RESUMED before
+it can admit ordinary C2C. It also requires the frozen OpenID set to exactly
+match the private environment allowlist (after the owner union); any file/env
+drift or wildcard fails closed. Changing to another Bot therefore cannot reuse
+an old private allowlist.
+
 ## Anonymous official-channel observation
 
 After the first real passive reply succeeds, run a bounded 72-hour observation

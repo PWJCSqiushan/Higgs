@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from r_agent.events import AttachmentRef, ConversationKind, InboundEvent
+from r_agent.official_qq_policy import OfficialChannelGate
 from r_agent.official_qq_session import SecureOfficialQQSessionStore
 from r_agent.transport import (
     DeliveryReceipt,
@@ -119,6 +120,18 @@ class OfficialQQAdapter:
         self._parser = parser
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
         self._transport_state = transport_state
+        self._private_gate = OfficialChannelGate(
+            rate_per_minute=getattr(config, "private_rate_per_minute", 30),
+            failure_limit=getattr(config, "private_circuit_failure_limit", 5),
+            cooldown_seconds=getattr(config, "private_circuit_cooldown_seconds", 300),
+            clock_ms=self._clock_ms,
+        )
+        self._group_gate = OfficialChannelGate(
+            rate_per_minute=getattr(config, "group_rate_per_minute", 60),
+            failure_limit=getattr(config, "group_circuit_failure_limit", 5),
+            cooldown_seconds=getattr(config, "group_circuit_cooldown_seconds", 300),
+            clock_ms=self._clock_ms,
+        )
         self._gateway: Gateway | None = None
         self._http_client: Any = None
         self._lock = threading.RLock()
@@ -616,13 +629,22 @@ class OfficialQQAdapter:
         if account_id is None:
             return None
         if event_type == "C2C_MESSAGE_CREATE" and scope == "c2c":
-            if sender_id != self.config.owner_openid:
+            is_owner = sender_id == self.config.owner_openid
+            if (
+                sender_id not in self.config.active_private_openids
+                or (not is_owner and not getattr(self.config, "ordinary_private_enabled", False))
+                or (not is_owner and not self._private_gate.allow())
+            ):
                 return None
             kind = ConversationKind.PRIVATE
             group_id = None
             mentioned = False
         elif event_type == "GROUP_AT_MESSAGE_CREATE" and scope == "group":
-            if chat_id not in self.config.allowed_group_openids:
+            if (
+                not getattr(self.config, "group_enabled", False)
+                or chat_id not in self.config.active_group_openids
+                or not self._group_gate.allow()
+            ):
                 return None
             kind = ConversationKind.GROUP
             group_id = chat_id
@@ -682,10 +704,22 @@ class OfficialQQAdapter:
         ):
             raise TransportUnavailable("official QQ target conversation is not canonical")
         chat_id = parts[3]
-        if chat_type == "c2c" and chat_id != self.config.owner_openid:
-            raise TransportUnavailable("official QQ private target is not the configured owner")
-        if chat_type == "group" and chat_id not in self.config.allowed_group_openids:
-            raise TransportUnavailable("official QQ group target is not allowlisted")
+        if chat_type == "c2c":
+            if chat_id not in self.config.active_private_openids:
+                raise TransportUnavailable("official QQ private target is not allowlisted")
+            if chat_id != self.config.owner_openid and not getattr(
+                self.config, "ordinary_private_enabled", False
+            ):
+                raise TransportUnavailable("official QQ ordinary private channel is disabled")
+            if chat_id != self.config.owner_openid and self._private_gate.is_open():
+                raise TransportUnavailable("official QQ private channel circuit is open")
+        if chat_type == "group":
+            if not getattr(self.config, "group_enabled", False):
+                raise TransportUnavailable("official QQ group channel is disabled")
+            if chat_id not in self.config.active_group_openids:
+                raise TransportUnavailable("official QQ group target is not allowlisted")
+            if self._group_gate.is_open():
+                raise TransportUnavailable("official QQ group channel circuit is open")
         fingerprint = hashlib.sha256(
             "\0".join(
                 (
@@ -719,9 +753,19 @@ class OfficialQQAdapter:
                     retries=1,
                 )
             except Exception:
+                if chat_type != "c2c" or chat_id != self.config.owner_openid:
+                    (
+                        self._private_gate if chat_type == "c2c" else self._group_gate
+                    ).record_failure()
                 receipt = DeliveryReceipt(self.channel, DeliveryState.UNKNOWN, normalized_key)
             else:
                 provider_id = str(raw.get("id", "") or "")
+                gate = self._private_gate if chat_type == "c2c" else self._group_gate
+                if chat_type != "c2c" or chat_id != self.config.owner_openid:
+                    if provider_id:
+                        gate.record_success()
+                    else:
+                        gate.record_failure()
                 receipt = DeliveryReceipt(
                     self.channel,
                     DeliveryState.SENT if provider_id else DeliveryState.UNKNOWN,

@@ -126,3 +126,19 @@ def test_self_memory_shadow_requires_explicit_schema_gate(
     phase = _phase2_settings(settings(shadow=True))
     assert phase.self_memory_mode == "shadow"
     assert phase.self_memory_schema_v4_enabled is True
+
+
+def test_group_memory_defaults_off_and_requires_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_REPLY_MODE", "draft")
+    phase = _phase2_settings(settings(shadow=True))
+    assert phase.group_memory_enabled is False
+
+    monkeypatch.setenv("R_AGENT_GROUP_MEMORY_ENABLED", "true")
+    phase = _phase2_settings(settings(shadow=True))
+    assert phase.group_memory_enabled is True
+
+    monkeypatch.setenv("R_AGENT_GROUP_MEMORY_ENABLED", "maybe")
+    with pytest.raises(ConfigError, match="must be a boolean"):
+        _phase2_settings(settings(shadow=True))

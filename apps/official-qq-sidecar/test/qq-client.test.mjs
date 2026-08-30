@@ -107,7 +107,10 @@ function newClient(overrides = {}) {
     BotClass: FakeBot,
     now: () => 1234,
     ownerOpenId: senderSafe,
+    allowedPrivateOpenIds: [senderSafe, safe],
     allowedGroupOpenIds: [safe],
+    ordinaryPrivateEnabled: true,
+    groupEnabled: true,
     ...overrides,
   });
 }
@@ -370,6 +373,93 @@ test("READY identity is mandatory before events or sends", async () => {
   }
 });
 
+test("ordinary private allowlist is bound to the same Bot account", async () => {
+  const client = newClient({
+    ordinaryPrivateEnabled: true,
+    allowedPrivateOpenIds: [senderSafe],
+    requirePrivateAllowlist: true,
+    privateAllowlist: {
+      app_id: "123456789",
+      bot_id: safe,
+      openids: [senderSafe],
+    },
+  });
+  try {
+    await client.start();
+    const bot = FakeBot.instances[0];
+    readyForSend(bot);
+    bot.emit("message", {}, {
+      rawEventType: "C2C_MESSAGE_CREATE",
+      kind: "c2c",
+      senderId: senderSafe,
+      messageId: "bound-user-message",
+      content: "bound",
+      timestamp: "2026-08-28T10:00:00Z",
+    });
+    assert.equal(client.readEvents(0, 10).length, 1);
+  } finally {
+    await client.stop();
+  }
+
+  const mismatched = newClient({
+    ordinaryPrivateEnabled: true,
+    allowedPrivateOpenIds: [senderSafe],
+    requirePrivateAllowlist: true,
+    privateAllowlist: {
+      app_id: "123456789",
+      bot_id: safe,
+      openids: [senderSafe],
+    },
+  });
+  try {
+    await mismatched.start();
+    FakeBot.instances[0].emit("ready", { user: { id: "different-bot" } });
+    assert.equal(mismatched.status().authenticated, false);
+    assert.equal(mismatched.status().reason, "private_allowlist_bot_mismatch");
+  } finally {
+    await mismatched.stop();
+  }
+
+  const drifted = newClient({
+    ordinaryPrivateEnabled: true,
+    allowedPrivateOpenIds: [senderSafe, "env-only-user"],
+    requirePrivateAllowlist: true,
+    privateAllowlist: {
+      app_id: "123456789",
+      bot_id: safe,
+      openids: [senderSafe],
+    },
+  });
+  await assert.rejects(
+    drifted.start(),
+    /private_allowlist_config_mismatch/,
+  );
+
+  const wildcard = newClient({
+    ordinaryPrivateEnabled: true,
+    allowedPrivateOpenIds: [senderSafe],
+    requirePrivateAllowlist: true,
+    privateAllowlist: {
+      app_id: "123456789",
+      bot_id: safe,
+      openids: ["*"],
+    },
+  });
+  await assert.rejects(wildcard.start(), /private_allowlist_unavailable/);
+
+  const wildcardBot = newClient({
+    ordinaryPrivateEnabled: true,
+    allowedPrivateOpenIds: [senderSafe],
+    requirePrivateAllowlist: true,
+    privateAllowlist: {
+      app_id: "123456789",
+      bot_id: "*",
+      openids: [senderSafe],
+    },
+  });
+  await assert.rejects(wildcardBot.start(), /private_allowlist_unavailable/);
+});
+
 test("full mode drops and never authorizes non-owner or non-allowlisted events", async () => {
   const client = newClient();
   await client.start();
@@ -406,6 +496,127 @@ test("full mode drops and never authorizes non-owner or non-allowlisted events",
     /invalid_reply_binding/,
   );
   await client.stop();
+});
+
+test("owner C2C remains available when ordinary C2C and group gates are omitted", async () => {
+  const client = newClient({
+    ordinaryPrivateEnabled: false,
+    groupEnabled: false,
+    allowedPrivateOpenIds: [],
+    allowedGroupOpenIds: [safe],
+  });
+  try {
+    await client.start();
+    const bot = FakeBot.instances[0];
+    readyForSend(bot);
+    for (let index = 0; index < 5; index += 1) client.privateGate.recordFailure();
+    bot.emit("message", {}, {
+      rawEventType: "C2C_MESSAGE_CREATE",
+      kind: "c2c",
+      senderId: senderSafe,
+      messageId: "owner-message",
+      content: "owner remains enabled",
+      timestamp: "2026-08-28T10:00:00Z",
+    });
+    bot.emit("message", {}, {
+      rawEventType: "C2C_MESSAGE_CREATE",
+      kind: "c2c",
+      senderId: "ordinary-user",
+      messageId: "ordinary-message",
+      content: "ordinary is disabled",
+      timestamp: "2026-08-28T10:00:01Z",
+    });
+    bot.emit("message", {}, {
+      rawEventType: "GROUP_AT_MESSAGE_CREATE",
+      kind: "group",
+      senderId: senderSafe,
+      groupOpenid: safe,
+      messageId: "group-message",
+      content: "group is disabled",
+      timestamp: "2026-08-28T10:00:02Z",
+    });
+    assert.deepEqual(
+      client.readEvents(0, 10).map((event) => event.sender_id),
+      [senderSafe],
+    );
+  } finally {
+    await client.stop();
+  }
+});
+
+test("ordinary C2C requires explicit switch and allowlist before enqueue", async () => {
+  const ordinary = "ordinary-user";
+  const client = newClient({
+    ordinaryPrivateEnabled: true,
+    allowedPrivateOpenIds: [ordinary],
+    groupEnabled: false,
+  });
+  try {
+    await client.start();
+    const bot = FakeBot.instances[0];
+    readyForSend(bot);
+    bot.emit("message", {}, {
+      rawEventType: "C2C_MESSAGE_CREATE",
+      kind: "c2c",
+      senderId: ordinary,
+      messageId: "ordinary-message",
+      content: "allowed ordinary",
+      timestamp: "2026-08-28T10:00:00Z",
+    });
+    bot.emit("message", {}, {
+      rawEventType: "C2C_MESSAGE_CREATE",
+      kind: "c2c",
+      senderId: "unknown-user",
+      messageId: "unknown-message",
+      content: "must be dropped",
+      timestamp: "2026-08-28T10:00:01Z",
+    });
+    assert.deepEqual(
+      client.readEvents(0, 10).map((event) => event.sender_id),
+      [ordinary],
+    );
+  } finally {
+    await client.stop();
+  }
+});
+
+test("private capture callback receives only bot-bound identities", async () => {
+  const candidates = [];
+  FakeBot.instances = [];
+  const client = new OfficialQQClient({
+    appId: "123456789",
+    appSecret: "0123456789abcdef",
+    enabled: true,
+    captureOnly: true,
+    BotClass: FakeBot,
+    now: () => 1234,
+    onPrivateCandidate: (openId, botId) => candidates.push({ openId, botId }),
+  });
+  try {
+    await client.start();
+    const bot = FakeBot.instances[0];
+    bot.emit("ready", { user: { id: safe } });
+    bot.gateway.currentWs.emit("message", Buffer.from('{"op":11}'));
+    bot.emit("message", {}, {
+      rawEventType: "C2C_MESSAGE_CREATE",
+      kind: "c2c",
+      senderId: senderSafe,
+      messageId: "private-message-id",
+      content: "private message body must not reach callback",
+      timestamp: "2026-08-28T10:00:00Z",
+    });
+    assert.deepEqual(candidates, [{ openId: senderSafe, botId: safe }]);
+    assert.deepEqual(client.readEvents(0, 10), [
+      {
+        cursor: 1,
+        event_type: "C2C_MESSAGE_CREATE",
+        kind: "c2c",
+        received_at_ms: 1234,
+      },
+    ]);
+  } finally {
+    await client.stop();
+  }
 });
 
 test("invalid READY identity stops fail-closed", async () => {

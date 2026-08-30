@@ -22,9 +22,15 @@ async function withServer(client, callback) {
 }
 
 test("configuration is disabled by default and validates enabled secrets", () => {
-  assert.equal(loadConfig({}).enabled, false);
-  assert.equal(loadConfig({}).captureOnly, true);
-  assert.equal(loadConfig({}).proactiveEnabled, false);
+  const defaults = loadConfig({});
+  assert.equal(defaults.enabled, false);
+  assert.equal(defaults.captureOnly, true);
+  assert.equal(defaults.proactiveEnabled, false);
+  assert.equal(defaults.ordinaryPrivateEnabled, false);
+  assert.equal(defaults.groupEnabled, false);
+  assert.deepEqual(defaults.allowedPrivateOpenIds, []);
+  assert.equal(defaults.privateRatePerMinute, 30);
+  assert.equal(defaults.groupRatePerMinute, 60);
   assert.throws(
     () => loadConfig({ HIGGS_OFFICIAL_QQ_PROACTIVE_ENABLED: "true" }),
     /enabled full mode/,
@@ -42,6 +48,67 @@ test("configuration is disabled by default and validates enabled secrets", () =>
         QQBOT_APP_SECRET: "0123456789abcdef",
       }),
     /invalid owner OpenID/,
+  );
+});
+
+test("ordinary policy is explicit, bot-scoped, and owner remains enabled by default", () => {
+  const config = loadConfig({
+    HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED: "true",
+    HIGGS_OFFICIAL_QQ_CAPTURE_ONLY: "false",
+    HIGGS_OFFICIAL_QQ_OWNER_OPENID: "owner-openid",
+    HIGGS_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS: "member-openid,owner-openid,member-openid",
+    HIGGS_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED: "true",
+    HIGGS_OFFICIAL_QQ_GROUP_ENABLED: "true",
+    HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS: "group-openid",
+    QQBOT_APP_ID: "123456789",
+    QQBOT_APP_SECRET: "0123456789abcdef",
+  });
+  assert.equal(config.ordinaryPrivateEnabled, true);
+  assert.equal(config.groupEnabled, true);
+  assert.deepEqual(new Set(config.allowedPrivateOpenIds), new Set(["owner-openid", "member-openid"]));
+
+  const ownerOnly = loadConfig({
+    HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED: "true",
+    HIGGS_OFFICIAL_QQ_CAPTURE_ONLY: "false",
+    HIGGS_OFFICIAL_QQ_OWNER_OPENID: "owner-openid",
+    QQBOT_APP_ID: "123456789",
+    QQBOT_APP_SECRET: "0123456789abcdef",
+  });
+  assert.equal(ownerOnly.ordinaryPrivateEnabled, false);
+  assert.deepEqual(ownerOnly.allowedPrivateOpenIds, ["owner-openid"]);
+});
+
+test("ordinary and group switches are fail-closed while disabled or capture-only", () => {
+  assert.throws(
+    () => loadConfig({ HIGGS_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED: "true" }),
+    /enabled sidecar/,
+  );
+  assert.throws(
+    () =>
+      loadConfig({
+        HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED: "true",
+        HIGGS_OFFICIAL_QQ_CAPTURE_ONLY: "true",
+        HIGGS_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED: "true",
+        QQBOT_APP_ID: "123456789",
+        QQBOT_APP_SECRET: "0123456789abcdef",
+      }),
+    /full mode/,
+  );
+  assert.throws(
+    () => loadConfig({ HIGGS_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS: "*" }),
+    /invalid private OpenID/,
+  );
+  assert.throws(
+    () => loadConfig({ HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS: "*" }),
+    /invalid group OpenID/,
+  );
+  assert.throws(
+    () => loadConfig({ HIGGS_OFFICIAL_QQ_OWNER_OPENID: "*" }),
+    /invalid owner OpenID/,
+  );
+  assert.throws(
+    () => loadConfig({ HIGGS_OFFICIAL_QQ_PRIVATE_RATE_PER_MINUTE: "0" }),
+    /invalid private rate/,
   );
 });
 

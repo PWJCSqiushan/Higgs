@@ -396,3 +396,11 @@
 - 候选提取采用严格 JSON 与固定 lane，不接受身份、主人、权限、系统规则、敏感或注入内容。真正冲突只形成 supersedes 提案，不覆盖 active 观点。观察、演进、激活后恢复和证据均有幂等/冲突测试。
 - 召回严格按 Higgs 自我、当前用户、近期历史排列。外部来源不进入共享提示；只有有保存原句证据的 Higgs 自我观点才可自称曾经说过。摄影观点已通过历史超过八轮与重启后自然召回的自动测试，但生产尚未导入。
 - 新增主人查看来源、解释、采纳、拒绝、撤回和恢复命令，以及仅预览默认的摄影种子 CLI。生产数据库、配置、容器、消息与 NapCat 均未改变。
+
+## 节点 47：Persona 与自我记忆合并，官方普通用户及群双层记忆完成本地集成
+
+- Persona V2 PR #53 与 self-memory v4 PR #54 已依次合并，main 分别到 `3182fcb3d6a1b9e03420946ce0b238477b24206b` 和 `f06ffbbb1bcf676fa99873bcbb7bf1a255b9dcb9`；两次合并后的主线 CI 均全绿，生产开关、数据库、容器和消息流未改变。
+- 普通测试用户采用有截止时间的 capture-only Gateway，候选只保存 Bot 绑定 OpenID；关闭后按主人确认的精确数量原子冻结为 `0600` 文件并同步两端私有环境。冻结文件、Node 环境和 Agent 环境任一漂移均拒绝启动，捕获状态不能进入正式发布。
+- 普通 C2C 与官方群开关、频率和熔断均相互独立且默认 false；owner C2C 保持独立可用。未知 C2C 在进入 durable queue、Journal、模型或记忆前丢弃，普通用户仍不能调用主人命令、工具、计划、提醒、主动发送或治理接口。
+- 群公共记忆与 member principal 私有记忆分层。公共候选不保存 raw 成员/消息标识、原句、个人事实或私聊；单人重复不形成 quorum，只有主人批准或两位不同成员独立佐证才 active。召回顺序是 self、当前 group、当前 principal、近期历史，C2C 与其他群无法读取该 group scope。
+- 只有官方群获准 @ 事件且回复最终 SENT 后才运行公共候选提取；失败、UNKNOWN、未 @、OneBot 和 C2C 均不学习。组合本地回归 Python `430 passed, 5 skipped`、Node `47 passed, 9 skipped`，Ruff/格式/Node 语法通过；尚待阶段 PR、Ubuntu 零跳过和 release gate，生产完全未变化。

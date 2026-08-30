@@ -392,3 +392,12 @@
 - 严格模型提取器分两次受限提议 Higgs 自己的稳定观点与外部可采纳思想，不允许身份、主人、权限或系统规则进入候选。外部思想来源在共享上下文中去标识；只有带 Higgs 原句证据的自我观点才允许说“我以前说过”。
 - 上下文顺序现为安全权限、Persona Bundle、最多三条 Higgs 自我记忆、当前主体记忆、近期对话。已批准自我观点在中文同义问法没有向量命中时仍从小型 active 集合补足，摄影观点已覆盖超过八轮历史和服务重启后的召回测试。
 - 主人命令新增 self memory 查看、来源解释、采纳、拒绝、撤回与恢复。摄影观点导入工具默认仅预览，必须精确确认并先完成一致性备份；本分支未执行生产迁移、未导入观点、未开启 shadow/autonomous、未部署或重建任何容器。
+
+## 41. 2026-08-30 Persona、自我记忆与官方普通用户/群能力阶段收束
+
+- Persona V2 已通过 PR #53 合并为主线 `3182fcb3d6a1b9e03420946ce0b238477b24206b`；自我记忆 v4 已通过 PR #54 合并为主线 `f06ffbbb1bcf676fa99873bcbb7bf1a255b9dcb9`。两项 PR 的 push/PR CI 及各自合并后的 main CI 全绿，Ubuntu Python 均为零跳过，Node POSIX/UDS/进程替换、镜像和 Compose 均通过。生产 Persona、自我记忆 schema/mode 与摄影种子仍全部关闭或未执行。
+- 第三阶段集成分支 `codex/higgs-official-users-and-group-20260830` 同时实现 Python/Node 两端 Bot 绑定的普通 C2C 白名单、默认关闭的普通私聊/群开关、独立限频/熔断，以及限时测试用户捕获和 `0600` 原子冻结。未知 C2C 在 durable event、Journal、模型和记忆前拒绝；owner C2C 不依赖普通用户开关。
+- 捕获窗口只持久化 Bot 绑定的候选 OpenID，不保存正文或消息 ID；窗口到期关闭、精确数量冻结后永久不可复开。冻结文件、Agent 环境和 sidecar 环境的实际白名单必须完全一致，任何漂移、通配符、错误 Bot 或 release capture-only 状态均 fail-closed。冻结本身不会开启普通私聊。
+- 官方群公共记忆仅从获准 `GROUP_AT_MESSAGE_CREATE` 且最终回复 `SENT` 的公开互动提取。群成员 raw ID、平台消息 ID和原句不落库，只有 HMAC 佐证令牌；单个成员重复表达不能激活，必须主人显式批准或两名不同普通成员独立佐证。敏感、个人事实、私聊、身份、权限和提示注入内容拒绝进入公共 scope。
+- 群上下文固定为 Higgs 自我观点、当前群去标识公共记忆、当前成员 principal 私有记忆、近期对话；C2C 不允许 group scope，成员 A 的 principal 记忆不会被成员 B 召回。`R_AGENT_GROUP_MEMORY_ENABLED`、普通 C2C 与官方群生产开关均默认 false。
+- 组合分支本地门禁为 Python `430 passed, 5 skipped`、Node `47 passed, 9 skipped`，Ruff/格式、Node 语法均通过；Windows 跳过项必须由 PR Ubuntu CI 零跳过收口。尚未部署、迁移群伴随表、运行捕获、冻结/激活白名单、开启群或普通 C2C、发送消息、重建容器或改动 NapCat。

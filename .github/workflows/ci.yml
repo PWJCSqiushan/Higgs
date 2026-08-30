@@ -36,6 +36,8 @@ jobs:
           bash -n deploy/server/rollback_release.sh
           bash -n deploy/existing-server/prepare_official_qq_runtime.sh
           bash -n deploy/existing-server/run_official_node_owner_bind.sh
+          bash -n deploy/existing-server/run_official_node_private_capture.sh
+          bash -n deploy/existing-server/freeze_official_private_users.sh
           bash -n deploy/existing-server/observe_official_stability.sh
           bash -n deploy/existing-server/run_official_node_group_bind.sh
           bash -n deploy/existing-server/activate_official_test_group.sh

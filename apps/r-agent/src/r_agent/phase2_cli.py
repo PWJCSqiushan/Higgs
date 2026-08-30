@@ -29,6 +29,11 @@ from r_agent.embedding import (
 )
 from r_agent.events import ConversationKind, InboundEvent
 from r_agent.group_debounce import GroupMessageDebouncer
+from r_agent.group_memory import (
+    GroupMemoryService,
+    GroupMemorySource,
+    ModelGroupMemoryExtractor,
+)
 from r_agent.health import HealthReporter
 from r_agent.identity import IdentityStore, Principal
 from r_agent.ingest import IngestResult, IngestService
@@ -92,6 +97,69 @@ ONLINE_PROBE_TIMEOUT_SECONDS = 20.0
 ONLINE_PROBE_MAX_DETECTION_SECONDS = ONLINE_PROBE_INTERVAL_SECONDS + ONLINE_PROBE_TIMEOUT_SECONDS
 
 
+async def reconcile_group_public_memory(
+    event: InboundEvent,
+    *,
+    principal: Principal,
+    service: GroupMemoryService,
+    extractor: ModelGroupMemoryExtractor | None,
+    final_sent: bool,
+) -> int:
+    """Queue public-group evidence only after a reply is durably SENT.
+
+    The final delivery state is passed explicitly so UNKNOWN/FAILED replies and
+    non-group events cannot accidentally create group-memory evidence.  This
+    helper is intentionally content-free in its logs and keeps the model lane
+    independent from the ordinary principal-memory reconciler.
+    """
+
+    if (
+        not final_sent
+        or extractor is None
+        or not service.enabled
+        or event.channel.casefold() != "qq_official"
+        or event.conversation_kind is not ConversationKind.GROUP
+        or not event.group_id
+        or not event.mentioned
+    ):
+        return 0
+    try:
+        results = await extractor.extract(
+            GroupMemorySource(
+                group_id=event.group_id,
+                message_id=event.message_id,
+                principal_role=principal.role,
+                text=event.text,
+            )
+        )
+        submitted = 0
+        for parsed in results:
+            candidate = parsed.candidate
+            if candidate is None or parsed.decision.value != "waiting_corroboration":
+                continue
+            outcome = await asyncio.to_thread(
+                service.submit_event_evidence,
+                event,
+                candidate=candidate,
+                member_role=principal.role,
+            )
+            submitted += 1
+            _log.info(
+                "group_memory_evidence decision=%s supports=%d",
+                outcome.decision.value,
+                outcome.support_count,
+            )
+        if submitted == 0:
+            _log.info("group_memory_evidence decision=none supports=0")
+        return submitted
+    except Exception as exc:
+        # Group learning is optional and must never turn a delivered reply
+        # into a retry.  Log only the exception type; event/member/content
+        # identifiers are intentionally absent.
+        _log.warning("group_memory_evolution_failed type=%s", type(exc).__name__)
+        return 0
+
+
 def _value(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
@@ -143,6 +211,7 @@ class Phase2Settings:
     memory_items: int
     self_memory_mode: str
     self_memory_schema_v4_enabled: bool
+    group_memory_enabled: bool
     backup_dir: Path
     backup_interval_minutes: int
     backup_retention: int
@@ -236,6 +305,7 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
     )
     if self_memory_mode != "off" and not self_memory_schema_v4_enabled:
         raise ConfigError("self-memory modes require explicit schema v4 enablement")
+    group_memory_enabled = _boolean("R_AGENT_GROUP_MEMORY_ENABLED", False)
     backup_dir_value = _value("R_AGENT_BACKUP_DIR")
     backup_dir = (
         Path(backup_dir_value).expanduser().resolve()
@@ -255,6 +325,7 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         memory_items=bounded_int("R_AGENT_MEMORY_CONTEXT_ITEMS", "8", 0, 20),
         self_memory_mode=self_memory_mode,
         self_memory_schema_v4_enabled=self_memory_schema_v4_enabled,
+        group_memory_enabled=group_memory_enabled,
         global_max_per_minute=bounded_int("R_AGENT_REPLY_GLOBAL_MAX_PER_MINUTE", "6", 1, 60),
         non_owner_hourly_limit=bounded_int("R_AGENT_REPLY_NON_OWNER_HOURLY_LIMIT", "20", 1, 500),
         non_owner_daily_limit=bounded_int("R_AGENT_REPLY_NON_OWNER_DAILY_LIMIT", "80", 1, 2000),
@@ -606,7 +677,11 @@ async def listen() -> None:
     embeddings = _embedding_client(enabled=phase.embedding_enabled, phase=phase)
     safety = _safety_policy(phase)
     client = _model_client(
-        required=phase.mode in {"draft", "live"} or phase.self_memory_mode != "off"
+        required=(
+            phase.mode in {"draft", "live"}
+            or phase.self_memory_mode != "off"
+            or phase.group_memory_enabled
+        )
     )
 
     service = IngestService(
@@ -639,6 +714,14 @@ async def listen() -> None:
     memory = MemoryStore(settings.data_dir / "memory.sqlite")
     memory.initialize(self_memory_v4=phase.self_memory_schema_v4_enabled)
     self_memory = SelfMemoryService(memory) if phase.self_memory_schema_v4_enabled else None
+    group_memory = GroupMemoryService(memory, enabled=phase.group_memory_enabled)
+    if phase.group_memory_enabled:
+        group_memory.initialize()
+    group_memory_extractor = (
+        ModelGroupMemoryExtractor(client)
+        if phase.group_memory_enabled and client is not None
+        else None
+    )
     evolution_extractor = (
         ModelEvolutionExtractor(client)
         if phase.self_memory_mode != "off" and client is not None
@@ -731,6 +814,7 @@ async def listen() -> None:
         persona=persona,
         persona_bundle=persona_bundle,
         self_memory=self_memory,
+        group_memory=group_memory,
         history_limit=phase.history_turns,
         memory_limit=phase.memory_items,
         vectors=vectors,
@@ -993,6 +1077,21 @@ async def listen() -> None:
         except Exception as exc:
             _log.warning("self_memory_evolution_failed type=%s", type(exc).__name__)
 
+    async def reconcile_group_memory(
+        event: InboundEvent,
+        *,
+        principal: Principal,
+    ) -> None:
+        """Extract and queue public norms from a final official group reply."""
+
+        await reconcile_group_public_memory(
+            event,
+            principal=principal,
+            service=group_memory,
+            extractor=group_memory_extractor,
+            final_sent=True,
+        )
+
     async def finalize_event(event: InboundEvent, plan: ReplyPlan) -> None:
         """Persist idempotent audit/history after an outbound outcome is durable."""
         await asyncio.to_thread(audit.record, event, plan)
@@ -1037,6 +1136,7 @@ async def listen() -> None:
                 principal=principal,
                 reply_text=plan.text,
             )
+            await reconcile_group_memory(event, principal=principal)
         if (
             passive_learner is not None
             and principal is not None
