@@ -8,7 +8,10 @@ export const ALLOWLIST_FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/u;
 
 const APP_ID_PATTERN = /^\d{5,32}$/u;
 const NONCE_PATTERN = /^[0-9a-f]{64}$/u;
-const SCOPES = new Set(["private"]);
+// The same canonical envelope is used for private C2C and group audiences.
+// Keeping scope in the canonical payload prevents an allowlist from one
+// surface being replayed on the other.
+const SCOPES = new Set(["private", "group"]);
 
 export function isSafePolicyId(value) {
   return isSafeId(value) && !value.includes("*");
