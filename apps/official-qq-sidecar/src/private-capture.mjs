@@ -12,19 +12,23 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 
-import { isSafeId } from "./protocol.mjs";
+import {
+  ALLOWLIST_FINGERPRINT_PATTERN,
+  ALLOWLIST_SCHEMA_VERSION,
+  MAX_ALLOWLIST_ENTRIES,
+  computeAllowlistFingerprint,
+  createAllowlistVersion,
+  createCaptureEpoch,
+  isSafeInteger,
+  isSafePolicyId,
+  validateAllowlist,
+  validateCaptureEpoch,
+} from "./allowlist.mjs";
 
-const VERSION = 1;
+const VERSION = ALLOWLIST_SCHEMA_VERSION;
 const MAX_FILE_BYTES = 256 * 1024;
-const MAX_CANDIDATES = 128;
-
-function safeInteger(value, minimum = 0) {
-  return Number.isSafeInteger(value) && value >= minimum;
-}
-
-function isSafePolicyId(value) {
-  return isSafeId(value) && !value.includes("*");
-}
+const MAX_EPOCH_HISTORY = 64;
+const LEGACY_VERSION = 1;
 
 function exactKeys(value, keys) {
   return (
@@ -56,50 +60,68 @@ function validatePrivateDirectory(path) {
   }
 }
 
-function validateOpenIds(values) {
-  if (!Array.isArray(values) || values.length > MAX_CANDIDATES) {
+function validateHistory(value) {
+  if (!Array.isArray(value) || value.length > MAX_EPOCH_HISTORY) {
     throw new Error("invalid_private_capture_state");
   }
-  const result = [];
   const seen = new Set();
-  for (const value of values) {
-    if (!isSafePolicyId(value) || seen.has(value)) {
+  return value.map((entry) => {
+    const keys = new Set([
+      "version",
+      "scope",
+      "status",
+      "epoch_id",
+      "nonce",
+      "app_id",
+      "bot_id",
+      "window_started_at_ms",
+      "window_deadline_at_ms",
+      "max_candidates",
+      "candidate_count",
+      "baseline_allowlist_version",
+      "baseline_allowlist_fingerprint",
+      "frozen_allowlist_version",
+      "frozen_allowlist_fingerprint",
+    ]);
+    if (!exactKeys(entry, keys) || entry.version !== VERSION || entry.scope !== "private") {
       throw new Error("invalid_private_capture_state");
     }
-    seen.add(value);
-    result.push(value);
-  }
-  return result;
+    // History deliberately contains metadata and counts only, not message
+    // text or candidate identities. It is retained to prevent epoch overwrite.
+    const normalized = validateCaptureEpoch({
+      version: entry.version,
+      scope: entry.scope,
+      status: entry.status,
+      epoch_id: entry.epoch_id,
+      nonce: entry.nonce,
+      app_id: entry.app_id,
+      bot_id: entry.bot_id,
+      window_started_at_ms: entry.window_started_at_ms,
+      window_deadline_at_ms: entry.window_deadline_at_ms,
+      max_candidates: entry.max_candidates,
+      candidates: [],
+      baseline_allowlist_version: entry.baseline_allowlist_version,
+      baseline_allowlist_fingerprint: entry.baseline_allowlist_fingerprint,
+      frozen_allowlist_version: entry.frozen_allowlist_version,
+      frozen_allowlist_fingerprint: entry.frozen_allowlist_fingerprint,
+      history: [],
+    });
+    if (!isSafeInteger(entry.candidate_count) || entry.candidate_count > entry.max_candidates) {
+      throw new Error("invalid_private_capture_state");
+    }
+    if (seen.has(normalized.epoch_id)) throw new Error("invalid_private_capture_state");
+    seen.add(normalized.epoch_id);
+    return { ...entry, bot_id: normalized.bot_id };
+  });
 }
 
 function validateState(value) {
-  if (
-    !exactKeys(
-      value,
-      new Set([
-        "version",
-        "status",
-        "app_id",
-        "bot_id",
-        "window_started_at_ms",
-        "window_deadline_at_ms",
-        "candidates",
-      ]),
-    ) ||
-    value.version !== VERSION ||
-    !new Set(["open", "closed", "frozen"]).has(value.status) ||
-    !/^\d{5,32}$/u.test(value.app_id) ||
-    (value.bot_id !== null && !isSafePolicyId(value.bot_id)) ||
-    !safeInteger(value.window_started_at_ms) ||
-    !safeInteger(value.window_deadline_at_ms) ||
-    value.window_deadline_at_ms <= value.window_started_at_ms
-  ) {
-    throw new Error("invalid_private_capture_state");
+  if (value?.version === LEGACY_VERSION) {
+    throw new Error("private_capture_legacy_state_requires_import");
   }
-  return {
-    ...value,
-    candidates: validateOpenIds(value.candidates),
-  };
+  const normalized = validateCaptureEpoch(value, "private");
+  const history = validateHistory(value.history);
+  return { ...normalized, history };
 }
 
 function writePrivateFile(path, value, expectedName) {
@@ -152,12 +174,45 @@ function readRawPrivateFile(path, expectedName) {
   ) {
     throw new Error("unsafe_private_capture_file");
   }
-  return JSON.parse(readFileSync(target, "utf8"));
+  try {
+    return JSON.parse(readFileSync(target, "utf8"));
+  } catch {
+    throw new Error("invalid_private_capture_state");
+  }
 }
 
 function readPrivateFile(path, expectedName) {
   const value = readRawPrivateFile(path, expectedName);
   return value === null ? null : validateState(value);
+}
+
+function epochHistoryEntry(value) {
+  return {
+    version: value.version,
+    scope: value.scope,
+    status: value.status,
+    epoch_id: value.epoch_id,
+    nonce: value.nonce,
+    app_id: value.app_id,
+    bot_id: value.bot_id,
+    window_started_at_ms: value.window_started_at_ms,
+    window_deadline_at_ms: value.window_deadline_at_ms,
+    max_candidates: value.max_candidates,
+    candidate_count: value.candidates.length,
+    baseline_allowlist_version: value.baseline_allowlist_version,
+    baseline_allowlist_fingerprint: value.baseline_allowlist_fingerprint,
+    frozen_allowlist_version: value.frozen_allowlist_version,
+    frozen_allowlist_fingerprint: value.frozen_allowlist_fingerprint,
+  };
+}
+
+function readExistingAllowlist(path) {
+  const raw = readRawPrivateFile(path, "allowed-private-openids.json");
+  if (raw === null) return null;
+  if (raw?.version === LEGACY_VERSION) {
+    throw new Error("private_allowlist_legacy_requires_explicit_import");
+  }
+  return validateAllowlist(raw, "private");
 }
 
 export class PrivateUserCaptureStore {
@@ -167,23 +222,41 @@ export class PrivateUserCaptureStore {
       appId,
       windowStartedAtMs,
       windowDeadlineAtMs,
+      maxCandidates = MAX_ALLOWLIST_ENTRIES,
+      baselineAllowlistVersion = null,
+      baselineAllowlistFingerprint = null,
       now = () => Date.now(),
     },
   ) {
     this.path = privateFile(path, "private-users-capture.json");
-    if (!/^\d{5,32}$/u.test(String(appId ?? ""))) {
+    this.appId = String(appId ?? "");
+    if (!/^\d{5,32}$/u.test(this.appId)) {
       throw new Error("invalid_private_capture_app_id");
     }
     if (
-      !safeInteger(windowStartedAtMs) ||
-      !safeInteger(windowDeadlineAtMs) ||
+      !isSafeInteger(windowStartedAtMs) ||
+      !isSafeInteger(windowDeadlineAtMs) ||
       windowDeadlineAtMs <= windowStartedAtMs
     ) {
       throw new Error("invalid_private_capture_window");
     }
-    this.appId = String(appId);
+    if (!isSafeInteger(maxCandidates, 1) || maxCandidates > MAX_ALLOWLIST_ENTRIES) {
+      throw new Error("invalid_private_capture_limit");
+    }
+    if (
+      (baselineAllowlistVersion !== null && !isSafeInteger(baselineAllowlistVersion, 1)) ||
+      (baselineAllowlistFingerprint !== null &&
+        (typeof baselineAllowlistFingerprint !== "string" ||
+          !ALLOWLIST_FINGERPRINT_PATTERN.test(baselineAllowlistFingerprint))) ||
+      (baselineAllowlistVersion === null) !== (baselineAllowlistFingerprint === null)
+    ) {
+      throw new Error("invalid_private_capture_baseline");
+    }
     this.windowStartedAtMs = windowStartedAtMs;
     this.windowDeadlineAtMs = windowDeadlineAtMs;
+    this.maxCandidates = maxCandidates;
+    this.baselineAllowlistVersion = baselineAllowlistVersion;
+    this.baselineAllowlistFingerprint = baselineAllowlistFingerprint;
     this.now = now;
   }
 
@@ -201,56 +274,77 @@ export class PrivateUserCaptureStore {
   }
 
   open() {
-    if (readPrivateFile(this.path, "private-users-capture.json") !== null) {
-      throw new Error("private_capture_already_started");
+    const existing = readPrivateFile(this.path, "private-users-capture.json");
+    if (existing !== null) {
+      const now = this.now();
+      if (
+        (existing.status === "open" || existing.status === "closed") &&
+        now <= existing.window_deadline_at_ms
+      ) {
+        throw new Error("private_capture_already_started");
+      }
+      // A completed epoch is retained in the manifest history. The new epoch
+      // is never written over it without retaining its opaque metadata.
+      const history = [...existing.history, epochHistoryEntry(existing)].slice(-MAX_EPOCH_HISTORY);
+      const next = createCaptureEpoch({
+        appId: this.appId,
+        windowStartedAtMs: this.windowStartedAtMs,
+        windowDeadlineAtMs: this.windowDeadlineAtMs,
+        maxCandidates: this.maxCandidates,
+        baselineAllowlistVersion: this.baselineAllowlistVersion,
+        baselineAllowlistFingerprint: this.baselineAllowlistFingerprint,
+        history,
+      });
+      writePrivateFile(this.path, next, "private-users-capture.json");
+      return next.epoch_id;
     }
-    writePrivateFile(
-      this.path,
-      {
-        version: VERSION,
-        status: "open",
-        app_id: this.appId,
-        bot_id: null,
-        window_started_at_ms: this.windowStartedAtMs,
-        window_deadline_at_ms: this.windowDeadlineAtMs,
-        candidates: [],
-      },
-      "private-users-capture.json",
-    );
+    const next = createCaptureEpoch({
+      appId: this.appId,
+      windowStartedAtMs: this.windowStartedAtMs,
+      windowDeadlineAtMs: this.windowDeadlineAtMs,
+      maxCandidates: this.maxCandidates,
+      baselineAllowlistVersion: this.baselineAllowlistVersion,
+      baselineAllowlistFingerprint: this.baselineAllowlistFingerprint,
+    });
+    writePrivateFile(this.path, next, "private-users-capture.json");
+    return next.epoch_id;
   }
 
   recordCandidate(openId, botId, now = this.now()) {
-    if (!isSafePolicyId(openId) || !isSafePolicyId(botId) || !safeInteger(now)) {
+    if (!isSafePolicyId(openId) || !isSafePolicyId(botId) || !isSafeInteger(now)) {
       throw new Error("invalid_private_capture_candidate");
     }
     const value = this._read();
-    if (value.status !== "open" || now < value.window_started_at_ms || now > value.window_deadline_at_ms) {
+    if (value.status !== "open") return false;
+    if (now < value.window_started_at_ms) {
       return false;
     }
+    if (now > value.window_deadline_at_ms) return false;
     if (value.bot_id !== null && value.bot_id !== botId) {
       throw new Error("private_capture_bot_mismatch");
     }
-    const candidates = [...value.candidates];
     if (value.bot_id === null) value.bot_id = botId;
-    if (!candidates.includes(openId)) {
-      if (candidates.length >= MAX_CANDIDATES) throw new Error("private_capture_limit");
-      candidates.push(openId);
-      value.candidates = candidates;
+    if (!value.candidates.includes(openId)) {
+      if (value.candidates.length >= value.max_candidates) {
+        throw new Error("private_capture_limit");
+      }
+      value.candidates = [...value.candidates, openId].sort();
     }
     writePrivateFile(this.path, value, "private-users-capture.json");
     return true;
   }
 
   close(now = this.now()) {
-    if (!safeInteger(now)) throw new Error("invalid_private_capture_time");
+    if (!isSafeInteger(now)) throw new Error("invalid_private_capture_time");
     const value = this._read();
     if (value.status === "frozen") throw new Error("private_capture_already_frozen");
+    if (value.status === "expired") return;
     value.status = "closed";
     writePrivateFile(this.path, value, "private-users-capture.json");
   }
 
   freeze(expectedCount, allowlistPath, now = this.now()) {
-    if (!safeInteger(expectedCount) || expectedCount > MAX_CANDIDATES) {
+    if (!isSafeInteger(expectedCount) || expectedCount > MAX_ALLOWLIST_ENTRIES) {
       throw new Error("invalid_private_capture_count");
     }
     freezePrivateAllowlist(this.path, expectedCount, allowlistPath, now);
@@ -261,8 +355,12 @@ export class PrivateUserCaptureStore {
     const now = this.now();
     return Object.freeze({
       status: value.status,
+      epoch_id: value.epoch_id,
       candidate_count: value.candidates.length,
+      max_candidates: value.max_candidates,
       bot_bound: value.bot_id !== null,
+      baseline_allowlist_version: value.baseline_allowlist_version,
+      baseline_allowlist_fingerprint: value.baseline_allowlist_fingerprint,
       window_active:
         value.status === "open" && now >= value.window_started_at_ms && now <= value.window_deadline_at_ms,
     });
@@ -275,10 +373,10 @@ export function freezePrivateAllowlist(
   allowlistPath,
   now = Date.now(),
 ) {
-  if (!safeInteger(expectedCount) || expectedCount > MAX_CANDIDATES) {
+  if (!isSafeInteger(expectedCount) || expectedCount > MAX_ALLOWLIST_ENTRIES) {
     throw new Error("invalid_private_capture_count");
   }
-  if (!safeInteger(now)) throw new Error("invalid_private_capture_time");
+  if (!isSafeInteger(now)) throw new Error("invalid_private_capture_time");
   const capture = readPrivateFile(capturePath, "private-users-capture.json");
   if (capture === null || capture.status !== "closed") {
     throw new Error("private_capture_must_be_closed");
@@ -288,39 +386,48 @@ export function freezePrivateAllowlist(
     throw new Error("private_capture_count_mismatch");
   }
   const target = privateFile(allowlistPath, "allowed-private-openids.json");
-  if (readRawPrivateFile(target, "allowed-private-openids.json") !== null) {
-    throw new Error("private_allowlist_already_frozen");
+  const previous = readExistingAllowlist(target);
+  if (
+    previous &&
+    (capture.baseline_allowlist_version !== previous.allowlist_version ||
+      capture.baseline_allowlist_fingerprint !== previous.fingerprint)
+  ) {
+    throw new Error("private_capture_baseline_mismatch");
   }
-  writePrivateFile(
-    target,
-    {
-      version: VERSION,
-      app_id: capture.app_id,
-      bot_id: capture.bot_id,
-      frozen_at_ms: now,
-      openids: capture.candidates,
-    },
-    "allowed-private-openids.json",
-  );
+  if (
+    !previous &&
+    (capture.baseline_allowlist_version !== null || capture.baseline_allowlist_fingerprint !== null)
+  ) {
+    throw new Error("private_capture_baseline_missing");
+  }
+  const next = createAllowlistVersion({
+    scope: "private",
+    capture,
+    previous,
+    frozenAtMs: now,
+  });
+  writePrivateFile(target, next, "allowed-private-openids.json");
   capture.status = "frozen";
+  capture.frozen_allowlist_version = next.allowlist_version;
+  capture.frozen_allowlist_fingerprint = next.fingerprint;
   writePrivateFile(capturePath, capture, "private-users-capture.json");
 }
 
 export function readFrozenPrivateAllowlist(path) {
   const value = readRawPrivateFile(path, "allowed-private-openids.json");
-  if (value === null || !exactKeys(value, new Set(["version", "app_id", "bot_id", "frozen_at_ms", "openids"]))) {
-    throw new Error("invalid_private_allowlist");
+  if (value === null) throw new Error("private_allowlist_missing");
+  if (value?.version === LEGACY_VERSION) {
+    throw new Error("private_allowlist_legacy_requires_explicit_import");
   }
-  if (
-    value.version !== VERSION ||
-    !/^\d{5,32}$/u.test(value.app_id) ||
-    !isSafePolicyId(value.bot_id) ||
-    !safeInteger(value.frozen_at_ms)
-  ) {
-    throw new Error("invalid_private_allowlist");
-  }
-  return Object.freeze({
-    ...value,
-    openids: Object.freeze(validateOpenIds(value.openids)),
+  return Object.freeze(validateAllowlist(value, "private"));
+}
+
+export function allowlistFingerprintForConfig({ appId, botId, allowlistVersion, openids }) {
+  return computeAllowlistFingerprint({
+    scope: "private",
+    appId,
+    botId,
+    allowlistVersion,
+    openids,
   });
 }
