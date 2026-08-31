@@ -227,6 +227,26 @@ def test_shadow_replay_does_not_duplicate_evolution_or_item(tmp_path: Path) -> N
         )
 
 
+def test_processed_sent_observation_can_drop_full_reply_but_keep_proof(tmp_path: Path) -> None:
+    _, evolution = service(tmp_path)
+    observed = evolution.record_sent_reply(
+        idempotency_key="reply-redaction",
+        reply_message_id="provider-redaction",
+        text="这是一段只为观点提取临时保存的完整回复。",
+        delivery_status="sent",
+        now_ms=100,
+    )
+    before_fingerprint = observed.reply_fingerprint
+
+    redacted = evolution.redact_observation_reply_text(observed.observation_id)
+    replay = evolution.redact_observation_reply_text(observed.observation_id)
+
+    assert redacted.reply_text == ""
+    assert replay.reply_text == ""
+    assert redacted.reply_fingerprint == before_fingerprint
+    assert redacted.delivery_status == "SENT"
+
+
 def test_quarantined_candidate_redacts_content_and_quote_from_evolution_record(
     tmp_path: Path,
 ) -> None:
@@ -249,11 +269,19 @@ def test_quarantined_candidate_redacts_content_and_quote_from_evolution_record(
     assert result.item_id is None
     with sqlite3.connect(evolution.memory.path) as conn:
         row = conn.execute(
-            "SELECT normalized_content, original_quote FROM self_memory_evolution_observations"
+            """
+            SELECT normalized_content, original_quote,
+                   source_principal_id, source_message_id
+            FROM self_memory_evolution_observations
+            """
         ).fetchone()
     assert row is not None
     assert "secret-value" not in str(row[0])
     assert row[1] is None
+    assert str(row[2]).startswith("sha256:")
+    assert str(row[3]).startswith("sha256:")
+    assert "member-a" not in str(row)
+    assert "private-message" not in str(row)
 
 
 def test_same_persona_kind_content_reuses_item_and_appends_evidence(tmp_path: Path) -> None:

@@ -602,3 +602,48 @@ def test_owner_commands_explain_and_govern_self_memory_without_source_ids(
     assert "private-provider-id" not in report
     assert withdrawn is not None and "invalidated" in withdrawn
     assert restored is not None and "active" in restored
+
+
+def test_hard_delete_removes_self_memory_content_and_orphan_observation(tmp_path: Path) -> None:
+    memory, evolution = service(tmp_path)
+    observed = evolution.record_sent_reply(
+        idempotency_key="privacy-reply",
+        reply_message_id="privacy-provider-id",
+        text="这段已发送回复不应在硬删除后残留。",
+        delivery_status="sent",
+        now_ms=100,
+    )
+    result = evolution.propose_from_self_observation(
+        observed,
+        candidate=EvolutionCandidate(
+            kind="self_stance",
+            scope="persona",
+            evidence_message_id="privacy-provider-id",
+            confidence=0.99,
+            sensitive_level="low",
+            normalized_content="已发送观点的隐私删除必须清理伴随内容",
+            original_quote="这段已发送回复不应在硬删除后残留。",
+        ),
+        now_ms=200,
+    )
+    assert result.item_id is not None
+
+    memory.hard_delete(result.item_id, actor=OWNER, reason="privacy request")
+
+    with sqlite3.connect(memory.path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM self_memory_metadata WHERE item_id = ?",
+            (result.item_id,),
+        ).fetchone() == (0,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM self_memory_evidence WHERE item_id = ?",
+            (result.item_id,),
+        ).fetchone() == (0,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM self_memory_evolution_observations WHERE item_id = ?",
+            (result.item_id,),
+        ).fetchone() == (0,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM self_memory_observations WHERE observation_id = ?",
+            (observed.observation_id,),
+        ).fetchone() == (0,)

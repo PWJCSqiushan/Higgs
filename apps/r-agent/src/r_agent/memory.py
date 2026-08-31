@@ -1289,6 +1289,72 @@ class MemoryStore:
                 details=f"{clean_reason}:{content_digest}",
                 now_ms=timestamp,
             )
+            tables = {
+                str(table_row["name"])
+                for table_row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if {
+                "self_memory_metadata",
+                "self_memory_evidence",
+                "self_memory_evolution_observations",
+                "self_memory_observations",
+            } <= tables:
+                observation_ids = {
+                    str(observation_row["observation_id"])
+                    for observation_row in conn.execute(
+                        """
+                        SELECT observation_id FROM self_memory_evidence
+                        WHERE item_id = ? AND observation_id IS NOT NULL
+                        UNION
+                        SELECT observation_id FROM self_memory_evolution_observations
+                        WHERE item_id = ? AND observation_id IS NOT NULL
+                        """,
+                        (item_id, item_id),
+                    ).fetchall()
+                }
+                conn.execute("DELETE FROM self_memory_evidence WHERE item_id = ?", (item_id,))
+                conn.execute(
+                    "DELETE FROM self_memory_evolution_observations WHERE item_id = ?",
+                    (item_id,),
+                )
+                conn.execute("DELETE FROM self_memory_metadata WHERE item_id = ?", (item_id,))
+                for observation_id in observation_ids:
+                    still_referenced = conn.execute(
+                        """
+                        SELECT 1 FROM self_memory_evidence
+                        WHERE observation_id = ?
+                        UNION ALL
+                        SELECT 1 FROM self_memory_evolution_observations
+                        WHERE observation_id = ?
+                        LIMIT 1
+                        """,
+                        (observation_id, observation_id),
+                    ).fetchone()
+                    if still_referenced is None:
+                        conn.execute(
+                            "DELETE FROM self_memory_observations WHERE observation_id = ?",
+                            (observation_id,),
+                        )
+            if {"personal_memory_intents", "personal_memory_evidence"} <= tables:
+                intent_ids = {
+                    str(intent_row["intent_id"])
+                    for intent_row in conn.execute(
+                        "SELECT intent_id FROM personal_memory_intents WHERE result_item_id = ?",
+                        (item_id,),
+                    ).fetchall()
+                }
+                conn.execute("DELETE FROM personal_memory_evidence WHERE item_id = ?", (item_id,))
+                for intent_id in intent_ids:
+                    conn.execute(
+                        "DELETE FROM personal_memory_evidence WHERE intent_id = ?",
+                        (intent_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM personal_memory_intents WHERE intent_id = ?",
+                        (intent_id,),
+                    )
             conn.execute("DELETE FROM memory_items WHERE item_id = ?", (item_id,))
 
     def search_active(

@@ -1118,6 +1118,15 @@ async def listen() -> None:
                         now_ms=event.occurred_at_ms,
                     )
                     if run.state is ShadowRunState.COMPLETE:
+                        if lane is MemoryKind.SELF_STANCE:
+                            observation = await asyncio.to_thread(
+                                self_memory.get_observation_by_idempotency_key,
+                                key,
+                            )
+                            await asyncio.to_thread(
+                                self_memory.redact_observation_reply_text,
+                                observation.observation_id,
+                            )
                         return
                     source, observation = await source_builder()
                     results = await evolution_extractor.extract(
@@ -1162,7 +1171,7 @@ async def listen() -> None:
                             rejected_count += 1
                         else:
                             candidate_count += 1
-                    await asyncio.to_thread(
+                    completed = await asyncio.to_thread(
                         self_memory.complete_shadow_run,
                         run,
                         candidate_count=candidate_count,
@@ -1170,6 +1179,15 @@ async def listen() -> None:
                         quarantined_count=quarantined_count,
                         now_ms=event.occurred_at_ms,
                     )
+                    if (
+                        lane is MemoryKind.SELF_STANCE
+                        and completed.state is ShadowRunState.COMPLETE
+                        and observation is not None
+                    ):
+                        await asyncio.to_thread(
+                            self_memory.redact_observation_reply_text,
+                            observation.observation_id,
+                        )
                 except Exception as exc:
                     if run is not None:
                         try:
@@ -1257,6 +1275,10 @@ async def listen() -> None:
                     allow_auto_activate=allow_auto,
                     now_ms=event.occurred_at_ms,
                 )
+            await asyncio.to_thread(
+                self_memory.redact_observation_reply_text,
+                observation.observation_id,
+            )
             external_results = await evolution_extractor.extract(
                 EvolutionSource(
                     message_id=event.message_id,

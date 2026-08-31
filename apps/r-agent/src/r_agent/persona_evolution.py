@@ -1193,6 +1193,39 @@ class SelfMemoryService:
             raise SelfMemoryError("self observation was not found")
         return self._record_from_observation(row)
 
+    def redact_observation_reply_text(self, observation_id: str) -> SelfObservationRecord:
+        """Discard a processed reply body while retaining its SENT proof and hash.
+
+        The reply body is needed only until the self-stance lane has completed,
+        because it is the authority used to validate an optional verbatim quote.
+        Keeping every delivered reply forever would turn the evolution ledger
+        into a second conversation archive.  Redaction is idempotent; the
+        fingerprint, provider receipt binding and any separately approved quote
+        evidence remain available for replay and audit.
+        """
+
+        clean = _clean_key(observation_id, field="observation_id")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM self_memory_observations WHERE observation_id = ?",
+                (clean,),
+            ).fetchone()
+            if row is None:
+                raise SelfMemoryError("self observation was not found")
+            if str(row["reply_text"]):
+                conn.execute(
+                    "UPDATE self_memory_observations SET reply_text = '' WHERE observation_id = ?",
+                    (clean,),
+                )
+            updated = conn.execute(
+                "SELECT * FROM self_memory_observations WHERE observation_id = ?",
+                (clean,),
+            ).fetchone()
+        if updated is None:
+            raise SelfMemoryError("self observation could not be read back")
+        return self._record_from_observation(updated)
+
     @staticmethod
     def _record_from_evolution(row: sqlite3.Row) -> EvolutionObservationRecord:
         return EvolutionObservationRecord(
@@ -1396,13 +1429,23 @@ class SelfMemoryService:
             else content
         )
         stored_quote = None if redacted else quote
+        stored_source = (
+            f"sha256:{hashlib.sha256(clean_source.encode('utf-8')).hexdigest()}"
+            if redacted
+            else clean_source
+        )
+        stored_evidence_id = (
+            f"sha256:{hashlib.sha256(evidence_id.encode('utf-8')).hexdigest()}"
+            if redacted
+            else evidence_id
+        )
         existing = self._existing_evolution(key)
         if existing is not None:
             if (
                 existing.normalized_content != stored_content
                 or existing.original_quote != stored_quote
-                or existing.source_message_id != evidence_id
-                or existing.source_principal_id != clean_source
+                or existing.source_message_id != stored_evidence_id
+                or existing.source_principal_id != stored_source
                 or existing.source_principal_role != source_principal_role
                 or existing.memory_kind is not kind
             ):
@@ -1521,8 +1564,8 @@ class SelfMemoryService:
                         key,
                         item.item_id if item is not None else None,
                         observation_id,
-                        evidence_id,
-                        clean_source,
+                        stored_evidence_id,
+                        stored_source,
                         source_principal_role,
                         kind.value,
                         stored_content,

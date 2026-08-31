@@ -6,9 +6,9 @@
 
 ## 基线
 
-- GitHub `main`：`d210fb52e652715d48a153d1edcc73c03cd6e387`；PR #66 已合并，
-  其 push、pull_request 与合并后 main CI 全绿。阶段 2 从该主线建立
-  `codex/higgs-natural-memory-v2-20260831`，未经新 PR/CI 不视为主线能力。
+- GitHub `main`：`a693013cf2d4edfda6e8f87c0ec0a108b40ac84d`；PR #67 已合并，
+  其 push、pull_request 与合并后 main CI 全绿。阶段 3 从该主线建立
+  `codex/higgs-self-memory-shadow-20260831`，未经新 PR/CI 不视为主线能力。
 - 生产 Agent 代码：`6682be3c33c78b1e486286fb224af986419cb922`，Persona Bundle
   `2.2.0`。其后的当前主线提交只收束生产记录，没有再次扩展生产能力。
 - corlinman 研究 pin：`v1.56.5` / `27bdf9c8f7a8f103aff82fde8fc822d8695e0906`，
@@ -39,12 +39,12 @@
 | 官方群 `@Higgs` 回复 | `implemented` | 旧版 `deployed-off`；V2 未部署 | V2 群名单已经 PR #66 合并并绑定 Bot；只接受 `GROUP_AT_MESSAGE_CREATE`，生产尚未激活测试群 |
 | 群成员 principal 私有记忆 | `implemented` | `deployed-off` | 作用域隔离已有测试；尚无真实 A/B 成员生产验收 |
 | 群公共记忆 | `implemented` | `deployed-off` | 去标识化、两成员佐证或 owner 审批已实现；群伴随表尚未生产迁移 |
-| Higgs 自我记忆 v4 | `implemented` | `deployed-off` | `self_stance`、`adopted_idea`、SENT-only、证据和替代链已实现；schema/mode 关闭 |
-| 摄影观点种子 | `implemented` | 未导入 | 预览、精确确认和幂等导入工具已实现；生产数据库没有该种子 |
-| 模型辅助记忆候选 | `implemented` | `deployed-off` | 严格 JSON 和 36 例中文离线评测已实现；尚未运行真实模型 shadow 验收 |
+| Higgs 自我记忆 v4 | `implemented`（阶段 3 分支强化） | `deployed-off` | SENT-only、证据/替代链、shadow 硬门、匿名收据、失败重放、内容去重和真实原句校验已实现；schema/mode 关闭 |
+| 摄影观点种子 | `implemented`（阶段 3 分支强化） | 未导入 | 预览不触碰 DB；正式导入要求既有 v4、精确确认和同目录 SQLite 一致性备份；生产没有该种子 |
+| 模型辅助记忆候选 | `implemented` | `deployed-off` | self-memory 新增 38 例中文聚合评测和门槛；真实生产模型 shadow 尚未获准运行 |
 | 官方主动提醒与主动发送 | `implemented` | `deployed-off` | `channel + account + target + surface`、双门和 durable claim 已实现；生产双门关闭 |
 | 官方今日计划 | `implemented` | `deployed-off` | 草案、版本、地图授权和重放安全已实现；生产 mode 为 `off` |
-| 普通用户自然记忆更新 | `implemented`（阶段 2 分支） | 未部署 / 未迁移 / 关闭 | v5 双门、明确记住、两次独立佐证、精确纠正、逻辑遗忘、简短确认、幂等和跨 Bot/principal 隔离已完成本地测试；未过 PR/CI 前不算主线能力 |
+| 普通用户自然记忆更新 | `implemented` | 未部署 / 未迁移 / 关闭 | v5 双门、明确记住、两次独立佐证、精确纠正、逻辑遗忘、简短确认、幂等和跨 Bot/principal 隔离已由 PR #67 合并；生产仍为 schema=false / mode=off |
 | Persona 覆盖普通用户与官方群 | `implemented` | 关闭 | 普通 C2C 与群各有独立默认关闭门；只有对应官方受众开关也开启时才应用 Persona 2.2 |
 | 搜索、网页读取与文档工具 | 未实现 | 关闭 | 治理接口存在，但真实工具尚未接入；必须先补 SSRF、下载隔离和预算 |
 | 普通用户个人提醒与计划 | 未完成 | 关闭 | 现有官方路径只允许 owner；需补本人作用域、配额与主动投递审批 |
@@ -72,8 +72,8 @@ transport 状态和 active durable batches；本账本不能替代现场预检�
 
 1. 版本化普通用户/群捕获、Persona 全用户覆盖和身份隔离强化（PR #66 已合并且主线 CI
    全绿；生产未部署、未迁移、未激活）。
-2. 普通用户自然记忆更新、纠正与遗忘（阶段 2 本地实现与完整 Python/Node 门禁已通过，等待 PR/Ubuntu CI；生产未部署或迁移）。
-3. 自我记忆真实 shadow、摄影观点种子和低风险成长。
+2. 普通用户自然记忆更新、纠正与遗忘（PR #67 已合并且主线 CI 全绿；生产未部署、迁移或启用）。
+3. 自我记忆真实 shadow、摄影观点种子和低风险成长（阶段 3 离线实现与本地门禁已完成，等待 PR/Ubuntu CI；生产保持关闭）。
 4. 搜索、网页/文档读取与普通用户个人提醒/计划。
 5. 多模态、知识库、管理台、指标和后续通道。
 
