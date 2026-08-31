@@ -45,8 +45,7 @@ def _safe_openids(value: object, *, allow_empty: bool = False) -> list[str]:
     if not allow_empty and not value:
         _fail("frozen identities are invalid")
     if any(
-        not isinstance(item, str) or not SAFE_ID.fullmatch(item) or "*" in item
-        for item in value
+        not isinstance(item, str) or not SAFE_ID.fullmatch(item) or "*" in item for item in value
     ):
         _fail("frozen identities are invalid")
     if len(set(value)) != len(value) or value != sorted(value):
@@ -54,9 +53,7 @@ def _safe_openids(value: object, *, allow_empty: bool = False) -> list[str]:
     return value
 
 
-def _read_v2_allowlist(
-    path: Path, *, required: bool = True
-) -> dict[str, object] | None:
+def _read_v2_allowlist(path: Path, *, required: bool = True) -> dict[str, object] | None:
     if not path.exists():
         if required:
             _fail("frozen allowlist is missing")
@@ -233,11 +230,7 @@ def _env_metadata(
     fingerprint = values.get(fingerprint_key, "").strip()
     if not version and not fingerprint:
         return None
-    if (
-        not version.isdigit()
-        or int(version) < 1
-        or not FINGERPRINT.fullmatch(fingerprint)
-    ):
+    if not version.isdigit() or int(version) < 1 or not FINGERPRINT.fullmatch(fingerprint):
         _fail("private allowlist metadata is invalid")
     return int(version), fingerprint
 
@@ -334,21 +327,18 @@ def main() -> int:
         or capture["frozen_allowlist_version"] != allowlist["allowlist_version"]
         or capture["frozen_allowlist_fingerprint"] != allowlist["fingerprint"]
         or capture["baseline_allowlist_version"] != allowlist["previous_version"]
-        or capture["baseline_allowlist_fingerprint"]
-        != allowlist["previous_fingerprint"]
+        or capture["baseline_allowlist_fingerprint"] != allowlist["previous_fingerprint"]
     ):
         _fail("capture and frozen allowlist metadata do not match")
 
     _, higgs = _read_env(higgs_path)
     _, side = _read_env(side_path)
     for key in (
-        "R_AGENT_OFFICIAL_QQ_ENABLED",
         "R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED",
         "R_AGENT_OFFICIAL_QQ_GROUP_ENABLED",
     ):
         _require_disabled(higgs, key)
     for key in (
-        "HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED",
         "HIGGS_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED",
         "HIGGS_OFFICIAL_QQ_GROUP_ENABLED",
     ):
@@ -375,9 +365,7 @@ def main() -> int:
         ):
             _fail("previous allowlist chain does not match")
 
-    expected_previous_ids = (
-        [] if previous is None else _safe_openids(previous["openids"])
-    )
+    expected_previous_ids = [] if previous is None else _safe_openids(previous["openids"])
     for key, values in (
         ("R_AGENT_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS", higgs),
         ("HIGGS_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS", side),
@@ -398,17 +386,13 @@ def main() -> int:
         ),
     )
     expected_previous_metadata = (
-        None
-        if previous is None
-        else (previous["allowlist_version"], previous["fingerprint"])
+        None if previous is None else (previous["allowlist_version"], previous["fingerprint"])
     )
     existing_metadata = [
         _env_metadata(values, version_key, fingerprint_key)
         for version_key, fingerprint_key, values in metadata_keys
     ]
-    if existing_metadata != [None, None] and any(
-        metadata != expected_previous_metadata for metadata in existing_metadata
-    ):
+    if any(metadata != expected_previous_metadata for metadata in existing_metadata):
         _fail("existing private allowlist metadata does not match baseline")
 
     backup_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -419,18 +403,10 @@ def main() -> int:
 
     joined = ",".join(openids)
     next_metadata = {
-        "R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION": str(
-            allowlist["allowlist_version"]
-        ),
-        "R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT": str(
-            allowlist["fingerprint"]
-        ),
-        "HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION": str(
-            allowlist["allowlist_version"]
-        ),
-        "HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT": str(
-            allowlist["fingerprint"]
-        ),
+        "R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION": str(allowlist["allowlist_version"]),
+        "R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT": str(allowlist["fingerprint"]),
+        "HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION": str(allowlist["allowlist_version"]),
+        "HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT": str(allowlist["fingerprint"]),
     }
     try:
         _write_env(
@@ -439,9 +415,7 @@ def main() -> int:
             joined,
             backup_dir,
         )
-        _write_env(
-            side_path, "HIGGS_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS", joined, backup_dir
-        )
+        _write_env(side_path, "HIGGS_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS", joined, backup_dir)
         _write_env(
             higgs_path,
             "R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION",

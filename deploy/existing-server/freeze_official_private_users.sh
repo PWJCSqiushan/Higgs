@@ -99,19 +99,15 @@ PY
     *) echo "private_freeze: existing frozen allowlist is not v2" >&2; exit 3 ;;
   esac
 fi
-if grep -Eqi '^R_AGENT_OFFICIAL_QQ_ENABLED=(true|1|yes|on)$' "$higgs_env" || \
-  grep -Eqi '^R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED=(true|1|yes|on)$' "$higgs_env" || \
+if grep -Eqi '^R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED=(true|1|yes|on)$' "$higgs_env" || \
   grep -Eqi '^R_AGENT_OFFICIAL_QQ_GROUP_ENABLED=(true|1|yes|on)$' "$higgs_env" || \
-  grep -Eqi '^HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED=(true|1|yes|on)$' "$side_env" || \
   grep -Eqi '^HIGGS_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED=(true|1|yes|on)$' "$side_env" || \
   grep -Eqi '^HIGGS_OFFICIAL_QQ_GROUP_ENABLED=(true|1|yes|on)$' "$side_env"; then
-  echo "private_freeze: production channels must remain disabled" >&2
-  exit 3
+  echo "private_freeze: ordinary and group audience gates must remain disabled" >&2
+  exit 4
 fi
-if [ -n "$(docker ps -q --filter label=com.docker.compose.service=official-qq-sidecar)" ] || \
-  [ -n "$(docker ps -q --filter name=higgs-existing-official-qq-sidecar)" ] || \
-  [ -n "$(docker ps -q --filter name=higgs-official-private-capture)" ]; then
-  echo "private_freeze: an official Gateway is active" >&2
+if [ -n "$(docker ps -q --filter name=higgs-official-private-capture)" ]; then
+  echo "private_freeze: a capture Gateway is active" >&2
   exit 4
 fi
 
