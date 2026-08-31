@@ -10,8 +10,8 @@ and its registry signature verifies. Its published `gitHead` is not present in
 the public GitHub history and the public source snapshot differs in package
 metadata. The production adapter therefore keeps this package inside a
 least-privilege sidecar and treats that unresolved provenance gap as a tracked
-release risk; enabling real replies still requires an explicit production
-confirmation.
+release risk; expanding replies beyond the already accepted owner C2C surface
+still requires an explicit production confirmation.
 
 The sidecar is not the Higgs brain. It must not receive identity, memory,
 journal, model, tool, Docker Socket, NapCat, or host filesystem access. Its
@@ -64,11 +64,11 @@ Agent.
   already-running Agent instead of silently resetting cursors; a coordinated
   process restart can Resume from the fresh private state. The sidecar's event
   queue, passive authorization claims, and delivery receipts share a separate
-  atomic `0600` file in the same private directory. The pinned SDK still
-  advances its Gateway sequence before the sidecar callback, and the Agent's
-  debounce/processing state is not yet crash-durable. Therefore replies remain
-  disabled until the Agent-side state machine is implemented and a real
-  supervised restart/Resume test passes.
+  atomic `0600` file in the same private directory. The Agent now persists its
+  quiet window, prepared reply, risk reservation, send/finalize lifecycle and
+  source tombstone in `official_processing.sqlite`. Owner C2C passive replies
+  have passed real end-to-end acceptance; ordinary users, groups and proactive
+  delivery remain behind separate default-off gates.
 
 ## Local verification
 
@@ -99,13 +99,14 @@ Agent or included in ordinary application backups.
 
 The Agent has two independent gates: `R_AGENT_OFFICIAL_QQ_ENABLED` permits
 ingestion, while `R_AGENT_OFFICIAL_QQ_REPLY_ENABLED` permits passive replies.
-The second gate defaults to false and stays false for the first shadow/Resume
-deployment even if the Node Gateway and UDS adapter are online.
+The second gate defaults to false. Production currently enables it only for the
+explicitly bound owner C2C surface; changing the audience remains a separate
+operation even when the Node Gateway and UDS adapter are healthy.
 
 Official proactive delivery has two additional independent gates:
 `R_AGENT_OFFICIAL_QQ_PROACTIVE_ENABLED` in the Agent and
 `HIGGS_OFFICIAL_QQ_PROACTIVE_ENABLED` in the sidecar. Both default to false and
-must remain false through the fixed 72-hour observation. When separately
-approved, proactive sends are limited to the explicitly bound owner C2C target,
+require separate production acceptance. When separately approved, proactive
+sends are limited to the explicitly bound owner C2C target,
 omit `msgId`, and durably claim the idempotency key as `UNKNOWN` before crossing
 the provider boundary. They never provide a transparent fallback to OneBot.

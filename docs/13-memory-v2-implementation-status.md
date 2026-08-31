@@ -17,7 +17,7 @@
 - Model proposals enter the separate `model_memory_candidate_shadow` review table. That component
   deliberately has no activation, replacement or deletion operation, and any model failure leaves
   deterministic reconciliation unchanged.
-- The Chinese evaluation suite contains 30 cases and compares deterministic versus model-assisted
+- The Chinese evaluation suite contains 36 cases and compares deterministic versus model-assisted
   recall, false extraction and admitted-pollution rates. Passing the offline suite authorizes only
   shadow evaluation, not production activation.
 
@@ -27,7 +27,7 @@
 - A real non-empty memory recall requires two owner messages that match a safe preference pattern, then a recall-triggering message. The historical chat set did not contain enough safe atomic facts, so it was correctly excluded.
 - Reminder delivery and offline replay still require one real owner-only QQ acceptance test after login recovery.
 - Model candidate shadow remains off by default. It may be enabled only after reviewing the local
-  30-case report; production candidates still require owner review and cannot auto-activate.
+  36-case report; production candidates still require owner review and cannot auto-activate.
 
 ## Acceptance commands
 
