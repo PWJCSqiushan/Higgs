@@ -568,3 +568,54 @@
 - 本地完整 Python 为 `515 passed, 5 skipped`；Node 为 `59 passed, 9 skipped`。Ruff、格式、
   Node 语法、release gate、秘密边界、Shell LF 与 diff 检查通过；Windows 跳过项等待 PR 的
   Ubuntu 零跳过 CI。生产没有部署、迁移、启用普通用户/群、发送消息、重建或改动 NapCat。
+
+## 53. 2026-08-31 Personal Memory V5 经 PR #67 合并
+
+- 阶段 2 已通过 PR #67 合并为 main
+  `a693013cf2d4edfda6e8f87c0ec0a108b40ac84d`。push run `33368455489`、
+  pull_request run `33368523783` 和合并后 main run `33368598779` 均全绿；Ubuntu Python
+  零跳过，官方 Sidecar、Shell、发布包、秘密边界、镜像和 Compose 同时通过。
+- 合并没有触发生产部署或数据库迁移。普通用户/群、Personal Memory v5、self-memory v4、
+  摄影种子和 proactive 仍保持关闭；没有捕获、冻结、发送消息、重建容器或修改 NapCat。
+- 阶段 3 已从该主线建立 `codex/higgs-self-memory-shadow-20260831`，只补自我记忆真实
+  shadow 的匿名收据、失败重放、演进评测与摄影种子安全导入门。生产动作继续分别确认。
+
+## 54. 2026-08-31 self-memory 真实 shadow 离线闭环
+
+- self-memory v4 新增同库 `self_memory_shadow_runs`，每次 self/adopted lane 只记录输入与
+  run key 哈希、状态、尝试次数、候选/拒绝/隔离计数、错误类型和耗时。模型、parser 或 DB
+  失败进入明确 failed；pending 可幂等重放，complete 会跳过，匿名 readiness 不返回正文、
+  身份或平台消息标识。
+- `SelfMemoryService` 不再隐式迁移 v4；schema 必须由显式配置先迁移。shadow 在服务和调用
+  两层都强制禁止自动激活，即使调用者误传 `allow_auto_activate=true` 也只能 considering。
+  相同 persona/kind/content 复用同一项并追加证据；自称“以前说过”的原句必须是已验证
+  SENT 回复子串。
+- 成功处理后清空 self observation 的完整回复正文，只保留 SENT 绑定与内容哈希；隔离候选
+  仅保存内容哈希，来源 principal 和平台消息标识同样哈希。owner 硬删除会事务式清理关联
+  metadata、evidence、evolution 和孤立 observation，避免伴随表残留私密正文。
+- 新增 38 条中文 self-memory shadow 数据集与聚合评测入口，覆盖 self stance、外部思想、
+  空结果、隔离、拒绝、冲突、敏感、注入、身份和权限。门槛为 precision `>=0.95`、recall
+  `>=0.90`、处置准确率 `>=0.95`，误激活、污染与非预期解析失败必须为 0。
+- 摄影种子 preview 仍不探测数据库；确认导入必须使用既有 v4 普通文件、通过 quick_check、
+  小于 512 MiB，并先用 SQLite backup API 在同目录生成、校验哈希和尽力设为 `0600` 的一致
+  备份。回执不含路径或观点正文，失败保留已验证备份用于恢复。
+- 本地门禁为 Python `538 passed, 6 skipped`、Node `59 passed, 9 skipped`；Ruff、格式、
+  Node 语法、release gate、秘密边界、Shell LF 与 diff 检查通过。生产没有部署、迁移、运行
+  shadow、导入摄影种子、开启自主成长、发送消息或重建容器；下一步为阶段 PR 与 Ubuntu CI。
+
+## 55. 2026-08-31 PR #68 独立审计后的隐私与幂等收束
+
+- 阶段分支已创建 PR #68；首轮 push 与 pull_request CI 均全绿，但独立只读审计发现失败
+  提取的临时 SENT 正文、post-SENT 回调异常、并发相同观点和评测收据四项发布阻断，因此
+  暂未合并，先在同一 PR 修复。
+- observation 正文现在只保留到当前 self lane 结束；成功、空结果、隔离或异常都会释放，
+  无 evidence 的 observation 同时移除。若进程在两步之间崩溃，新服务实例启动时会立即清理
+  所有旧正文和孤立记录。重放只能用与既有 SENT fingerprint 精确匹配的瞬时回复文本恢复校验。
+- transport 已经返回 `SENT` 后，记忆观察或 risk ledger 收尾异常只匿名告警，不能把发送状态
+  反向变为 retry。self-memory proposal 增加 persona/kind/content 语义幂等指纹，不同来源
+  并发写入同一观点也只复用一个 item；并发激活竞争会重新读取已激活状态。
+- 评测 JSON 现带内容无关的 run ID、时间、评测器/模型/提示版本、数据集与输出集合哈希；
+  外部模型 outputs 未声明精确 model/prompt 版本时退出码 2。固定 fixture 仍不代表真实模型。
+- 修复后本地 Python 为 `544 passed, 6 skipped`，Node 为 `59 passed, 9 skipped`；Ruff、格式、
+  release gate、秘密边界、Shell LF、Node 语法和 38 例评测均通过。生产仍未部署、迁移、运行
+  shadow、导入观点、发送消息或重建容器；须重新推送并等待 PR #68 新一轮 Ubuntu CI。

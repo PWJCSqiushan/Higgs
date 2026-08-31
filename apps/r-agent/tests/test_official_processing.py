@@ -45,6 +45,40 @@ def accepted(*, stored: bool = True, duplicate: bool = False) -> IngestResult:
     return IngestResult(IngressDecision.ACCEPT, stored=stored, duplicate=duplicate)
 
 
+@pytest.mark.asyncio
+async def test_post_sent_observer_failure_cannot_turn_delivery_into_retry() -> None:
+    inbound = event("sent-observer-failure", "输入")
+    provider_calls = 0
+
+    async def sender(item: InboundEvent, _text: str) -> DeliveryReceipt:
+        nonlocal provider_calls
+        provider_calls += 1
+        return DeliveryReceipt(
+            channel=item.channel,
+            state=DeliveryState.SENT,
+            idempotency_key="reply:sent-observer-failure",
+            provider_message_id="provider-sent-observer-failure",
+        )
+
+    async def broken_observer(
+        _event: InboundEvent,
+        _text: str,
+        _receipt: DeliveryReceipt,
+    ) -> None:
+        raise RuntimeError("post-send memory failure")
+
+    plan = await deliver_prepared_reply(
+        event=inbound,
+        prepared=PreparedReply(ReplyDecision.SENT, "已经发送"),
+        sender=sender,
+        retry_transport_unavailable=True,
+        on_sent=broken_observer,
+    )
+
+    assert plan.decision is ReplyDecision.SENT
+    assert provider_calls == 1
+
+
 def test_enqueue_is_durable_deduplicated_and_quiet_window_merged(tmp_path: Path) -> None:
     store = OfficialProcessingStore(tmp_path / "official_processing.sqlite")
     store.initialize(now_ms=1_000)

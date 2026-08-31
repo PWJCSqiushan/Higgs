@@ -718,6 +718,7 @@ class MemoryStore:
         valid_from_ms: int | None = None,
         valid_to_ms: int | None = None,
         supersedes_item_id: str | None = None,
+        dedupe_key: str | None = None,
         now_ms: int | None = None,
     ) -> MemoryRecord:
         if not isinstance(scope, MemoryScope):
@@ -760,19 +761,34 @@ class MemoryStore:
         initial_status = (
             MemoryStatus.QUARANTINED if risk is MemoryRisk.HIGH else MemoryStatus.CANDIDATE
         )
+        clean_dedupe_key = (
+            self._clean_required(dedupe_key, field="dedupe_key", limit=256)
+            if dedupe_key is not None
+            else None
+        )
         fingerprint_payload = json.dumps(
-            {
-                "scope": scope.value,
-                "scope_id": clean_scope_id,
-                "kind": kind.value,
-                "text": clean_text,
-                "source_channel": clean_source_channel,
-                "source_account_id": clean_source_account,
-                "source_message_id": clean_source_message,
-                "source_principal_id": clean_source_principal,
-                "valid_from_ms": valid_from,
-                "supersedes_item_id": clean_supersedes,
-            },
+            (
+                {
+                    "dedupe_key": clean_dedupe_key,
+                    "scope": scope.value,
+                    "scope_id": clean_scope_id,
+                    "kind": kind.value,
+                    "text": clean_text,
+                }
+                if clean_dedupe_key is not None
+                else {
+                    "scope": scope.value,
+                    "scope_id": clean_scope_id,
+                    "kind": kind.value,
+                    "text": clean_text,
+                    "source_channel": clean_source_channel,
+                    "source_account_id": clean_source_account,
+                    "source_message_id": clean_source_message,
+                    "source_principal_id": clean_source_principal,
+                    "valid_from_ms": valid_from,
+                    "supersedes_item_id": clean_supersedes,
+                }
+            ),
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -1289,6 +1305,72 @@ class MemoryStore:
                 details=f"{clean_reason}:{content_digest}",
                 now_ms=timestamp,
             )
+            tables = {
+                str(table_row["name"])
+                for table_row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if {
+                "self_memory_metadata",
+                "self_memory_evidence",
+                "self_memory_evolution_observations",
+                "self_memory_observations",
+            } <= tables:
+                observation_ids = {
+                    str(observation_row["observation_id"])
+                    for observation_row in conn.execute(
+                        """
+                        SELECT observation_id FROM self_memory_evidence
+                        WHERE item_id = ? AND observation_id IS NOT NULL
+                        UNION
+                        SELECT observation_id FROM self_memory_evolution_observations
+                        WHERE item_id = ? AND observation_id IS NOT NULL
+                        """,
+                        (item_id, item_id),
+                    ).fetchall()
+                }
+                conn.execute("DELETE FROM self_memory_evidence WHERE item_id = ?", (item_id,))
+                conn.execute(
+                    "DELETE FROM self_memory_evolution_observations WHERE item_id = ?",
+                    (item_id,),
+                )
+                conn.execute("DELETE FROM self_memory_metadata WHERE item_id = ?", (item_id,))
+                for observation_id in observation_ids:
+                    still_referenced = conn.execute(
+                        """
+                        SELECT 1 FROM self_memory_evidence
+                        WHERE observation_id = ?
+                        UNION ALL
+                        SELECT 1 FROM self_memory_evolution_observations
+                        WHERE observation_id = ?
+                        LIMIT 1
+                        """,
+                        (observation_id, observation_id),
+                    ).fetchone()
+                    if still_referenced is None:
+                        conn.execute(
+                            "DELETE FROM self_memory_observations WHERE observation_id = ?",
+                            (observation_id,),
+                        )
+            if {"personal_memory_intents", "personal_memory_evidence"} <= tables:
+                intent_ids = {
+                    str(intent_row["intent_id"])
+                    for intent_row in conn.execute(
+                        "SELECT intent_id FROM personal_memory_intents WHERE result_item_id = ?",
+                        (item_id,),
+                    ).fetchall()
+                }
+                conn.execute("DELETE FROM personal_memory_evidence WHERE item_id = ?", (item_id,))
+                for intent_id in intent_ids:
+                    conn.execute(
+                        "DELETE FROM personal_memory_evidence WHERE intent_id = ?",
+                        (intent_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM personal_memory_intents WHERE intent_id = ?",
+                        (intent_id,),
+                    )
             conn.execute("DELETE FROM memory_items WHERE item_id = ?", (item_id,))
 
     def search_active(

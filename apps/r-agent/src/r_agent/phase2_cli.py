@@ -64,7 +64,13 @@ from r_agent.persona_bundle import (
     PersonaV2Gate,
     load_persona_bundle,
 )
-from r_agent.persona_evolution import EvolutionSource, ModelEvolutionExtractor, SelfMemoryService
+from r_agent.persona_evolution import (
+    EvolutionDecision,
+    EvolutionSource,
+    ModelEvolutionExtractor,
+    SelfMemoryService,
+    ShadowRunState,
+)
 from r_agent.phase2_outbound import (
     OutboundError,
     get_onebot_account_status,
@@ -101,6 +107,17 @@ _log = logging.getLogger(__name__)
 ONLINE_PROBE_INTERVAL_SECONDS = 30.0
 ONLINE_PROBE_TIMEOUT_SECONDS = 20.0
 ONLINE_PROBE_MAX_DETECTION_SECONDS = ONLINE_PROBE_INTERVAL_SECONDS + ONLINE_PROBE_TIMEOUT_SECONDS
+_SHADOW_PARSER_FAILURE_REASONS = frozenset(
+    {
+        "invalid_json_envelope",
+        "markdown_not_allowed",
+        "invalid_json",
+        "invalid_top_level_schema",
+        "unsupported_schema_version",
+        "invalid_candidate_count",
+        "invalid_candidate_schema",
+    }
+)
 
 
 async def reconcile_group_public_memory(
@@ -565,9 +582,22 @@ async def deliver_prepared_reply(
             )
         return ReplyPlan(ReplyDecision.SEND_FAILED, prepared.text)
     if on_sent is not None:
-        await on_sent(event, prepared.text, receipt)
+        try:
+            await on_sent(event, prepared.text, receipt)
+        except Exception as exc:
+            # The provider has already acknowledged SENT.  Observation and
+            # memory are best-effort post-send lanes and must never turn that
+            # durable outcome back into a retryable send.
+            _log.warning("post_send_observer_failed type=%s", type(exc).__name__)
     if risk_ledger is not None and prepared.reservation_id is not None:
-        await asyncio.to_thread(risk_ledger.finish_send, prepared.reservation_id, outcome="sent")
+        try:
+            await asyncio.to_thread(
+                risk_ledger.finish_send,
+                prepared.reservation_id,
+                outcome="sent",
+            )
+        except Exception as exc:
+            _log.error("post_send_risk_finalize_failed type=%s", type(exc).__name__)
     return ReplyPlan(ReplyDecision.SENT, prepared.text)
 
 
@@ -750,7 +780,11 @@ async def listen() -> None:
         self_memory_v4=phase.self_memory_schema_v4_enabled,
         personal_memory_v5=phase.personal_memory_schema_v5_enabled,
     )
-    self_memory = SelfMemoryService(memory) if phase.self_memory_schema_v4_enabled else None
+    self_memory = (
+        SelfMemoryService(memory, mode=phase.self_memory_mode)
+        if phase.self_memory_schema_v4_enabled
+        else None
+    )
     personal_memory = PersonalMemoryService(memory, mode=phase.personal_memory_mode)
     group_memory = GroupMemoryService(memory, enabled=phase.group_memory_enabled)
     if phase.group_memory_enabled:
@@ -1048,11 +1082,11 @@ async def listen() -> None:
     ) -> None:
         if self_memory is None or phase.self_memory_mode == "off":
             return
-        principal = await asyncio.to_thread(
-            service.identities.resolve_event,
-            event,
-        )
         try:
+            principal = await asyncio.to_thread(
+                service.identities.resolve_event,
+                event,
+            )
             await asyncio.to_thread(
                 self_memory.record_delivery,
                 receipt=receipt,
@@ -1074,11 +1108,169 @@ async def listen() -> None:
         if self_memory is None or evolution_extractor is None:
             return
         key = f"reply:{event.channel}:{event.account_id}:{event.message_id}"
+        if phase.self_memory_mode == "shadow":
+
+            async def run_shadow_lane(
+                *,
+                run_key: str,
+                lane: MemoryKind,
+                source_builder: Callable[[], Awaitable[tuple[object, object | None]]],
+            ) -> None:
+                """Run one extractor lane behind a durable, hard-gated receipt."""
+
+                run = None
+                observation = None
+                candidate_count = 0
+                rejected_count = 0
+                quarantined_count = 0
+                try:
+                    run = await asyncio.to_thread(
+                        self_memory.begin_shadow_run,
+                        run_key=run_key,
+                        lane=lane,
+                        input_text=reply_text if lane is MemoryKind.SELF_STANCE else event.text,
+                        now_ms=event.occurred_at_ms,
+                    )
+                    if run.state is ShadowRunState.COMPLETE:
+                        return
+                    source, observation = await source_builder()
+                    results = await evolution_extractor.extract(
+                        source,
+                        allowed_kind=lane,
+                    )
+                    for parsed in results:
+                        if parsed.reason in _SHADOW_PARSER_FAILURE_REASONS:
+                            raise ValueError("shadow parser rejected model envelope")
+                        if parsed.candidate is None:
+                            if parsed.decision is EvolutionDecision.QUARANTINED:
+                                quarantined_count += 1
+                            elif parsed.decision is EvolutionDecision.REJECTED:
+                                rejected_count += 1
+                            continue
+                        if parsed.decision is EvolutionDecision.REJECTED:
+                            rejected_count += 1
+                            continue
+                        if lane is MemoryKind.SELF_STANCE:
+                            if observation is None:
+                                raise RuntimeError("self shadow observation is missing")
+                            result = await asyncio.to_thread(
+                                self_memory.propose_shadow_from_self_observation,
+                                observation,
+                                candidate=parsed.candidate,
+                                allow_auto_activate=True,
+                                now_ms=event.occurred_at_ms,
+                            )
+                        else:
+                            result = await asyncio.to_thread(
+                                self_memory.submit_shadow_candidate,
+                                parsed.candidate,
+                                source_message_id=event.message_id,
+                                source_principal_id=principal.principal_id,
+                                source_principal_role=principal.role,
+                                allow_auto_activate=True,
+                                now_ms=event.occurred_at_ms,
+                            )
+                        if result.decision is EvolutionDecision.QUARANTINED:
+                            quarantined_count += 1
+                        elif result.decision is EvolutionDecision.REJECTED:
+                            rejected_count += 1
+                        else:
+                            candidate_count += 1
+                    await asyncio.to_thread(
+                        self_memory.complete_shadow_run,
+                        run,
+                        candidate_count=candidate_count,
+                        rejected_count=rejected_count,
+                        quarantined_count=quarantined_count,
+                        now_ms=event.occurred_at_ms,
+                    )
+                except Exception as exc:
+                    if run is not None:
+                        try:
+                            await asyncio.to_thread(
+                                self_memory.fail_shadow_run,
+                                run,
+                                error=exc,
+                                candidate_count=candidate_count,
+                                rejected_count=rejected_count,
+                                quarantined_count=quarantined_count,
+                                now_ms=event.occurred_at_ms,
+                            )
+                        except Exception as receipt_exc:
+                            _log.warning(
+                                "self_memory_shadow_receipt_failed type=%s",
+                                type(receipt_exc).__name__,
+                            )
+                    _log.warning(
+                        "self_memory_shadow_failed lane=%s type=%s",
+                        lane.value,
+                        type(exc).__name__,
+                    )
+                finally:
+                    if lane is MemoryKind.SELF_STANCE:
+                        try:
+                            if observation is None:
+                                observation = await asyncio.to_thread(
+                                    self_memory.get_observation_by_idempotency_key,
+                                    key,
+                                    reply_text=reply_text,
+                                )
+                            await asyncio.to_thread(
+                                self_memory.release_observation_payload,
+                                observation.observation_id,
+                            )
+                        except Exception as cleanup_exc:
+                            _log.warning(
+                                "self_memory_observation_cleanup_failed type=%s",
+                                type(cleanup_exc).__name__,
+                            )
+
+            async def build_self_source() -> tuple[object, object | None]:
+                observation = await asyncio.to_thread(
+                    self_memory.get_observation_by_idempotency_key,
+                    key,
+                    reply_text=reply_text,
+                )
+                return (
+                    EvolutionSource(
+                        message_id=observation.reply_message_id,
+                        principal_id="persona:higgs",
+                        principal_role="owner",
+                        text=reply_text,
+                        observation_id=observation.observation_id,
+                    ),
+                    observation,
+                )
+
+            async def build_external_source() -> tuple[object, object | None]:
+                return (
+                    EvolutionSource(
+                        message_id=event.message_id,
+                        principal_id=principal.principal_id,
+                        principal_role=principal.role,
+                        text=event.text,
+                    ),
+                    None,
+                )
+
+            await run_shadow_lane(
+                run_key=f"self:{key}",
+                lane=MemoryKind.SELF_STANCE,
+                source_builder=build_self_source,
+            )
+            await run_shadow_lane(
+                run_key=f"external:{key}",
+                lane=MemoryKind.ADOPTED_IDEA,
+                source_builder=build_external_source,
+            )
+            return
         allow_auto = phase.self_memory_mode == "autonomous-low-risk"
+        observation = None
         try:
             observation = await asyncio.to_thread(
                 self_memory.get_observation_by_idempotency_key,
                 key,
+                reply_text=reply_text,
             )
             self_results = await evolution_extractor.extract(
                 EvolutionSource(
@@ -1123,6 +1315,18 @@ async def listen() -> None:
                 )
         except Exception as exc:
             _log.warning("self_memory_evolution_failed type=%s", type(exc).__name__)
+        finally:
+            if observation is not None:
+                try:
+                    await asyncio.to_thread(
+                        self_memory.release_observation_payload,
+                        observation.observation_id,
+                    )
+                except Exception as cleanup_exc:
+                    _log.warning(
+                        "self_memory_observation_cleanup_failed type=%s",
+                        type(cleanup_exc).__name__,
+                    )
 
     async def reconcile_group_memory(
         event: InboundEvent,

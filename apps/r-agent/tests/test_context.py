@@ -286,6 +286,7 @@ def test_persona_v2_context_fails_closed_without_verified_bundle(tmp_path: Path)
 
 def test_photography_self_stance_survives_history_expiry_and_restart(tmp_path: Path) -> None:
     history, memory, recall = stores(tmp_path)
+    memory.initialize(self_memory_v4=True)
     self_memory = SelfMemoryService(memory)
     seeded = self_memory.seed_photography_stance(actor=OWNER, confirm=True, now_ms=10)
     assert seeded.item_id is not None
@@ -312,6 +313,12 @@ def test_photography_self_stance_survives_history_expiry_and_restart(tmp_path: P
     assert "都不重要，也不该分开比" in first.messages[0]["content"]
     assert len([message for message in first.messages if message["role"] == "assistant"]) == 8
 
+    assert history.purge_expired(1, now_ms=2 * 86_400_000) == 10
+    expired = builder.build(event("91", "器材取舍还有什么要补充"), principal_id="owner")
+    assert seeded.item_id in expired.memory_item_ids
+    assert "Higgs 原句证据" in expired.messages[0]["content"]
+    assert not [message for message in expired.messages if message["role"] == "assistant"]
+
     restarted_memory = MemoryStore(memory.path)
     restarted_memory.initialize(self_memory_v4=True)
     restarted = ContextBuilder(
@@ -323,13 +330,14 @@ def test_photography_self_stance_survives_history_expiry_and_restart(tmp_path: P
         history_limit=8,
         memory_limit=8,
     )
-    second = restarted.build(event("91", "器材应该怎样取舍"), principal_id="owner")
+    second = restarted.build(event("92", "器材应该怎样取舍"), principal_id="owner")
     assert seeded.item_id in second.memory_item_ids
     assert "Higgs 原句证据" in second.messages[0]["content"]
 
 
 def test_adopted_external_idea_hides_source_quote_from_context(tmp_path: Path) -> None:
     history, memory, recall = stores(tmp_path)
+    memory.initialize(self_memory_v4=True)
     self_memory = SelfMemoryService(memory)
     adopted = self_memory.submit_candidate(
         EvolutionCandidate(

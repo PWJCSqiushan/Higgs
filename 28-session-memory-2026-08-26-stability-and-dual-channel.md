@@ -541,3 +541,50 @@
 - 明确动作的确认文字仍经过原 reply policy、风险预算、输出安全与 durable 投递；shadow
   不伪称已记住。当前本地 Python `515 passed, 5 skipped`，Node `59 passed, 9 skipped`，
   其余发布门通过；生产未部署、迁移、启用、发消息或重建，下一步为独立 PR 与 Ubuntu CI。
+
+## 节点 59：Personal Memory V5 合并并转入 self-memory 真实 shadow
+
+- PR #67 已合并为 main `a693013cf2d4edfda6e8f87c0ec0a108b40ac84d`。push run
+  `33368455489`、pull_request run `33368523783` 与合并后 main run `33368598779` 全绿，
+  Ubuntu Python 零跳过，官方 Sidecar、Shell、发布包、秘密边界、镜像和 Compose 均通过。
+- 合并只更新 GitHub 主线。生产 Personal Memory v5 的 schema/mode、普通 C2C、群、
+  self-memory v4、摄影种子和 proactive 均未启用，没有部署、迁移、捕获、发送消息、重建
+  容器或修改 NapCat。
+- 阶段 3 从该主线建立 `codex/higgs-self-memory-shadow-20260831`。目标是把既有 SENT-only
+  严格 JSON 管线补成有匿名持久收据、失败重放和质量门的真实模型 shadow，并强化摄影种子
+  备份/确认；代码完成不等于获准迁移、运行 shadow 或导入观点。
+
+## 节点 60：self-memory shadow、评测与摄影种子安全门离线完成
+
+- self-memory v4 新增内容无关的持久 shadow run：输入与运行键只存 SHA-256，记录 lane、
+  pending/complete/failed、attempt、候选/拒绝/隔离计数、错误类型和耗时。失败不伪成功，
+  pending 可重放，complete 跳过，服务级 shadow 硬门无视误传的自动激活参数。
+- 构造 `SelfMemoryService` 不再隐式迁移；显式 schema v4 是唯一入口。相同观点复用 item 并
+  追加证据，真实原句必须能在 SENT 回复中验证。成功提取后清空 observation 全文，隔离候选
+  的内容、来源 principal 和平台消息标识只留哈希；硬删除同时清理伴随表与孤立 observation。
+- 新增 38 条中文 self/adopted 演进评测和聚合-only CLI，质量门锁定 precision `>=0.95`、
+  recall `>=0.90`、处置准确率 `>=0.95`，误激活、污染与意外 parse failure 为 0。固定 fixture
+  只验证管线；真实模型 outputs 仍须在单独获准的生产 shadow 中收集匿名指标。
+- 摄影 seed CLI 改为 preview 零 DB 访问；正式导入必须精确确认、既有 v4/普通文件/大小/
+  quick_check 全通过，并先生成同目录 SQLite 一致性备份、校验哈希与 `0600` best effort。
+  失败保留备份，幂等重放不重复写，但每次确认仍先备份。
+- 本地 Python `538 passed, 6 skipped`、Node `59 passed, 9 skipped`；Ruff、格式、发布包、
+  秘密边界、Shell LF、Node 语法和 diff 检查全部通过。生产保持 schema=false/mode=off，未
+  部署、迁移、跑 shadow、导入观点、开启自主成长、发送消息或重建任何容器。
+
+## 节点 61：PR #68 审计阻断修复与重新验收
+
+- PR #68 首轮 CI 虽全绿，独立复核仍发现：模型失败时完整 SENT 回复可能长期残留、post-SENT
+  观察异常可能让 durable batch 回到发送重试、不同来源并发可能生成重复观点，以及聚合评测
+  缺少可复核版本收据。阶段没有因 CI 绿色而提前合并。
+- self observation 改为处理结束必释放正文、无 evidence 自动移除；新服务实例启动即清理
+  所有旧的崩溃残留。重放使用瞬时文本时必须重新匹配既有 fingerprint，不接受伪造正文。已经确认
+  SENT 后，记忆/risk 后处理异常只记录类型，不再改变最终发送决定。
+- self-memory proposal 使用 persona、kind 与规范内容构成的语义幂等键；两个来源并发提交同一
+  观点时共享同一 memory item，激活竞争也按已激活结果收敛。hard delete 仍清理已关联证据，
+  空结果或隔离路径不再遗留包含正文的孤立 observation。
+- 评测回执新增 run ID、时间、evaluator/model/prompt 版本、数据集 SHA-256 和 outputs 集合
+  SHA-256。真实 outputs 缺精确版本标签时失败关闭；收据继续不含案例正文或候选内容。
+- 修复后本地全量为 Python `544 passed, 6 skipped`、Node `59 passed, 9 skipped`，38 条评测
+  precision/recall/处置准确率均为 `1.0` 且零误激活/污染；Ruff、格式、发布与秘密门通过。
+  生产保持所有阶段 3 开关关闭，未部署、迁移、发送消息、重建或改动 NapCat。
