@@ -65,11 +65,16 @@ test("ordinary policy is explicit, bot-scoped, and owner remains enabled by defa
     QQBOT_APP_SECRET: "0123456789abcdef",
     HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION: "1",
     HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT: "0".repeat(64),
+    HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION: "2",
+    HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT: "1".repeat(64),
   });
   assert.equal(config.ordinaryPrivateEnabled, true);
   assert.equal(config.groupEnabled, true);
   assert.equal(config.privateAllowlistVersion, 1);
   assert.equal(config.privateAllowlistFingerprint, "0".repeat(64));
+  assert.equal(config.groupAllowlistVersion, 2);
+  assert.equal(config.groupAllowlistFingerprint, "1".repeat(64));
+  assert.match(config.groupAllowlistFile, /allowed-group-openids\.json$/u);
   assert.deepEqual(new Set(config.allowedPrivateOpenIds), new Set(["owner-openid", "member-openid"]));
 
   assert.throws(
@@ -83,6 +88,25 @@ test("ordinary policy is explicit, bot-scoped, and owner remains enabled by defa
         QQBOT_APP_SECRET: "0123456789abcdef",
       }),
     /private allowlist metadata required/,
+  );
+
+  assert.throws(
+    () =>
+      loadConfig({
+        HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED: "true",
+        HIGGS_OFFICIAL_QQ_CAPTURE_ONLY: "false",
+        HIGGS_OFFICIAL_QQ_OWNER_OPENID: "owner-openid",
+        HIGGS_OFFICIAL_QQ_GROUP_ENABLED: "true",
+        HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS: "group-openid",
+        QQBOT_APP_ID: "123456789",
+        QQBOT_APP_SECRET: "0123456789abcdef",
+      }),
+    /group allowlist metadata required/,
+  );
+
+  assert.throws(
+    () => loadConfig({ HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_FILE: "/tmp/groups.json" }),
+    /invalid group allowlist configuration/,
   );
 
   const ownerOnly = loadConfig({
@@ -169,12 +193,16 @@ test("status and events expose only versioned protocol envelopes", async () => {
     assert.equal(hello.protocol_version, PROTOCOL_VERSION);
     assert.equal(hello.private_allowlist_version, null);
     assert.equal(hello.private_allowlist_fingerprint, null);
+    assert.equal(hello.group_allowlist_version, null);
+    assert.equal(hello.group_allowlist_fingerprint, null);
     assert.equal(hello.generation, "generation");
     assert.equal(hello.event_cursor, 0);
     const status = await (await fetch(`${base}/v1/status`)).json();
     assert.equal(status.protocol_version, PROTOCOL_VERSION);
     assert.equal(status.private_allowlist_version, null);
     assert.equal(status.private_allowlist_fingerprint, null);
+    assert.equal(status.group_allowlist_version, null);
+    assert.equal(status.group_allowlist_fingerprint, null);
     const events = await (await fetch(`${base}/v1/events?after=0&limit=1`)).json();
     assert.deepEqual(events.events, []);
     const ack = await fetch(`${base}/v1/events/ack`, {

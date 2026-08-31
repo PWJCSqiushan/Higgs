@@ -41,6 +41,30 @@ function frozenPrivateAllowlist(openids = [senderSafe], botId = safe) {
   };
 }
 
+function frozenGroupAllowlist(openids = [safe], botId = safe) {
+  const allowlistVersion = 1;
+  return {
+    version: 2,
+    scope: "group",
+    allowlist_version: allowlistVersion,
+    epoch_id: "group-epoch-id",
+    nonce: "1".repeat(64),
+    app_id: "123456789",
+    bot_id: botId,
+    frozen_at_ms: 1234,
+    previous_version: null,
+    previous_fingerprint: null,
+    fingerprint: computeAllowlistFingerprint({
+      scope: "group",
+      appId: "123456789",
+      botId,
+      allowlistVersion,
+      openids,
+    }),
+    openids,
+  };
+}
+
 function durableStore(prefix) {
   const directory = mkdtempSync(join(tmpdir(), prefix));
   chmodSync(directory, 0o700);
@@ -517,6 +541,114 @@ test("full mode drops and never authorizes non-owner or non-allowlisted events",
     /invalid_reply_binding/,
   );
   await client.stop();
+});
+
+test("group allowlist is verified at startup and receives allowlisted @ messages", async () => {
+  const groupAllowlist = frozenGroupAllowlist();
+  const client = newClient({
+    ordinaryPrivateEnabled: false,
+    allowedPrivateOpenIds: [],
+    groupEnabled: true,
+    allowedGroupOpenIds: [safe],
+    requireGroupAllowlist: true,
+    groupAllowlist,
+    groupAllowlistVersion: groupAllowlist.allowlist_version,
+    groupAllowlistFingerprint: groupAllowlist.fingerprint,
+  });
+  try {
+    await client.start();
+    const bot = FakeBot.instances[0];
+    readyForSend(bot);
+    assert.equal(client.status().group_allowlist_version, 1);
+    assert.equal(client.status().group_allowlist_fingerprint, groupAllowlist.fingerprint);
+    bot.emit("message", {}, {
+      rawEventType: "GROUP_AT_MESSAGE_CREATE",
+      kind: "group",
+      senderId: senderSafe,
+      groupOpenid: safe,
+      messageId: "group-allowlisted-message",
+      content: "@Higgs 请回答",
+      timestamp: "2026-08-30T10:00:00Z",
+    });
+    bot.emit("message", {}, {
+      rawEventType: "GROUP_AT_MESSAGE_CREATE",
+      kind: "group",
+      senderId: senderSafe,
+      groupOpenid: "unknown-group",
+      messageId: "group-unknown-message",
+      content: "@Higgs 不应进入",
+      timestamp: "2026-08-30T10:00:01Z",
+    });
+    assert.deepEqual(
+      client.readEvents(0, 10).map((event) => event.group_id),
+      [safe],
+    );
+  } finally {
+    await client.stop();
+  }
+});
+
+test("group allowlist rejects metadata, config, and READY/RESUME Bot drift", async () => {
+  const groupAllowlist = frozenGroupAllowlist();
+  const metadataMismatch = newClient({
+    ordinaryPrivateEnabled: false,
+    groupEnabled: true,
+    allowedGroupOpenIds: [safe],
+    requireGroupAllowlist: true,
+    groupAllowlist,
+    groupAllowlistVersion: 2,
+    groupAllowlistFingerprint: groupAllowlist.fingerprint,
+  });
+  await assert.rejects(metadataMismatch.start(), /group_allowlist_metadata_mismatch/);
+
+  const configMismatch = newClient({
+    ordinaryPrivateEnabled: false,
+    groupEnabled: true,
+    allowedGroupOpenIds: ["different-group"],
+    requireGroupAllowlist: true,
+    groupAllowlist,
+    groupAllowlistVersion: groupAllowlist.allowlist_version,
+    groupAllowlistFingerprint: groupAllowlist.fingerprint,
+  });
+  await assert.rejects(configMismatch.start(), /group_allowlist_config_mismatch/);
+
+  const readyMismatch = newClient({
+    ordinaryPrivateEnabled: false,
+    groupEnabled: true,
+    allowedGroupOpenIds: [safe],
+    requireGroupAllowlist: true,
+    groupAllowlist,
+    groupAllowlistVersion: groupAllowlist.allowlist_version,
+    groupAllowlistFingerprint: groupAllowlist.fingerprint,
+  });
+  await readyMismatch.start();
+  FakeBot.instances[0].emit("ready", { user: { id: "other-bot" } });
+  assert.equal(readyMismatch.status().authenticated, false);
+  assert.equal(readyMismatch.status().reason, "group_allowlist_bot_mismatch");
+  await readyMismatch.stop();
+
+  const resumeMismatch = newClient({
+    ordinaryPrivateEnabled: false,
+    groupEnabled: true,
+    allowedGroupOpenIds: [safe],
+    requireGroupAllowlist: true,
+    groupAllowlist,
+    groupAllowlistVersion: groupAllowlist.allowlist_version,
+    groupAllowlistFingerprint: groupAllowlist.fingerprint,
+    sessionStore: {
+      getBotId: () => "other-bot",
+      saveBotId() {},
+      touch() {},
+      load: () => ({ sessionId: safe, lastSeq: 1 }),
+      save() {},
+      clear() {},
+    },
+  });
+  await resumeMismatch.start();
+  FakeBot.instances[0].emit("resumed");
+  assert.equal(resumeMismatch.status().authenticated, false);
+  assert.equal(resumeMismatch.status().reason, "group_allowlist_bot_mismatch");
+  await resumeMismatch.stop();
 });
 
 test("owner C2C remains available when ordinary C2C and group gates are omitted", async () => {

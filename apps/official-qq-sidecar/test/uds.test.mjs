@@ -25,6 +25,8 @@ test(
     assert.equal(hello.protocol_version, 2);
     assert.equal(hello.private_allowlist_version, null);
     assert.equal(hello.private_allowlist_fingerprint, null);
+    assert.equal(hello.group_allowlist_version, null);
+    assert.equal(hello.group_allowlist_fingerprint, null);
     assert.equal(status.reason, "disabled");
     await runtime.shutdown();
     assert.throws(() => lstatSync(socketPath), (error) => error?.code === "ENOENT");

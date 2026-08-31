@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 
 import { OfficialQQClient } from "./qq-client.mjs";
 import { SecureDeliveryStore } from "./delivery-store.mjs";
+import { readFrozenGroupAllowlist } from "./group-capture.mjs";
 import { readFrozenPrivateAllowlist } from "./private-capture.mjs";
 import { SecureOfficialQQSessionStore } from "./session-store.mjs";
 import {
@@ -35,22 +36,22 @@ function boundedNumber(value, fallback, minimum, maximum, name) {
 
 const ALLOWLIST_FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/u;
 
-function optionalAllowlistVersion(value) {
+function optionalAllowlistVersion(value, scope = "private") {
   if (value === undefined || value === "") return null;
   if (!/^\d+$/u.test(String(value))) {
-    throw new Error("invalid private allowlist version configuration");
+    throw new Error(`invalid ${scope} allowlist version configuration`);
   }
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
-    throw new Error("invalid private allowlist version configuration");
+    throw new Error(`invalid ${scope} allowlist version configuration`);
   }
   return parsed;
 }
 
-function optionalAllowlistFingerprint(value) {
+function optionalAllowlistFingerprint(value, scope = "private") {
   if (value === undefined || value === "") return null;
   if (!ALLOWLIST_FINGERPRINT_PATTERN.test(String(value))) {
-    throw new Error("invalid private allowlist fingerprint configuration");
+    throw new Error(`invalid ${scope} allowlist fingerprint configuration`);
   }
   return String(value);
 }
@@ -118,6 +119,24 @@ export function loadConfig(env = process.env) {
   const configuredPrivateAllowlistFingerprint = optionalAllowlistFingerprint(
     env.HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT,
   );
+  const groupAllowlistValue =
+    env.HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_FILE ??
+    "/var/lib/higgs-official/allowed-group-openids.json";
+  if (
+    !isAbsolute(groupAllowlistValue) ||
+    basename(groupAllowlistValue) !== "allowed-group-openids.json"
+  ) {
+    throw new Error("invalid group allowlist configuration");
+  }
+  const groupAllowlistFile = resolve(groupAllowlistValue);
+  const configuredGroupAllowlistVersion = optionalAllowlistVersion(
+    env.HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION,
+    "group",
+  );
+  const configuredGroupAllowlistFingerprint = optionalAllowlistFingerprint(
+    env.HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT,
+    "group",
+  );
   if (proactiveEnabled && (!enabled || captureOnly)) {
     throw new Error("proactive sends require enabled full mode");
   }
@@ -155,6 +174,12 @@ export function loadConfig(env = process.env) {
   ) {
     throw new Error("private allowlist metadata required");
   }
+  if (
+    groupEnabled &&
+    (configuredGroupAllowlistVersion === null || configuredGroupAllowlistFingerprint === null)
+  ) {
+    throw new Error("group allowlist metadata required");
+  }
   const privatePolicy = new Set(allowedPrivateOpenIds);
   if (isSafePolicyId(ownerOpenId)) privatePolicy.add(ownerOpenId);
   return Object.freeze({
@@ -175,6 +200,10 @@ export function loadConfig(env = process.env) {
       ? configuredPrivateAllowlistFingerprint
       : null,
     requirePrivateAllowlist: ordinaryPrivateEnabled,
+    groupAllowlistFile,
+    groupAllowlistVersion: groupEnabled ? configuredGroupAllowlistVersion : null,
+    groupAllowlistFingerprint: groupEnabled ? configuredGroupAllowlistFingerprint : null,
+    requireGroupAllowlist: groupEnabled,
     allowedGroupOpenIds,
     privateRatePerMinute: boundedNumber(
       env.HIGGS_OFFICIAL_QQ_PRIVATE_RATE_PER_MINUTE,
@@ -309,6 +338,8 @@ export function createHandler(client) {
           event_cursor: client.eventBaseCursor(),
           private_allowlist_version: status.private_allowlist_version ?? null,
           private_allowlist_fingerprint: status.private_allowlist_fingerprint ?? null,
+          group_allowlist_version: status.group_allowlist_version ?? null,
+          group_allowlist_fingerprint: status.group_allowlist_fingerprint ?? null,
         });
       }
       if (request.method === "GET" && url.pathname === "/v1/status") {
@@ -318,6 +349,8 @@ export function createHandler(client) {
           ...status,
           private_allowlist_version: status.private_allowlist_version ?? null,
           private_allowlist_fingerprint: status.private_allowlist_fingerprint ?? null,
+          group_allowlist_version: status.group_allowlist_version ?? null,
+          group_allowlist_fingerprint: status.group_allowlist_fingerprint ?? null,
         });
       }
       if (request.method === "GET" && url.pathname === "/v1/events") {
@@ -384,6 +417,16 @@ export async function run(env = process.env) {
   ) {
     throw new ProtocolError("private_allowlist_metadata_mismatch", 503);
   }
+  const groupAllowlist = config.groupEnabled
+    ? readFrozenGroupAllowlist(config.groupAllowlistFile)
+    : null;
+  if (
+    config.groupEnabled &&
+    (groupAllowlist.allowlist_version !== config.groupAllowlistVersion ||
+      groupAllowlist.fingerprint !== config.groupAllowlistFingerprint)
+  ) {
+    throw new ProtocolError("group_allowlist_metadata_mismatch", 503);
+  }
   const client = new OfficialQQClient({
     ...config,
     sessionStore,
@@ -392,6 +435,10 @@ export async function run(env = process.env) {
     privateAllowlistVersion: config.privateAllowlistVersion,
     privateAllowlistFingerprint: config.privateAllowlistFingerprint,
     requirePrivateAllowlist: config.requirePrivateAllowlist,
+    groupAllowlist,
+    groupAllowlistVersion: config.groupAllowlistVersion,
+    groupAllowlistFingerprint: config.groupAllowlistFingerprint,
+    requireGroupAllowlist: config.requireGroupAllowlist,
     onFatal: () => {
       fatalRequested = true;
       process.exitCode = 1;
