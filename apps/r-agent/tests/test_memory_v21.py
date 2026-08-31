@@ -7,8 +7,17 @@ import r_agent.memory_v2 as memory_v2
 from r_agent.events import ConversationKind, InboundEvent
 from r_agent.hybrid_recall import HybridMemorySearch
 from r_agent.identity import Principal
-from r_agent.memory import MemoryKind, MemoryRisk, MemoryScope, MemoryStatus, MemoryStore
+from r_agent.memory import (
+    MemoryKind,
+    MemoryRisk,
+    MemoryScope,
+    MemoryStatus,
+    MemoryStore,
+    MemoryTransitionError,
+)
 from r_agent.memory_v2 import MemoryObservationStore, MemoryReconciler
+from r_agent.principal_memory import PersonalMemoryMode, PersonalMemoryService
+from r_agent.principal_memory_intents import submit_personal_memory_observation
 from r_agent.vector_memory import MemoryVectorStore
 
 OWNER = Principal("owner", "owner")
@@ -180,6 +189,35 @@ def test_activating_revision_closes_superseded_version(tmp_path: Path) -> None:
     assert memory.get(new.item_id).supersedes_item_id == old.item_id
 
 
+def test_restore_clears_expiry_and_rejects_active_descendant(tmp_path: Path) -> None:
+    memory = MemoryStore(tmp_path / "memory.sqlite")
+    memory.initialize()
+    first = _propose(memory, "chain-first", "该用户表达过偏好：第一版")
+    memory.activate(first.item_id, actor=OWNER, reason="first")
+    second = _propose(
+        memory,
+        "chain-second",
+        "该用户表达过偏好：第二版",
+        supersedes_item_id=first.item_id,
+    )
+    memory.activate(second.item_id, actor=OWNER, reason="second")
+    third = _propose(
+        memory,
+        "chain-third",
+        "该用户表达过偏好：第三版",
+        supersedes_item_id=second.item_id,
+    )
+    memory.activate(third.item_id, actor=OWNER, reason="third")
+
+    with pytest.raises(MemoryTransitionError, match="active successor"):
+        memory.restore(first.item_id, actor=OWNER, reason="must not fork chain")
+
+    memory.invalidate(third.item_id, actor=OWNER, reason="withdraw latest")
+    restored = memory.restore(second.item_id, actor=OWNER, reason="restore previous")
+    assert restored.status is MemoryStatus.ACTIVE
+    assert restored.valid_to_ms is None
+
+
 def test_incremental_fts_and_no_unrelated_fallback(tmp_path: Path) -> None:
     path = tmp_path / "memory.sqlite"
     memory = MemoryStore(path)
@@ -269,6 +307,55 @@ async def test_bad_observation_does_not_block_batch(tmp_path: Path, monkeypatch)
     assert failed[0]["error_type"] == "ValueError"
     assert "private message" not in str(failed)
     assert observations.retry_failed(str(failed[0]["observation_id"])[:8]) is True
+
+
+@pytest.mark.asyncio
+async def test_reconciler_routes_ordinary_explicit_intent_to_v5(tmp_path: Path) -> None:
+    path = tmp_path / "memory.sqlite"
+    memory = MemoryStore(path)
+    memory.initialize(personal_memory_v5=True)
+    observations = MemoryObservationStore(path)
+    observations.initialize()
+    event = InboundEvent(
+        channel="qq_official",
+        account_id="bot-a",
+        sender_id="member-a",
+        message_id="personal-explicit",
+        occurred_at_ms=1_767_225_600_000,
+        conversation_kind=ConversationKind.PRIVATE,
+        conversation_id="qq_official:private:bot-a:member-a",
+        group_id=None,
+        text="请记住我喜欢雪山摄影",
+        mentioned=False,
+    )
+    assert observations.enqueue(event, principal_id="principal-a", principal_role="user")
+    stored_observation = observations.get_for_event(event)
+    assert stored_observation is not None
+    assert stored_observation.principal_id == "principal-a"
+    service = PersonalMemoryService(memory, mode=PersonalMemoryMode.ACTIVE)
+    reconciler = MemoryReconciler(
+        observations=observations,
+        memory=memory,
+        vectors=MemoryVectorStore(path, memory=memory),
+        embedding_client=None,
+        auto_review_enabled=lambda: False,
+        auto_review_confidence=lambda: 0.9,
+        auto_review_evidence=lambda: 2,
+        personal_memory_handler=lambda item: submit_personal_memory_observation(
+            item,
+            service=service,
+        ),
+    )
+
+    summary = await reconciler.reconcile_once()
+
+    assert summary.activated == 1
+    active = memory.list_active_for_scope(
+        scope=MemoryScope.PRINCIPAL,
+        scope_id="principal-a",
+    )
+    assert len(active) == 1
+    assert active[0].text == "该用户表达过偏好：喜欢雪山摄影"
 
 
 def test_candidate_review_notification_fires_once_per_eight_item_bucket(

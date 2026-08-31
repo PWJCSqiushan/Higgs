@@ -566,6 +566,36 @@ class PersonalMemoryService:
         intent: PersonalMemoryIntent = normalized["intent"]
         text: str = normalized["text"]
         now_ms = int(normalized["now_ms"])
+        binding_mismatch = conn.execute(
+            """
+            SELECT 1 FROM personal_memory_intents
+            WHERE principal_id=? AND intent_id<>?
+              AND NOT (
+                decision='rejected' AND reason_code='principal_binding_mismatch'
+              )
+              AND (source_channel<>? OR source_account_id<>?)
+            LIMIT 1
+            """,
+            (
+                source.principal_id,
+                intent_id,
+                source.source_channel,
+                source.source_account_id,
+            ),
+        ).fetchone()
+        if binding_mismatch is not None:
+            self._finish_intent(
+                conn,
+                intent_id,
+                PersonalMemoryDecision.REJECTED.value,
+                "principal_binding_mismatch",
+                now_ms=now_ms,
+            )
+            return PersonalMemoryOutcome(
+                PersonalMemoryDecision.REJECTED.value,
+                "principal_binding_mismatch",
+                intent_id=intent_id,
+            )
         unsafe = (
             source.principal_role in {"blocked", "owner"}
             or normalized["risk"] is not MemoryRisk.LOW
@@ -632,20 +662,60 @@ class PersonalMemoryService:
         normalized: dict[str, Any],
     ) -> PersonalMemoryOutcome:
         source: _SourceContext = normalized["source"]
-        existing = self._find_active_semantic(conn, normalized)
+        existing = self._find_candidate_or_active_semantic(conn, normalized)
         if existing is not None:
+            item_id = str(existing["item_id"])
+            if str(existing["status"]) == MemoryStatus.CANDIDATE.value:
+                cursor = conn.execute(
+                    """
+                    UPDATE memory_items
+                    SET status='active', reviewed_at_ms=?, reviewed_by='personal-memory-v5',
+                        invalidated_reason=NULL
+                    WHERE item_id=? AND status='candidate'
+                    """,
+                    (normalized["now_ms"], item_id),
+                )
+                if cursor.rowcount != 1:
+                    raise MemoryValidationError("candidate changed during explicit confirmation")
+                self._insert_evidence(
+                    conn,
+                    intent_id=intent_id,
+                    item_id=item_id,
+                    normalized=normalized,
+                    kind="explicit_remember",
+                )
+                self.memory._audit(
+                    conn,
+                    item_id=item_id,
+                    action="personal_explicit_activated",
+                    actor_principal_id=source.principal_id,
+                    actor_role=source.principal_role,
+                    details="personal_memory_v5:explicit_confirmed_candidate",
+                    now_ms=normalized["now_ms"],
+                )
+                conn.execute(
+                    """
+                    UPDATE personal_memory_intents
+                    SET decision='activated', reason_code='explicitly_confirmed', updated_at_ms=?
+                    WHERE result_item_id=? AND decision='candidate'
+                    """,
+                    (normalized["now_ms"], item_id),
+                )
+                reason = "explicitly_confirmed"
+            else:
+                reason = "already_active"
             self._finish_intent(
                 conn,
                 intent_id,
                 PersonalMemoryDecision.ACTIVATED.value,
-                "already_active",
-                result_item_id=str(existing["item_id"]),
+                reason,
+                result_item_id=item_id,
                 now_ms=normalized["now_ms"],
             )
             return PersonalMemoryOutcome(
                 PersonalMemoryDecision.ACTIVATED.value,
-                "already_active",
-                item_id=str(existing["item_id"]),
+                reason,
+                item_id=item_id,
                 intent_id=intent_id,
             )
         item_id = self._insert_item(
@@ -779,6 +849,14 @@ class PersonalMemoryService:
         intent_id: str,
         normalized: dict[str, Any],
     ) -> PersonalMemoryOutcome:
+        if normalized["target_query"] is None:
+            return self._finish_outcome(
+                conn,
+                intent_id,
+                PersonalMemoryDecision.NO_MATCH.value,
+                "target_confirmation_required",
+                normalized,
+            )
         matches = self._find_target_matches(conn, normalized)
         if not matches:
             return self._finish_outcome(
@@ -1084,13 +1162,16 @@ class PersonalMemoryService:
         source: _SourceContext = normalized["source"]
         return conn.execute(
             """
-            SELECT i.*
-            FROM memory_items i
-            JOIN personal_memory_intents p ON p.result_item_id=i.item_id
+            SELECT i.* FROM memory_items i
             WHERE i.scope_type='principal' AND i.scope_id=? AND i.kind=?
               AND i.source_channel=? AND i.source_account_id=?
               AND i.status='active'
-              AND p.semantic_sha256=?
+              AND (
+                i.text=? OR EXISTS (
+                    SELECT 1 FROM personal_memory_intents p
+                    WHERE p.result_item_id=i.item_id AND p.semantic_sha256=?
+                )
+              )
             ORDER BY i.created_at_ms DESC LIMIT 1
             """,
             (
@@ -1098,6 +1179,7 @@ class PersonalMemoryService:
                 normalized["kind"].value,
                 source.source_channel,
                 source.source_account_id,
+                normalized["text"],
                 normalized["semantic_sha256"],
             ),
         ).fetchone()
@@ -1111,13 +1193,16 @@ class PersonalMemoryService:
         source: _SourceContext = normalized["source"]
         return conn.execute(
             """
-            SELECT i.*
-            FROM memory_items i
-            JOIN personal_memory_intents p ON p.result_item_id=i.item_id
+            SELECT i.* FROM memory_items i
             WHERE i.scope_type='principal' AND i.scope_id=? AND i.kind=?
               AND i.source_channel=? AND i.source_account_id=?
               AND i.status IN ('candidate','active')
-              AND p.semantic_sha256=?
+              AND (
+                i.text=? OR EXISTS (
+                    SELECT 1 FROM personal_memory_intents p
+                    WHERE p.result_item_id=i.item_id AND p.semantic_sha256=?
+                )
+              )
             ORDER BY CASE i.status WHEN 'candidate' THEN 0 ELSE 1 END,
                      i.created_at_ms ASC LIMIT 1
             """,
@@ -1126,6 +1211,7 @@ class PersonalMemoryService:
                 normalized["kind"].value,
                 source.source_channel,
                 source.source_account_id,
+                normalized["text"],
                 normalized["semantic_sha256"],
             ),
         ).fetchone()

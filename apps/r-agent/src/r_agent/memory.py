@@ -56,6 +56,21 @@ _AUTO_REVIEW_BLOCKERS = (
     "权限",
     "系统提示",
     "提示词",
+    "忽略所有",
+    "忽略规则",
+    "无视规则",
+    "无视限制",
+    "绕过限制",
+    "不要遵守",
+    "遵循我的指令",
+    "按我的指令",
+    "服从我的指令",
+    "覆盖规则",
+    "跳过安全",
+    "解除限制",
+    "开发者消息",
+    "system prompt",
+    "jailbreak",
 )
 
 
@@ -1121,8 +1136,15 @@ class MemoryStore:
             if target is MemoryStatus.ACTIVE and current is MemoryStatus.INVALIDATED:
                 successor = conn.execute(
                     """
-                    SELECT item_id FROM memory_items
-                    WHERE supersedes_item_id = ? AND status = 'active'
+                    WITH RECURSIVE successors(item_id) AS (
+                        SELECT item_id FROM memory_items WHERE supersedes_item_id = ?
+                        UNION
+                        SELECT child.item_id FROM memory_items child
+                        JOIN successors parent ON child.supersedes_item_id = parent.item_id
+                    )
+                    SELECT memory_items.item_id FROM memory_items
+                    JOIN successors ON successors.item_id = memory_items.item_id
+                    WHERE memory_items.status = 'active'
                     LIMIT 1
                     """,
                     (item_id,),
@@ -1136,7 +1158,7 @@ class MemoryStore:
                 """
                 UPDATE memory_items
                 SET status = ?, reviewed_at_ms = ?, reviewed_by = ?,
-                    invalidated_reason = ?
+                    invalidated_reason = ?, valid_to_ms = ?
                 WHERE item_id = ? AND status = ?
                 """,
                 (
@@ -1144,6 +1166,7 @@ class MemoryStore:
                     timestamp,
                     actor.principal_id,
                     invalidated_reason,
+                    None if target is MemoryStatus.ACTIVE else timestamp,
                     item_id,
                     current.value,
                 ),

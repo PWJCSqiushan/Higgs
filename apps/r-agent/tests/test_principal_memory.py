@@ -6,6 +6,8 @@ import pytest
 from r_agent.identity import Principal
 from r_agent.memory import (
     MemoryKind,
+    MemoryRisk,
+    MemoryScope,
     MemoryStatus,
     MemoryStore,
     MemoryTransitionError,
@@ -223,7 +225,7 @@ def test_correction_is_unique_and_creates_successor(tmp_path: Path) -> None:
     assert successor.supersedes_item_id == old.item_id
 
 
-def test_correction_without_target_uses_only_one_current_active_item(tmp_path: Path) -> None:
+def test_correction_without_target_requires_confirmation(tmp_path: Path) -> None:
     memory = _memory(tmp_path)
     service = PersonalMemoryService(memory, mode=PersonalMemoryMode.ACTIVE)
     old = service.submit(_request(message_id="natural-old", text="我喜欢长跑"))
@@ -234,9 +236,53 @@ def test_correction_without_target_uses_only_one_current_active_item(tmp_path: P
             intent=PersonalMemoryIntent.CORRECTION,
         )
     )
-    assert corrected.decision == "superseded"
-    assert memory.get(old.item_id or "").status is MemoryStatus.INVALIDATED
-    assert memory.get(corrected.item_id or "").supersedes_item_id == old.item_id
+    assert corrected.decision == "no_match"
+    assert corrected.reason == "target_confirmation_required"
+    assert memory.get(old.item_id or "").status is MemoryStatus.ACTIVE
+
+
+def test_explicit_remember_promotes_matching_candidate_without_duplicate(tmp_path: Path) -> None:
+    memory = _memory(tmp_path)
+    service = PersonalMemoryService(memory, mode=PersonalMemoryMode.ACTIVE)
+    candidate = service.submit(
+        _request(
+            message_id="candidate-first",
+            text="我喜欢长跑",
+            intent=PersonalMemoryIntent.REPEATED_OBSERVATION,
+        )
+    )
+    confirmed = service.submit(_request(message_id="candidate-confirm", text="我喜欢长跑"))
+    assert confirmed.decision == "activated"
+    assert confirmed.item_id == candidate.item_id
+    assert memory.get(confirmed.item_id or "").status is MemoryStatus.ACTIVE
+    with sqlite3.connect(memory.path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0] == 1
+
+
+def test_explicit_remember_reuses_legacy_active_item(tmp_path: Path) -> None:
+    memory = _memory(tmp_path)
+    legacy = memory.propose(
+        scope=MemoryScope.PRINCIPAL,
+        scope_id="principal-a",
+        kind=MemoryKind.PREFERENCE,
+        text="我喜欢长跑",
+        source_channel="qq_official",
+        source_account_id="official-bot-a",
+        source_message_id="legacy-source",
+        source_principal_id="principal-a",
+        source_principal_role="user",
+        created_by="memory-reconciler-v2",
+        risk=MemoryRisk.LOW,
+        confidence=0.99,
+    )
+    memory.activate(legacy.item_id, actor=Principal("owner", "owner"), reason="reviewed")
+    service = PersonalMemoryService(memory, mode=PersonalMemoryMode.ACTIVE)
+
+    confirmed = service.submit(_request(message_id="legacy-confirm", text="我喜欢长跑"))
+
+    assert confirmed.item_id == legacy.item_id
+    with sqlite3.connect(memory.path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0] == 1
 
 
 def test_owner_uses_governance_path_not_personal_user_lane(tmp_path: Path) -> None:
@@ -342,8 +388,15 @@ def test_cross_account_and_principal_memory_isolation(tmp_path: Path) -> None:
     c = service.submit(
         _request(message_id="c-1", text="我喜欢茶", principal_id="a", account_id="bot-b")
     )
-    assert len({a.item_id, b.item_id, c.item_id}) == 3
-    assert all(item_id for item_id in (a.item_id, b.item_id, c.item_id))
+    assert a.item_id and b.item_id and a.item_id != b.item_id
+    assert c.decision == "rejected"
+    assert c.reason == "principal_binding_mismatch"
+    assert c.item_id is None
+    resumed = service.submit(
+        _request(message_id="a-2", text="我喜欢咖啡", principal_id="a", account_id="bot-a")
+    )
+    assert resumed.decision == "activated"
+    assert resumed.item_id is not None
 
 
 def test_target_item_id_is_never_an_authority_token(tmp_path: Path) -> None:

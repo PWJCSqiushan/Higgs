@@ -78,6 +78,12 @@ from r_agent.phase2_reply import (
     ReplyPlan,
     ReplyPolicy,
 )
+from r_agent.principal_memory import PersonalMemoryService
+from r_agent.principal_memory_intents import (
+    parse_personal_memory_intent,
+    personal_memory_feedback,
+    submit_personal_memory_observation,
+)
 from r_agent.qq_text import QqTextError, to_qq_plain_text
 from r_agent.recall import RecallLedger
 from r_agent.reminders import DueOccurrence, ReminderStore
@@ -211,6 +217,8 @@ class Phase2Settings:
     memory_items: int
     self_memory_mode: str
     self_memory_schema_v4_enabled: bool
+    personal_memory_mode: str
+    personal_memory_schema_v5_enabled: bool
     group_memory_enabled: bool
     identity_schema_v2_enabled: bool
     backup_dir: Path
@@ -306,6 +314,15 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
     )
     if self_memory_mode != "off" and not self_memory_schema_v4_enabled:
         raise ConfigError("self-memory modes require explicit schema v4 enablement")
+    personal_memory_mode = _value("R_AGENT_PERSONAL_MEMORY_MODE", "off").casefold()
+    if personal_memory_mode not in {"off", "shadow", "active"}:
+        raise ConfigError("R_AGENT_PERSONAL_MEMORY_MODE must be off, shadow, or active")
+    personal_memory_schema_v5_enabled = _boolean(
+        "R_AGENT_PERSONAL_MEMORY_SCHEMA_V5_ENABLED",
+        False,
+    )
+    if personal_memory_mode != "off" and not personal_memory_schema_v5_enabled:
+        raise ConfigError("personal-memory modes require explicit schema v5 enablement")
     group_memory_enabled = _boolean("R_AGENT_GROUP_MEMORY_ENABLED", False)
     backup_dir_value = _value("R_AGENT_BACKUP_DIR")
     backup_dir = (
@@ -326,6 +343,8 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         memory_items=bounded_int("R_AGENT_MEMORY_CONTEXT_ITEMS", "8", 0, 20),
         self_memory_mode=self_memory_mode,
         self_memory_schema_v4_enabled=self_memory_schema_v4_enabled,
+        personal_memory_mode=personal_memory_mode,
+        personal_memory_schema_v5_enabled=personal_memory_schema_v5_enabled,
         group_memory_enabled=group_memory_enabled,
         identity_schema_v2_enabled=_boolean("R_AGENT_IDENTITY_SCHEMA_V2_ENABLED", False),
         global_max_per_minute=bounded_int("R_AGENT_REPLY_GLOBAL_MAX_PER_MINUTE", "6", 1, 60),
@@ -457,6 +476,7 @@ async def prepare_reply(
     qq_online: bool = True,
     risk_ledger: RiskLedger | None = None,
     risk_idempotency_key: str | None = None,
+    response_override: str | None = None,
 ) -> PreparedReply:
     """Prepare an exact reply without crossing the outbound provider boundary."""
     decision = policy.gate(event, result)
@@ -490,7 +510,9 @@ async def prepare_reply(
             return PreparedReply(ReplyDecision.GLOBAL_RATE_LIMITED)
         reservation_id = budget.reservation_id
     try:
-        text = to_qq_plain_text(await brain.draft(event))
+        text = to_qq_plain_text(
+            response_override if response_override is not None else await brain.draft(event)
+        )
     except (ModelError, QqTextError):
         if risk_ledger is not None and reservation_id is not None:
             await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="failed")
@@ -563,6 +585,7 @@ async def process_reply(
     risk_ledger: RiskLedger | None = None,
     risk_idempotency_key: str | None = None,
     on_sent: Callable[[InboundEvent, str, DeliveryReceipt], Awaitable[None]] | None = None,
+    response_override: str | None = None,
 ) -> ReplyPlan:
     """Backward-compatible one-shot pipeline used by the OneBot listener."""
     prepared = await prepare_reply(
@@ -576,6 +599,7 @@ async def process_reply(
         qq_online=qq_online,
         risk_ledger=risk_ledger,
         risk_idempotency_key=risk_idempotency_key,
+        response_override=response_override,
     )
     return await deliver_prepared_reply(
         event=event,
@@ -722,8 +746,12 @@ async def listen() -> None:
     history.initialize()
     await asyncio.to_thread(history.purge_expired, settings.journal_retention_days)
     memory = MemoryStore(settings.data_dir / "memory.sqlite")
-    memory.initialize(self_memory_v4=phase.self_memory_schema_v4_enabled)
+    memory.initialize(
+        self_memory_v4=phase.self_memory_schema_v4_enabled,
+        personal_memory_v5=phase.personal_memory_schema_v5_enabled,
+    )
     self_memory = SelfMemoryService(memory) if phase.self_memory_schema_v4_enabled else None
+    personal_memory = PersonalMemoryService(memory, mode=phase.personal_memory_mode)
     group_memory = GroupMemoryService(memory, enabled=phase.group_memory_enabled)
     if phase.group_memory_enabled:
         group_memory.initialize()
@@ -903,6 +931,16 @@ async def listen() -> None:
         model_candidate_extractor=model_candidate_extractor,
         model_candidate_shadow_store=(
             model_candidate_store if model_candidate_extractor is not None else None
+        ),
+        personal_memory_handler=(
+            (
+                lambda observation: submit_personal_memory_observation(
+                    observation,
+                    service=personal_memory,
+                )
+            )
+            if phase.personal_memory_mode != "off"
+            else None
         ),
     )
 
@@ -1200,6 +1238,18 @@ async def listen() -> None:
             if not (official_status.connected and official_status.authenticated):
                 raise TransportUnavailable("official QQ transport is not authenticated")
             channel_online = True
+        response_override = None
+        if phase.personal_memory_mode != "off":
+            observation = await asyncio.to_thread(observations.get_for_event, event)
+            if observation is not None:
+                parsed = parse_personal_memory_intent(observation)
+                if parsed is not None:
+                    personal_result = await asyncio.to_thread(
+                        submit_personal_memory_observation,
+                        observation,
+                        service=personal_memory,
+                    )
+                    response_override = personal_memory_feedback(parsed, personal_result)
         prepared = await prepare_reply(
             event=event,
             result=result,
@@ -1211,6 +1261,7 @@ async def listen() -> None:
             qq_online=channel_online,
             risk_ledger=risk_ledger,
             risk_idempotency_key=(f"reply:{event.channel}:{event.account_id}:{event.message_id}"),
+            response_override=response_override,
         )
         if prepared.text is not None and len(prepared.text) > 2_000:
             return replace(prepared, text=prepared.text[:2_000])

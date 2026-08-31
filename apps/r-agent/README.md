@@ -86,7 +86,15 @@ uv run python -m r_agent.embedding_probe
 
 ## 记忆机制
 
-允许入站的群聊在不触发回复时仍可被观察。只有明确的第一人称自述可能形成候选记忆；可疑权限指令会进入隔离区。默认的保守自动审核仅允许同一人重复表达的无害偏好自动激活，隐私、身份、健康、财务、政治、权限和凭据类内容仍必须人工审核。候选可以生成向量，但只有状态为 `active` 后，才会在同一 QQ 主体的对话中参与召回。
+允许入站的群聊在不触发回复时仍可被观察。只有明确的第一人称自述可能形成候选记忆；可疑权限指令会进入隔离区。生产现有自动审核仍保持原边界。另有默认关闭的 Personal Memory V5：普通用户可用自然语言明确要求记住本人低风险事实或偏好；普通表达需两次独立佐证；纠正必须指出唯一旧内容，遗忘只做逻辑失效。隐私、身份、健康、财务、政治、权限和凭据类内容不会自动激活。候选可以生成向量，但只有状态为 `active` 后，才会在同一 principal 与 Bot 账户边界内参与召回。
+
+```dotenv
+R_AGENT_PERSONAL_MEMORY_SCHEMA_V5_ENABLED=false
+R_AGENT_PERSONAL_MEMORY_MODE=off
+```
+
+schema、shadow 与 active 均为独立生产批准项。协议和恢复语义见
+[Personal Memory V5](docs/PERSONAL_MEMORY_V5.md)。
 
 ```text
 /higgs memory list candidate 1

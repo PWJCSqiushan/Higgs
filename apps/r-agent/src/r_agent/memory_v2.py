@@ -19,6 +19,9 @@ from pathlib import Path
 from r_agent.embedding import EmbeddingClient, EmbeddingError
 from r_agent.events import ConversationKind, InboundEvent
 from r_agent.memory import (
+    MemoryError as MemoryStoreError,
+)
+from r_agent.memory import (
     MemoryKind,
     MemoryRisk,
     MemoryScope,
@@ -87,6 +90,16 @@ class ReconcileSummary:
     embedded: int
     activated: int
     failed: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class PersonalMemoryReconcileResult:
+    """Content-free result returned by the optional personal-memory lane."""
+
+    handled: bool
+    decision: str = ""
+    item_id: str | None = None
+    reason: str = ""
 
 
 class MemoryObservationStore:
@@ -208,6 +221,34 @@ class MemoryObservationStore:
             )
         return cursor.rowcount == 1
 
+    @staticmethod
+    def _row_to_observation(row: sqlite3.Row) -> Observation:
+        return Observation(
+            str(row["observation_id"]),
+            str(row["principal_id"]),
+            str(row["principal_role"]),
+            str(row["channel"]),
+            str(row["account_id"]),
+            str(row["message_id"]),
+            str(row["conversation_kind"]),
+            str(row["conversation_id"]),
+            str(row["text"]),
+            int(row["occurred_at_ms"]),
+        )
+
+    def get_for_event(self, event: InboundEvent) -> Observation | None:
+        """Return an admitted observation without bypassing ingress/learning gates."""
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM memory_observations
+                WHERE channel=? AND account_id=? AND message_id=?
+                """,
+                event.source_key,
+            ).fetchone()
+        return self._row_to_observation(row) if row is not None else None
+
     def pending(self, *, limit: int = 50) -> list[Observation]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -218,21 +259,7 @@ class MemoryObservationStore:
                 """,
                 (max(1, min(limit, 50)),),
             ).fetchall()
-        return [
-            Observation(
-                str(row["observation_id"]),
-                str(row["principal_id"]),
-                str(row["principal_role"]),
-                str(row["channel"]),
-                str(row["account_id"]),
-                str(row["message_id"]),
-                str(row["conversation_kind"]),
-                str(row["conversation_id"]),
-                str(row["text"]),
-                int(row["occurred_at_ms"]),
-            )
-            for row in rows
-        ]
+        return [self._row_to_observation(row) for row in rows]
 
     def finish(
         self,
@@ -440,6 +467,9 @@ class MemoryReconciler:
         auto_review_evidence: Callable[[], int],
         model_candidate_extractor: object | None = None,
         model_candidate_shadow_store: object | None = None,
+        personal_memory_handler: (
+            Callable[[Observation], PersonalMemoryReconcileResult] | None
+        ) = None,
     ) -> None:
         self.observations = observations
         self.memory = memory
@@ -450,6 +480,7 @@ class MemoryReconciler:
         self.auto_review_evidence = auto_review_evidence
         self.model_candidate_extractor = model_candidate_extractor
         self.model_candidate_shadow_store = model_candidate_shadow_store
+        self.personal_memory_handler = personal_memory_handler
 
     async def _process_one(self, observation: Observation, counts: dict[str, int]) -> None:
         if (
@@ -466,6 +497,33 @@ class MemoryReconciler:
             except Exception:
                 # Shadow proposals never affect the deterministic memory path.
                 pass
+        if self.personal_memory_handler is not None:
+            personal = await asyncio.to_thread(self.personal_memory_handler, observation)
+            if personal.handled:
+                if personal.decision == "candidate":
+                    counts["candidates"] += 1
+                elif personal.decision == "quarantined":
+                    counts["quarantined"] += 1
+                elif personal.decision in {"activated", "superseded"}:
+                    counts["activated"] += 1
+                else:
+                    counts["excluded"] += 1
+                if personal.item_id is not None and self.embedding_client is not None:
+                    try:
+                        record = await asyncio.to_thread(self.memory.get, personal.item_id)
+                        vector = await self.embedding_client.embed_one(record.text)
+                        await asyncio.to_thread(self.vectors.set, record.item_id, vector)
+                        counts["embedded"] += 1
+                    except (EmbeddingError, MemoryStoreError):
+                        pass
+                await asyncio.to_thread(
+                    self.observations.finish,
+                    observation.observation_id,
+                    status="processed",
+                    reason=f"personal_memory:{personal.decision}"[:120],
+                    memory_item_id=personal.item_id,
+                )
+                return
         extracted = _extract(observation)
         if extracted is None:
             await asyncio.to_thread(
