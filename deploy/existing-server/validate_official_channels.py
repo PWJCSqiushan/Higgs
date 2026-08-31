@@ -12,8 +12,8 @@ import re
 import stat
 from pathlib import Path
 
-
 _SAFE_ID = re.compile(r"[!-~]{1,256}\Z")
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _BOOL_TRUE = {"1", "true", "yes", "on"}
 _BOOL_FALSE = {"0", "false", "no", "off"}
 
@@ -65,9 +65,7 @@ def _ids(values: dict[str, str], key: str) -> frozenset[str]:
     return frozenset(result)
 
 
-def _int(
-    values: dict[str, str], key: str, minimum: int, maximum: int, default: int
-) -> int:
+def _int(values: dict[str, str], key: str, minimum: int, maximum: int, default: int) -> int:
     raw = values.get(key)
     if raw is None or not raw.strip():
         return default
@@ -78,6 +76,22 @@ def _int(
     if not minimum <= value <= maximum:
         raise ContractError(f"{key} is outside its safety bounds")
     return value
+
+
+def _optional_version(values: dict[str, str], key: str) -> int | None:
+    raw = values.get(key, "").strip()
+    if not raw:
+        return None
+    return _int(values, key, 1, 2**31 - 1, 1)
+
+
+def _optional_fingerprint(values: dict[str, str], key: str) -> str | None:
+    raw = values.get(key, "").strip()
+    if not raw:
+        return None
+    if not _SHA256.fullmatch(raw):
+        raise ContractError(f"{key} is not a lowercase SHA-256 fingerprint")
+    return raw
 
 
 def validate(agent: dict[str, str], sidecar: dict[str, str], *, release: bool) -> None:
@@ -110,10 +124,42 @@ def validate(agent: dict[str, str], sidecar: dict[str, str], *, release: bool) -
     if private_agent != private_sidecar:
         raise ContractError("private allowlists differ")
 
+    private_version_agent = _optional_version(
+        agent, "R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION"
+    )
+    private_version_sidecar = _optional_version(
+        sidecar, "HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION"
+    )
+    private_fingerprint_agent = _optional_fingerprint(
+        agent, "R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT"
+    )
+    private_fingerprint_sidecar = _optional_fingerprint(
+        sidecar, "HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT"
+    )
+    if (private_version_agent is None) != (private_fingerprint_agent is None):
+        raise ContractError("Agent private allowlist metadata is incomplete")
+    if (private_version_sidecar is None) != (private_fingerprint_sidecar is None):
+        raise ContractError("sidecar private allowlist metadata is incomplete")
+    if (
+        private_version_agent != private_version_sidecar
+        or private_fingerprint_agent != private_fingerprint_sidecar
+    ):
+        raise ContractError("private allowlist metadata differs")
+    if ordinary_agent and private_version_agent is None:
+        raise ContractError("ordinary private channel requires versioned allowlist metadata")
+
     groups_agent = _ids(agent, "R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS")
     groups_sidecar = _ids(sidecar, "HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS")
     if groups_agent != groups_sidecar:
         raise ContractError("group allowlists differ")
+
+    identity_schema_v2 = _bool(agent, "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED")
+    if (ordinary_agent or group_agent) and not identity_schema_v2:
+        raise ContractError("ordinary official audiences require identity schema v2")
+    if _bool(agent, "R_AGENT_PERSONA_V2_ORDINARY_PRIVATE_ENABLED") and not ordinary_agent:
+        raise ContractError("ordinary Persona V2 requires the ordinary private channel")
+    if _bool(agent, "R_AGENT_PERSONA_V2_GROUP_ENABLED") and not group_agent:
+        raise ContractError("group Persona V2 requires the official group channel")
 
     for agent_key, sidecar_key, minimum, maximum, default in (
         (
@@ -196,7 +242,11 @@ def main() -> int:
     parser.add_argument("--release", action="store_true")
     args = parser.parse_args()
     try:
-        validate(_read_env(Path(args.agent_env)), _read_env(Path(args.sidecar_env)), release=args.release)
+        validate(
+            _read_env(Path(args.agent_env)),
+            _read_env(Path(args.sidecar_env)),
+            release=args.release,
+        )
     except (ContractError, OSError, UnicodeError) as exc:
         print(f"official-contract=failed; reason={exc}")
         return 1
