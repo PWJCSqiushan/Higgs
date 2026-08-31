@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "check": "node --check src/index.mjs && node --check src/protocol.mjs && node --check src/qq-client.mjs && node --check src/session-store.mjs && node --check src/delivery-store.mjs && node --check src/uds-client.mjs && node --check src/health-status.mjs && node --check src/health.mjs && node --check src/capture.mjs && node --check src/bind-owner.mjs && node --check src/bind-group.mjs && node --check src/private-capture.mjs && node --check src/capture-test-users.mjs && node --check src/freeze-test-users.mjs",
+    "check": "node --check src/index.mjs && node --check src/protocol.mjs && node --check src/qq-client.mjs && node --check src/session-store.mjs && node --check src/delivery-store.mjs && node --check src/uds-client.mjs && node --check src/health-status.mjs && node --check src/health.mjs && node --check src/capture.mjs && node --check src/bind-owner.mjs && node --check src/bind-group.mjs && node --check src/allowlist.mjs && node --check src/private-capture.mjs && node --check src/capture-test-users.mjs && node --check src/freeze-test-users.mjs",
     "test": "node --test"
   },
   "dependencies": {
