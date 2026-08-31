@@ -670,10 +670,15 @@ async def listen() -> None:
     phase = _phase2_settings(settings)
     official_config = OfficialQQConfig.from_env()
     official_owner_openid = official_config.active_owner_openid
+    official_private_openids = official_config.active_private_openids
     official_group_openids = official_config.active_group_openids
     persona_v2_gate, persona_bundle = _persona_v2()
     if persona_v2_gate.enabled and official_owner_openid is None:
         raise ConfigError("Persona V2 rollout requires the bound official owner OpenID")
+    if persona_v2_gate.ordinary_private_enabled and not official_config.ordinary_private_enabled:
+        raise ConfigError("ordinary Persona V2 requires the ordinary official C2C gate")
+    if persona_v2_gate.group_enabled and not official_config.group_enabled:
+        raise ConfigError("group Persona V2 requires the official group gate")
     embeddings = _embedding_client(enabled=phase.embedding_enabled, phase=phase)
     safety = _safety_policy(phase)
     client = _model_client(
@@ -693,9 +698,7 @@ async def listen() -> None:
             owner_ids=frozenset(
                 value for value in (settings.owner_qq, official_owner_openid) if value is not None
             ),
-            additional_private_ids=(
-                frozenset({official_owner_openid}) if official_owner_openid else frozenset()
-            ),
+            additional_private_ids=official_private_openids,
             additional_group_ids=official_group_openids,
         ),
         identities=IdentityStore(
@@ -791,7 +794,7 @@ async def listen() -> None:
         mode=phase.mode,
         private_users=phase.private_users.union(
             {settings.owner_qq} if settings.owner_qq else (),
-            {official_owner_openid} if official_owner_openid else (),
+            official_private_openids,
         ),
         groups=phase.groups.union(official_group_openids),
         natural_trigger_groups=phase.natural_trigger_groups,
@@ -1001,9 +1004,8 @@ async def listen() -> None:
         if self_memory is None or phase.self_memory_mode == "off":
             return
         principal = await asyncio.to_thread(
-            service.identities.resolve,
-            event.channel,
-            event.sender_id,
+            service.identities.resolve_event,
+            event,
         )
         try:
             await asyncio.to_thread(
@@ -1113,9 +1115,8 @@ async def listen() -> None:
             }
         ):
             principal = await asyncio.to_thread(
-                service.identities.resolve,
-                event.channel,
-                event.sender_id,
+                service.identities.resolve_event,
+                event,
             )
         if principal is not None and plan.decision in {
             ReplyDecision.DRAFTED,
@@ -1275,9 +1276,8 @@ async def listen() -> None:
             )
         if result.stored and learning_allowed:
             principal = await asyncio.to_thread(
-                service.identities.resolve,
-                event.channel,
-                event.sender_id,
+                service.identities.resolve_event,
+                event,
             )
             await asyncio.to_thread(
                 observations.enqueue,

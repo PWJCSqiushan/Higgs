@@ -44,6 +44,9 @@ class _OfficialIdentities:
     def resolve(self, channel: str, sender_id: str) -> Principal:
         return Principal("owner-principal", "owner")
 
+    def resolve_event(self, event: InboundEvent) -> Principal:
+        return self.resolve(event.channel, event.sender_id)
+
 
 class _ForbiddenFeature:
     def __getattr__(self, name: str) -> object:

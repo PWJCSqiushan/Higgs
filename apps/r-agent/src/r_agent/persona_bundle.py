@@ -293,10 +293,8 @@ def load_persona_bundle(
     return load_persona_bundle_from_dir(package_directory)
 
 
-def parse_persona_v2_enabled(value: str | None = None) -> bool:
-    """Parse the Persona V2 flag with an off-by-default, fail-closed policy."""
-
-    raw = os.environ.get("R_AGENT_PERSONA_V2_ENABLED") if value is None else value
+def _parse_persona_flag(value: str | None, *, name: str) -> bool:
+    raw = value
     if raw is None or not raw.strip():
         return False
     clean = raw.strip().casefold()
@@ -304,19 +302,43 @@ def parse_persona_v2_enabled(value: str | None = None) -> bool:
         return True
     if clean in {"0", "false", "no", "off"}:
         return False
-    raise PersonaBundleError("R_AGENT_PERSONA_V2_ENABLED must be a boolean")
+    raise PersonaBundleError(f"{name} must be a boolean")
+
+
+def parse_persona_v2_enabled(value: str | None = None) -> bool:
+    """Parse the Persona V2 flag with an off-by-default, fail-closed policy."""
+
+    raw = os.environ.get("R_AGENT_PERSONA_V2_ENABLED") if value is None else value
+    return _parse_persona_flag(raw, name="R_AGENT_PERSONA_V2_ENABLED")
 
 
 @dataclass(frozen=True, slots=True)
 class PersonaV2Gate:
-    """Feature gate for the owner-only official QQ C2C rollout."""
+    """Independent Persona gates for owner, ordinary C2C, and group surfaces."""
 
     enabled: bool = False
+    ordinary_private_enabled: bool = False
+    group_enabled: bool = False
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> PersonaV2Gate:
         values = os.environ if env is None else env
-        return cls(enabled=parse_persona_v2_enabled(values.get("R_AGENT_PERSONA_V2_ENABLED", "")))
+        enabled = parse_persona_v2_enabled(values.get("R_AGENT_PERSONA_V2_ENABLED", ""))
+        ordinary = _parse_persona_flag(
+            values.get("R_AGENT_PERSONA_V2_ORDINARY_PRIVATE_ENABLED", ""),
+            name="R_AGENT_PERSONA_V2_ORDINARY_PRIVATE_ENABLED",
+        )
+        group = _parse_persona_flag(
+            values.get("R_AGENT_PERSONA_V2_GROUP_ENABLED", ""),
+            name="R_AGENT_PERSONA_V2_GROUP_ENABLED",
+        )
+        if (ordinary or group) and not enabled:
+            raise PersonaBundleError("Persona surface gates require R_AGENT_PERSONA_V2_ENABLED")
+        return cls(
+            enabled=enabled,
+            ordinary_private_enabled=ordinary,
+            group_enabled=group,
+        )
 
     def allows(
         self,
@@ -327,17 +349,19 @@ class PersonaV2Gate:
         sender_id: str | None,
         owner_id: str | None,
     ) -> bool:
-        """Return true only for a known owner in an official private chat."""
+        """Return true only for a separately enabled, already-authorized surface."""
 
-        return bool(
-            self.enabled
-            and channel.casefold() == "qq_official"
-            and conversation_kind.casefold() == "private"
-            and principal_role.casefold() == "owner"
-            and sender_id
-            and owner_id
-            and sender_id == owner_id
-        )
+        if not self.enabled or channel.casefold() != "qq_official":
+            return False
+        surface = conversation_kind.casefold()
+        role = principal_role.casefold()
+        if surface == "private" and role == "owner":
+            return bool(sender_id and owner_id and sender_id == owner_id)
+        if surface == "private" and role == "user":
+            return self.ordinary_private_enabled
+        if surface == "group" and role in {"owner", "user"}:
+            return self.group_enabled
+        return False
 
 
 __all__ = [

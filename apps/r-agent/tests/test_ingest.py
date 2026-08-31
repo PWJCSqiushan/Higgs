@@ -14,6 +14,7 @@ def _event(
     kind: ConversationKind = ConversationKind.PRIVATE,
     group: str | None = None,
     message_id: str = "1",
+    channel: str = "qq",
 ) -> InboundEvent:
     conversation = (
         f"qq:private:{account}:{sender}"
@@ -21,7 +22,7 @@ def _event(
         else f"qq:group:{account}:{group}"
     )
     return InboundEvent(
-        channel="qq",
+        channel=channel,
         account_id=account,
         sender_id=sender,
         message_id=message_id,
@@ -104,6 +105,31 @@ def test_bot_self_message_is_never_stored(tmp_path: Path) -> None:
     service = _service(tmp_path, owner="900001", groups=frozenset())
     result = service.ingest(_event(sender="900001"))
     assert result.decision is IngressDecision.SELF_MESSAGE
+    assert service.journal.count() == 0
+
+
+def test_official_event_without_bot_account_is_rejected_before_journal(tmp_path: Path) -> None:
+    service = IngestService(
+        policy=IngressPolicy(
+            enabled=True,
+            owner_qq="800001",
+            allowed_private_qqs=frozenset(),
+            allowed_groups=frozenset(),
+            owner_ids=frozenset({"official-owner"}),
+            additional_private_ids=frozenset({"official-owner"}),
+        ),
+        identities=IdentityStore(
+            tmp_path / "identity.sqlite",
+            owner_qq="800001",
+            owner_identities=(("qq_official", "official-owner"),),
+        ),
+        journal=Journal(tmp_path / "journal.sqlite"),
+    )
+    service.initialize()
+
+    result = service.ingest(_event(sender="official-owner", account="", channel="qq_official"))
+
+    assert result.decision is IngressDecision.ACCOUNT_NOT_ALLOWED
     assert service.journal.count() == 0
 
 

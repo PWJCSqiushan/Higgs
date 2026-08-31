@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from r_agent.access import IngressDecision, IngressPolicy
 from r_agent.events import InboundEvent
-from r_agent.identity import IdentityStore
+from r_agent.identity import IdentityBindingError, IdentityStore
 from r_agent.journal import Journal
 
 
@@ -37,7 +37,12 @@ class IngestService:
         decision = self.policy.decide(event)
         if decision is not IngressDecision.ACCEPT:
             return IngestResult(decision=decision)
-        principal = self.identities.resolve(event.channel, event.sender_id)
+        if event.channel.strip().casefold() == "qq_official" and not event.account_id.strip():
+            return IngestResult(decision=IngressDecision.ACCOUNT_NOT_ALLOWED)
+        try:
+            principal = self.identities.resolve_event(event)
+        except (ValueError, IdentityBindingError):
+            return IngestResult(decision=IngressDecision.ACCOUNT_NOT_ALLOWED)
         stored = self.journal.append(event, principal)
         return IngestResult(
             decision=decision,
