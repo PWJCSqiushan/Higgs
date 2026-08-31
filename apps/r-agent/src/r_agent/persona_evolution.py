@@ -43,6 +43,10 @@ PERSONA_SCOPE_ID = "persona:higgs"
 AUTO_ACTIVATE_CONFIDENCE = 0.94
 CONSIDERING_CONFIDENCE = 0.80
 PHOTOGRAPHY_SEED_CONFIRMATION = "CONFIRM_HIGGS_PHOTOGRAPHY_STANCE_V1"
+PHOTOGRAPHY_SEED_QUOTE = (
+    "都不重要，也不该分开比。真正重要的是镜头后面的那个头，以及拍摄者对场景的理解。"
+)
+_SELF_MEMORY_MODES = frozenset({"off", "shadow", "active", "autonomous-low-risk"})
 
 
 class SelfMemoryError(RuntimeError):
@@ -76,6 +80,92 @@ class EvidenceKind(StrEnum):
     SELF_REPLY = "self_reply"
     SUPPORT = "support"
     OPPOSITION = "opposition"
+
+
+class ShadowRunState(StrEnum):
+    """Durable state of one model/parser shadow attempt."""
+
+    PENDING = "pending"
+    COMPLETE = "complete"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class SelfMemoryShadowRun:
+    """Content-free receipt for one self-memory extractor lane."""
+
+    run_id: str
+    input_sha256: str
+    lane: str
+    attempt: int
+    state: ShadowRunState
+    candidate_count: int
+    rejected_count: int
+    quarantined_count: int
+    error_type: str | None
+    started_at_ms: int
+    finished_at_ms: int | None
+    duration_ms: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class SelfMemoryShadowReadiness:
+    """Anonymous shadow health counters suitable for an operator summary."""
+
+    schema_enabled: bool
+    pending: int
+    complete: int
+    failed: int
+    candidates: int
+    rejected: int
+    quarantined: int
+    active_items: int
+    last_success_at_ms: int | None
+
+    @property
+    def active_pending(self) -> int:
+        """Alias clarifying that pending means currently active work."""
+
+        return self.pending
+
+    def as_dict(self) -> dict[str, int | bool | None]:
+        return {
+            "schema_enabled": self.schema_enabled,
+            "shadow_only": True,
+            "allow_auto_activate": False,
+            "pending": self.pending,
+            "active_pending": self.pending,
+            "complete": self.complete,
+            "failed": self.failed,
+            "candidates": self.candidates,
+            "rejected": self.rejected,
+            "quarantined": self.quarantined,
+            "active_items": self.active_items,
+            "last_success_at_ms": self.last_success_at_ms,
+        }
+
+
+def _shadow_error_type(error: object) -> str:
+    """Return only a safe error class label, never an exception message."""
+
+    if isinstance(error, BaseException):
+        name = type(error).__name__
+    elif isinstance(error, type) and issubclass(error, BaseException):
+        name = error.__name__
+    elif isinstance(error, str):
+        # String labels are accepted for callers that do not have an
+        # exception object, but only a conservative class-like token is
+        # retained.  In particular, messages after ``:`` are discarded.
+        name = error.split(":", 1)[0].strip()
+    else:
+        name = type(error).__name__
+    if (
+        not name
+        or len(name) > 80
+        or not all(char.isalnum() or char in {"_", ".", "-"} for char in name)
+    ):
+        return "ShadowError"
+    return name
 
 
 @dataclass(frozen=True, slots=True)
@@ -536,18 +626,382 @@ class ModelEvolutionExtractor:
 class SelfMemoryService:
     """Transactional facade for self observations, evolution and governance."""
 
-    def __init__(self, memory: MemoryStore) -> None:
+    def __init__(self, memory: MemoryStore, *, mode: str = "active") -> None:
         self.memory = memory
-        # Make the facade safe to construct independently of the main CLI
-        # bootstrap.  initialize() is idempotent and performs the v4
-        # migration in the same database; it never creates another database.
-        self.memory.initialize(self_memory_v4=True)
+        clean_mode = str(mode).casefold()
+        if clean_mode not in _SELF_MEMORY_MODES:
+            raise MemoryValidationError("self-memory mode is invalid")
+        self.mode = clean_mode
+        # Schema migration is owned by the caller's explicit feature gate.
+        # Constructing this facade must never silently upgrade a v2/v3
+        # database, because doing so would make an ``off`` deployment mutate
+        # durable state.
+        self._require_v4_schema()
+        self._initialize_shadow_schema()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.memory.path, timeout=5)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
+
+    def _require_v4_schema(self) -> None:
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM memory_schema_versions WHERE version = 4"
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise SelfMemoryError("self-memory v4 schema is unavailable") from exc
+        if row is None:
+            raise SelfMemoryError("self-memory v4 schema is not explicitly enabled")
+
+    def _initialize_shadow_schema(self) -> None:
+        """Create the v4 shadow receipt table as an explicit service opt-in.
+
+        ``MemoryStore.initialize()`` intentionally knows nothing about this
+        table.  The caller explicitly opts into self-memory v4 before
+        constructing this service, so the companion table is created here in
+        the same database and is safe to run repeatedly after a restart.
+        """
+
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS self_memory_shadow_runs (
+                    run_id TEXT PRIMARY KEY,
+                    run_key_sha256 TEXT NOT NULL,
+                    input_sha256 TEXT NOT NULL,
+                    lane TEXT NOT NULL CHECK(lane IN ('self_stance','adopted_idea')),
+                    attempt INTEGER NOT NULL CHECK(attempt >= 1),
+                    state TEXT NOT NULL CHECK(state IN ('pending','complete','failed')),
+                    candidate_count INTEGER NOT NULL DEFAULT 0 CHECK(candidate_count >= 0),
+                    rejected_count INTEGER NOT NULL DEFAULT 0 CHECK(rejected_count >= 0),
+                    quarantined_count INTEGER NOT NULL DEFAULT 0 CHECK(quarantined_count >= 0),
+                    error_type TEXT,
+                    started_at_ms INTEGER NOT NULL,
+                    finished_at_ms INTEGER,
+                    duration_ms INTEGER,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    UNIQUE(run_key_sha256, lane, attempt)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_self_memory_shadow_run_lookup
+                ON self_memory_shadow_runs(run_key_sha256, lane, attempt DESC)
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_self_memory_shadow_state
+                ON self_memory_shadow_runs(state, updated_at_ms DESC)
+                """
+            )
+
+    @staticmethod
+    def _shadow_lane(value: MemoryKind | str) -> str:
+        return _coerce_kind(value).value
+
+    @staticmethod
+    def _shadow_run_from_row(row: sqlite3.Row) -> SelfMemoryShadowRun:
+        try:
+            state = ShadowRunState(str(row["state"]))
+        except ValueError as exc:
+            raise SelfMemoryError("shadow receipt has an invalid state") from exc
+        return SelfMemoryShadowRun(
+            run_id=str(row["run_id"]),
+            input_sha256=str(row["input_sha256"]),
+            lane=str(row["lane"]),
+            attempt=int(row["attempt"]),
+            state=state,
+            candidate_count=int(row["candidate_count"]),
+            rejected_count=int(row["rejected_count"]),
+            quarantined_count=int(row["quarantined_count"]),
+            error_type=(str(row["error_type"]) if row["error_type"] is not None else None),
+            started_at_ms=int(row["started_at_ms"]),
+            finished_at_ms=(
+                int(row["finished_at_ms"]) if row["finished_at_ms"] is not None else None
+            ),
+            duration_ms=int(row["duration_ms"]) if row["duration_ms"] is not None else None,
+        )
+
+    def begin_shadow_run(
+        self,
+        *,
+        run_key: str,
+        lane: MemoryKind | str,
+        input_text: str,
+        now_ms: int | None = None,
+    ) -> SelfMemoryShadowRun:
+        """Begin or resume one content-hashed extractor attempt.
+
+        A completed or pending run is returned unchanged, which makes a
+        replay skip completed work and continue an interrupted pending run.
+        Failed runs retain their history and receive the next attempt number.
+        Only SHA-256 digests are stored for the caller-supplied key and text.
+        """
+
+        clean_key = _clean_key(run_key, field="shadow_run_key")
+        clean_text = _clean(input_text, field="shadow_input_text", limit=4_000)
+        lane_value = self._shadow_lane(lane)
+        run_key_sha256 = hashlib.sha256(clean_key.encode("utf-8")).hexdigest()
+        input_sha256 = hashlib.sha256(clean_text.encode("utf-8")).hexdigest()
+        timestamp = self._now(now_ms)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            latest = conn.execute(
+                """
+                SELECT * FROM self_memory_shadow_runs
+                WHERE run_key_sha256 = ? AND lane = ?
+                ORDER BY attempt DESC
+                LIMIT 1
+                """,
+                (run_key_sha256, lane_value),
+            ).fetchone()
+            if latest is not None:
+                if str(latest["input_sha256"]) != input_sha256:
+                    raise SelfObservationConflict("shadow run key is bound to different input")
+                previous = self._shadow_run_from_row(latest)
+                if previous.state in {ShadowRunState.PENDING, ShadowRunState.COMPLETE}:
+                    return previous
+                attempt = previous.attempt + 1
+            else:
+                attempt = 1
+            run_id = hashlib.sha256(
+                f"self-memory-shadow-v1:{run_key_sha256}:{lane_value}:{attempt}".encode()
+            ).hexdigest()[:32]
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO self_memory_shadow_runs(
+                        run_id, run_key_sha256, input_sha256, lane, attempt, state,
+                        candidate_count, rejected_count, quarantined_count,
+                        error_type, started_at_ms, finished_at_ms, duration_ms,
+                        created_at_ms, updated_at_ms
+                    ) VALUES (?, ?, ?, ?, ?, 'pending', 0, 0, 0, NULL, ?, NULL, NULL, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        run_key_sha256,
+                        input_sha256,
+                        lane_value,
+                        attempt,
+                        timestamp,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                # BEGIN IMMEDIATE serializes normal writers, but recover
+                # deterministically if a different connection won a race.
+                raced = conn.execute(
+                    """
+                    SELECT * FROM self_memory_shadow_runs
+                    WHERE run_key_sha256 = ? AND lane = ?
+                    ORDER BY attempt DESC LIMIT 1
+                    """,
+                    (run_key_sha256, lane_value),
+                ).fetchone()
+                if raced is None or str(raced["input_sha256"]) != input_sha256:
+                    raise SelfMemoryError("shadow receipt could not be persisted") from exc
+                return self._shadow_run_from_row(raced)
+            created = conn.execute(
+                "SELECT * FROM self_memory_shadow_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if created is None:
+            raise SelfMemoryError("shadow receipt could not be read back")
+        return self._shadow_run_from_row(created)
+
+    def finish_shadow_run(
+        self,
+        run: SelfMemoryShadowRun | str,
+        *,
+        candidate_count: int = 0,
+        rejected_count: int = 0,
+        quarantined_count: int = 0,
+        state: ShadowRunState | str = ShadowRunState.COMPLETE,
+        error: object | None = None,
+        now_ms: int | None = None,
+        duration_ms: int | None = None,
+    ) -> SelfMemoryShadowRun:
+        """Finish a pending receipt idempotently, storing only error type."""
+
+        run_id = _clean_key(
+            run.run_id if isinstance(run, SelfMemoryShadowRun) else run,
+            field="shadow_run_id",
+        )
+        try:
+            final_state = state if isinstance(state, ShadowRunState) else ShadowRunState(str(state))
+        except ValueError as exc:
+            raise MemoryValidationError("shadow receipt state is invalid") from exc
+        if final_state is ShadowRunState.PENDING:
+            raise MemoryValidationError("shadow receipt cannot finish as pending")
+        counts = (candidate_count, rejected_count, quarantined_count)
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts
+        ):
+            raise MemoryValidationError("shadow receipt counts must be non-negative integers")
+        timestamp = self._now(now_ms)
+        safe_error = _shadow_error_type(error) if error is not None else None
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT * FROM self_memory_shadow_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if existing is None:
+                raise SelfMemoryError("shadow receipt was not found")
+            current = self._shadow_run_from_row(existing)
+            if current.state is not ShadowRunState.PENDING:
+                return current
+            elapsed = (
+                max(0, timestamp - current.started_at_ms) if duration_ms is None else duration_ms
+            )
+            if isinstance(elapsed, bool) or not isinstance(elapsed, int) or elapsed < 0:
+                raise MemoryValidationError("shadow receipt duration must be non-negative integer")
+            conn.execute(
+                """
+                UPDATE self_memory_shadow_runs
+                SET state = ?, candidate_count = ?, rejected_count = ?,
+                    quarantined_count = ?, error_type = ?, finished_at_ms = ?,
+                    duration_ms = ?, updated_at_ms = ?
+                WHERE run_id = ? AND state = 'pending'
+                """,
+                (
+                    final_state.value,
+                    candidate_count,
+                    rejected_count,
+                    quarantined_count,
+                    safe_error,
+                    timestamp,
+                    elapsed,
+                    timestamp,
+                    run_id,
+                ),
+            )
+            updated = conn.execute(
+                "SELECT * FROM self_memory_shadow_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if updated is None:
+            raise SelfMemoryError("shadow receipt could not be read back")
+        return self._shadow_run_from_row(updated)
+
+    def complete_shadow_run(
+        self,
+        run: SelfMemoryShadowRun | str,
+        *,
+        candidate_count: int = 0,
+        rejected_count: int = 0,
+        quarantined_count: int = 0,
+        now_ms: int | None = None,
+        duration_ms: int | None = None,
+    ) -> SelfMemoryShadowRun:
+        return self.finish_shadow_run(
+            run,
+            candidate_count=candidate_count,
+            rejected_count=rejected_count,
+            quarantined_count=quarantined_count,
+            state=ShadowRunState.COMPLETE,
+            now_ms=now_ms,
+            duration_ms=duration_ms,
+        )
+
+    def fail_shadow_run(
+        self,
+        run: SelfMemoryShadowRun | str,
+        *,
+        error: object,
+        candidate_count: int = 0,
+        rejected_count: int = 0,
+        quarantined_count: int = 0,
+        now_ms: int | None = None,
+        duration_ms: int | None = None,
+    ) -> SelfMemoryShadowRun:
+        return self.finish_shadow_run(
+            run,
+            candidate_count=candidate_count,
+            rejected_count=rejected_count,
+            quarantined_count=quarantined_count,
+            state=ShadowRunState.FAILED,
+            error=error,
+            now_ms=now_ms,
+            duration_ms=duration_ms,
+        )
+
+    def shadow_readiness_summary(self) -> SelfMemoryShadowReadiness:
+        """Return aggregate, content-free shadow readiness counters."""
+
+        with self._connect() as conn:
+            table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                ("self_memory_shadow_runs",),
+            ).fetchone()
+            if table is None:
+                return SelfMemoryShadowReadiness(
+                    schema_enabled=False,
+                    pending=0,
+                    complete=0,
+                    failed=0,
+                    candidates=0,
+                    rejected=0,
+                    quarantined=0,
+                    active_items=0,
+                    last_success_at_ms=None,
+                )
+            rows = conn.execute(
+                """
+                SELECT state, COUNT(*) AS count,
+                       COALESCE(SUM(candidate_count), 0) AS candidates,
+                       COALESCE(SUM(rejected_count), 0) AS rejected,
+                       COALESCE(SUM(quarantined_count), 0) AS quarantined,
+                       MAX(CASE WHEN state = 'complete' THEN finished_at_ms END)
+                           AS last_success_at_ms
+                FROM self_memory_shadow_runs
+                GROUP BY state
+                """
+            ).fetchall()
+            counts = {state.value: 0 for state in ShadowRunState}
+            candidates = rejected = quarantined = 0
+            last_success: int | None = None
+            for row in rows:
+                state = str(row["state"])
+                counts[state] = int(row["count"])
+                candidates += int(row["candidates"])
+                rejected += int(row["rejected"])
+                quarantined += int(row["quarantined"])
+                if row["last_success_at_ms"] is not None:
+                    latest = int(row["last_success_at_ms"])
+                    last_success = latest if last_success is None else max(last_success, latest)
+            active = conn.execute(
+                """
+                SELECT COUNT(*) FROM memory_items
+                WHERE scope_type = 'persona' AND scope_id = ? AND status = 'active'
+                  AND kind IN ('self_stance', 'adopted_idea')
+                """,
+                (PERSONA_SCOPE_ID,),
+            ).fetchone()
+        return SelfMemoryShadowReadiness(
+            schema_enabled=True,
+            pending=counts[ShadowRunState.PENDING.value],
+            complete=counts[ShadowRunState.COMPLETE.value],
+            failed=counts[ShadowRunState.FAILED.value],
+            candidates=candidates,
+            rejected=rejected,
+            quarantined=quarantined,
+            active_items=int(active[0]) if active is not None else 0,
+            last_success_at_ms=last_success,
+        )
+
+    # Alternate names keep the operator-facing API discoverable without
+    # exposing the hashed run key or any source payload.
+    shadow_readiness = shadow_readiness_summary
+    readiness_summary = shadow_readiness_summary
 
     @staticmethod
     def _now(now_ms: int | None) -> int:
@@ -778,6 +1232,28 @@ class SelfMemoryService:
             ).fetchone()
         return self._record_from_evolution(row) if row is not None else None
 
+    def _existing_content_item(
+        self,
+        *,
+        kind: MemoryKind,
+        content: str,
+    ) -> MemoryRecord | None:
+        """Find one reusable item for exact persona/kind/content deduplication."""
+
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT item_id FROM memory_items
+                WHERE scope_type = 'persona' AND scope_id = ? AND kind = ?
+                  AND text = ? AND status IN ('active', 'candidate', 'quarantined')
+                ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,
+                         created_at_ms ASC, item_id ASC
+                LIMIT 1
+                """,
+                (PERSONA_SCOPE_ID, kind.value, content),
+            ).fetchone()
+        return self.memory.get(str(row["item_id"])) if row is not None else None
+
     def _active_conflict(self, content: str) -> MemoryRecord | None:
         """Conservative conflict hint; it never mutates an active stance."""
 
@@ -845,9 +1321,18 @@ class SelfMemoryService:
         source_principal_role: str = "user",
         observation_id: str | None = None,
         allow_auto_activate: bool = True,
+        shadow: bool = False,
         now_ms: int | None = None,
     ) -> EvolutionResult:
         """Evaluate and persist one stance/idea without unsafe auto-overwrite."""
+
+        # The shadow lane is a hard safety boundary.  Do not trust a caller
+        # supplied allow_auto_activate value, even if an integration mistake
+        # passes True while the extractor is running in shadow mode.
+        if shadow or self.mode == "shadow":
+            allow_auto_activate = False
+        if self.mode == "off":
+            raise SelfMemoryError("self-memory service is disabled")
 
         kind = _coerce_kind(candidate.kind)
         _coerce_scope(candidate.scope)
@@ -861,26 +1346,33 @@ class SelfMemoryService:
         clean_source = _clean(source_principal_id, field="source_principal_id", limit=256)
         if source_principal_role not in {"owner", "user", "blocked"}:
             raise MemoryValidationError("source_principal_role is invalid")
+        content = _clean(candidate.normalized_content, field="normalized_content", limit=600)
+        quote = candidate.original_quote
+        if quote is not None:
+            quote = _clean(quote, field="original_quote", limit=2_000)
         if kind is MemoryKind.SELF_STANCE:
             # A self stance must be grounded in a reply that was already
             # recorded as SENT.  The curated seed is the only explicit
             # exception and is marked with its immutable seed message ID.
-            if observation_id is None and not (
-                clean_source == PERSONA_SCOPE_ID and evidence_id.startswith("seed:")
-            ):
+            is_curated_seed = (
+                clean_source == PERSONA_SCOPE_ID and evidence_id == "seed:photography-stance-v1"
+            )
+            if observation_id is None and not is_curated_seed:
                 raise SelfObservationRejected(
                     "self_stance requires a recorded SENT self observation"
                 )
+            if is_curated_seed and quote is not None and quote != PHOTOGRAPHY_SEED_QUOTE:
+                raise SelfObservationRejected("curated self quote is not recognized")
             if observation_id is not None:
                 stored_observation = self.get_observation(observation_id)
                 if stored_observation.reply_message_id != evidence_id:
                     raise SelfObservationRejected(
                         "self_stance evidence does not match the SENT observation"
                     )
-        content = _clean(candidate.normalized_content, field="normalized_content", limit=600)
-        quote = candidate.original_quote
-        if quote is not None:
-            quote = _clean(quote, field="original_quote", limit=2_000)
+                if quote is not None and quote not in stored_observation.reply_text:
+                    raise SelfObservationRejected(
+                        "self quote must be a substring of the recorded SENT reply"
+                    )
         try:
             confidence = float(candidate.confidence)
         except (TypeError, ValueError) as exc:
@@ -893,10 +1385,22 @@ class SelfMemoryService:
         effective_core = bool(candidate.core_impact) or _contains_core_impact(safety_text)
         decision_requested = _coerce_decision(candidate.decision)
         key = _clean_key(candidate.idempotency_key or _candidate_key(candidate, clean_source))
+        redacted = (
+            effective_level in {SensitiveLevel.MEDIUM, SensitiveLevel.HIGH}
+            or effective_core
+            or source_principal_role == "blocked"
+        )
+        stored_content = (
+            f"[quarantined:{hashlib.sha256(content.encode('utf-8')).hexdigest()}]"
+            if redacted
+            else content
+        )
+        stored_quote = None if redacted else quote
         existing = self._existing_evolution(key)
         if existing is not None:
             if (
-                existing.normalized_content != content
+                existing.normalized_content != stored_content
+                or existing.original_quote != stored_quote
                 or existing.source_message_id != evidence_id
                 or existing.source_principal_id != clean_source
                 or existing.source_principal_role != source_principal_role
@@ -956,30 +1460,34 @@ class SelfMemoryService:
                 reason = "confidence_below_considering_threshold"
 
         item: MemoryRecord | None = None
+        item_reused = False
         if final_decision in {
             EvolutionDecision.ADOPTED,
             EvolutionDecision.PARTIAL,
             EvolutionDecision.CONSIDERING,
             EvolutionDecision.SUPERSEDES,
         }:
-            item = self.memory.propose(
-                scope=MemoryScope.PERSONA,
-                scope_id=PERSONA_SCOPE_ID,
-                kind=kind,
-                text=content,
-                source_channel="self-memory",
-                source_account_id="higgs",
-                source_message_id=evidence_id,
-                source_principal_id=clean_source,
-                source_principal_role=source_principal_role,
-                created_by="self-memory-v4",
-                risk=risk,
-                confidence=confidence,
-                source_trust=1.0 if source_principal_role == "owner" else 0.5,
-                supersedes_item_id=superseded.item_id if superseded is not None else None,
-                valid_from_ms=timestamp,
-                now_ms=timestamp,
-            )
+            item = self._existing_content_item(kind=kind, content=content)
+            item_reused = item is not None
+            if item is None:
+                item = self.memory.propose(
+                    scope=MemoryScope.PERSONA,
+                    scope_id=PERSONA_SCOPE_ID,
+                    kind=kind,
+                    text=content,
+                    source_channel="self-memory",
+                    source_account_id="higgs",
+                    source_message_id=evidence_id,
+                    source_principal_id=clean_source,
+                    source_principal_role=source_principal_role,
+                    created_by="self-memory-v4",
+                    risk=risk,
+                    confidence=confidence,
+                    source_trust=1.0 if source_principal_role == "owner" else 0.5,
+                    supersedes_item_id=superseded.item_id if superseded is not None else None,
+                    valid_from_ms=timestamp,
+                    now_ms=timestamp,
+                )
             if final_decision in {EvolutionDecision.ADOPTED, EvolutionDecision.PARTIAL}:
                 # System activation is deliberately represented as an owner
                 # role in the existing auditable state machine; the caller's
@@ -1017,8 +1525,8 @@ class SelfMemoryService:
                         clean_source,
                         source_principal_role,
                         kind.value,
-                        content,
-                        quote,
+                        stored_content,
+                        stored_quote,
                         confidence,
                         risk.value,
                         effective_level.value,
@@ -1034,7 +1542,7 @@ class SelfMemoryService:
                 if item is not None:
                     conn.execute(
                         """
-                        INSERT INTO self_memory_metadata(
+                        INSERT OR IGNORE INTO self_memory_metadata(
                             item_id, memory_kind, canonical_content, original_quote,
                             origin, state, previous_state, adoption_reason, created_at_ms
                         ) VALUES (?, ?, ?, ?, 'conversation', ?, NULL, ?, ?)
@@ -1042,13 +1550,26 @@ class SelfMemoryService:
                         (
                             item.item_id,
                             kind.value,
-                            content,
-                            quote,
+                            stored_content,
+                            stored_quote,
                             final_decision.value,
                             reason,
                             timestamp,
                         ),
                     )
+                    if item_reused and final_decision in {
+                        EvolutionDecision.ADOPTED,
+                        EvolutionDecision.PARTIAL,
+                    }:
+                        conn.execute(
+                            """
+                            UPDATE self_memory_metadata
+                            SET previous_state = state, state = ?, adoption_reason = ?,
+                                withdrawn_at_ms = NULL, restored_at_ms = NULL
+                            WHERE item_id = ?
+                            """,
+                            (final_decision.value, reason, item.item_id),
+                        )
                     evidence_kind = (
                         EvidenceKind.SELF_REPLY.value
                         if observation_id is not None
@@ -1072,8 +1593,10 @@ class SelfMemoryService:
                             evidence_kind,
                             evidence_id,
                             clean_source,
-                            quote,
-                            hashlib.sha256(quote.encode("utf-8")).hexdigest() if quote else None,
+                            stored_quote,
+                            hashlib.sha256(stored_quote.encode("utf-8")).hexdigest()
+                            if stored_quote
+                            else None,
                             timestamp,
                         ),
                     )
@@ -1097,9 +1620,15 @@ class SelfMemoryService:
         *,
         candidate: EvolutionCandidate,
         allow_auto_activate: bool = True,
+        shadow: bool = False,
         now_ms: int | None = None,
     ) -> EvolutionResult:
         """Tie a self stance to a recorded SENT reply as its only evidence."""
+
+        if shadow or self.mode == "shadow":
+            allow_auto_activate = False
+        if self.mode == "off":
+            raise SelfMemoryError("self-memory service is disabled")
 
         observation_id = (
             observation.observation_id
@@ -1118,6 +1647,53 @@ class SelfMemoryService:
             source_principal_role="owner",
             observation_id=record.observation_id,
             allow_auto_activate=allow_auto_activate,
+            shadow=shadow,
+            now_ms=now_ms,
+        )
+
+    def submit_shadow_candidate(
+        self,
+        candidate: EvolutionCandidate,
+        *,
+        source_message_id: str | None = None,
+        source_principal_id: str = "unknown",
+        source_principal_role: str = "user",
+        observation_id: str | None = None,
+        allow_auto_activate: bool = True,
+        now_ms: int | None = None,
+    ) -> EvolutionResult:
+        """Submit a candidate while unconditionally keeping it in shadow."""
+
+        # Keep the argument for source compatibility, but deliberately ignore
+        # it.  This makes a mistaken True value harmless at the boundary.
+        del allow_auto_activate
+        return self.submit_candidate(
+            candidate,
+            source_message_id=source_message_id,
+            source_principal_id=source_principal_id,
+            source_principal_role=source_principal_role,
+            observation_id=observation_id,
+            allow_auto_activate=False,
+            shadow=True,
+            now_ms=now_ms,
+        )
+
+    def propose_shadow_from_self_observation(
+        self,
+        observation: SelfObservationRecord | str,
+        *,
+        candidate: EvolutionCandidate,
+        allow_auto_activate: bool = True,
+        now_ms: int | None = None,
+    ) -> EvolutionResult:
+        """Tie a SENT reply to a candidate without ever activating it."""
+
+        del allow_auto_activate
+        return self.propose_from_self_observation(
+            observation,
+            candidate=candidate,
+            allow_auto_activate=False,
+            shadow=True,
             now_ms=now_ms,
         )
 
@@ -1382,7 +1958,7 @@ class SelfMemoryService:
             normalized_content=(
                 "器材不能脱离拍摄者理解和题材比较，预算有限时通常优先镜头，但仍应按实际题材取舍。"
             ),
-            original_quote="都不重要，也不该分开比。真正重要的是镜头后面的那个头，以及拍摄者对场景的理解。",
+            original_quote=PHOTOGRAPHY_SEED_QUOTE,
             decision=EvolutionDecision.ADOPTED,
             idempotency_key="seed:photography-stance-v1",
         )
@@ -1415,9 +1991,7 @@ def photography_seed_preview() -> dict[str, object]:
         "confirmation": PHOTOGRAPHY_SEED_CONFIRMATION,
         "kind": MemoryKind.SELF_STANCE.value,
         "scope": f"{MemoryScope.PERSONA.value}:{PERSONA_SCOPE_ID}",
-        "original_quote": (
-            "都不重要，也不该分开比。真正重要的是镜头后面的那个头，以及拍摄者对场景的理解。"
-        ),
+        "original_quote": PHOTOGRAPHY_SEED_QUOTE,
         "normalized_content": (
             "器材不能脱离拍摄者理解和题材比较，预算有限时通常优先镜头，但仍应按实际题材取舍。"
         ),
@@ -1449,7 +2023,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(_json.dumps({"mode": "refused", "reason": "confirmation_mismatch"}))
         return 2
     memory = MemoryStore(args.db)
-    memory.initialize()
+    memory.initialize(self_memory_v4=True)
     service = SelfMemoryService(memory)
     result = service.seed_photography_stance(
         actor=Principal("owner-seed-cli", "owner"),
