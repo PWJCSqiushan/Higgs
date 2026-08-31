@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
+  renameSync,
   writeFileSync,
   readFileSync,
   statSync,
@@ -152,6 +154,40 @@ test("repeated epochs merge from an explicit baseline and retain an opaque histo
       openids: [firstUser, secondUser],
     }),
   );
+});
+
+test("freeze can use a moved v2 baseline while installing into a new target", () => {
+  const paths = capturePaths("higgs-private-capture-moved-baseline-");
+  const first = store(paths);
+  first.open();
+  first.recordCandidate(firstUser, botId, 1_100);
+  first.close(1_400);
+  freezePrivateAllowlist(paths.capture, 1, paths.allowlist, 1_500);
+  const baseline = readFrozenPrivateAllowlist(paths.allowlist);
+  const baselineDirectory = join(paths.directory, "baseline");
+  const baselinePath = join(baselineDirectory, "allowed-private-openids.json");
+  // A deployment freeze moves the old target into /srv/trash before the
+  // replacement is generated. Keep that exact shape in this regression.
+  chmodSync(paths.directory, 0o700);
+  mkdirSync(baselineDirectory, { mode: 0o700 });
+  renameSync(paths.allowlist, baselinePath);
+
+  const second = new PrivateUserCaptureStore(paths.capture, {
+    appId,
+    windowStartedAtMs: 3_000,
+    windowDeadlineAtMs: 4_000,
+    baselineAllowlistVersion: baseline.allowlist_version,
+    baselineAllowlistFingerprint: baseline.fingerprint,
+    now: () => 3_500,
+  });
+  second.open();
+  second.recordCandidate(secondUser, botId, 3_100);
+  second.close(3_400);
+  freezePrivateAllowlist(paths.capture, 1, paths.allowlist, 3_500, baselinePath);
+  const merged = readFrozenPrivateAllowlist(paths.allowlist);
+  assert.equal(merged.allowlist_version, 2);
+  assert.equal(merged.previous_fingerprint, baseline.fingerprint);
+  assert.deepEqual(merged.openids, [firstUser, secondUser]);
 });
 
 test("baseline drift, cross-Bot capture, and tampered fingerprints fail closed", () => {

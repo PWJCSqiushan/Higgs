@@ -372,6 +372,7 @@ export function freezePrivateAllowlist(
   expectedCount,
   allowlistPath,
   now = Date.now(),
+  previousAllowlistPath = allowlistPath,
 ) {
   if (!isSafeInteger(expectedCount) || expectedCount > MAX_ALLOWLIST_ENTRIES) {
     throw new Error("invalid_private_capture_count");
@@ -386,7 +387,7 @@ export function freezePrivateAllowlist(
     throw new Error("private_capture_count_mismatch");
   }
   const target = privateFile(allowlistPath, "allowed-private-openids.json");
-  const previous = readExistingAllowlist(target);
+  const previous = readExistingAllowlist(previousAllowlistPath);
   if (
     previous &&
     (capture.baseline_allowlist_version !== previous.allowlist_version ||
