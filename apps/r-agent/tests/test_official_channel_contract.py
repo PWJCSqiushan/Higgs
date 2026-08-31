@@ -73,3 +73,33 @@ def test_persona_surface_gate_cannot_widen_a_closed_channel() -> None:
 
     with pytest.raises(CONTRACT.ContractError, match="ordinary Persona V2"):
         CONTRACT.validate(agent, sidecar, release=False)
+
+
+def test_group_contract_requires_matching_versioned_metadata_and_identity_schema() -> None:
+    agent, sidecar = _base()
+    agent.update(
+        {
+            "R_AGENT_OFFICIAL_QQ_GROUP_ENABLED": "true",
+            "R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS": "group-openid",
+            "R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION": "3",
+            "R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT": "c" * 64,
+        }
+    )
+    sidecar.update(
+        {
+            "HIGGS_OFFICIAL_QQ_GROUP_ENABLED": "true",
+            "HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS": "group-openid",
+            "HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION": "3",
+            "HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT": "c" * 64,
+        }
+    )
+
+    with pytest.raises(CONTRACT.ContractError, match="identity schema v2"):
+        CONTRACT.validate(agent, sidecar, release=False)
+
+    agent["R_AGENT_IDENTITY_SCHEMA_V2_ENABLED"] = "true"
+    CONTRACT.validate(agent, sidecar, release=False)
+
+    sidecar["HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION"] = "4"
+    with pytest.raises(CONTRACT.ContractError, match="group allowlist metadata differs"):
+        CONTRACT.validate(agent, sidecar, release=False)

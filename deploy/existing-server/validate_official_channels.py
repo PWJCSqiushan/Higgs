@@ -152,6 +152,25 @@ def validate(agent: dict[str, str], sidecar: dict[str, str], *, release: bool) -
     groups_sidecar = _ids(sidecar, "HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS")
     if groups_agent != groups_sidecar:
         raise ContractError("group allowlists differ")
+    group_version_agent = _optional_version(agent, "R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION")
+    group_version_sidecar = _optional_version(sidecar, "HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION")
+    group_fingerprint_agent = _optional_fingerprint(
+        agent, "R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT"
+    )
+    group_fingerprint_sidecar = _optional_fingerprint(
+        sidecar, "HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT"
+    )
+    if (group_version_agent is None) != (group_fingerprint_agent is None):
+        raise ContractError("Agent group allowlist metadata is incomplete")
+    if (group_version_sidecar is None) != (group_fingerprint_sidecar is None):
+        raise ContractError("sidecar group allowlist metadata is incomplete")
+    if (
+        group_version_agent != group_version_sidecar
+        or group_fingerprint_agent != group_fingerprint_sidecar
+    ):
+        raise ContractError("group allowlist metadata differs")
+    if group_agent and group_version_agent is None:
+        raise ContractError("group channel requires versioned allowlist metadata")
 
     identity_schema_v2 = _bool(agent, "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED")
     if (ordinary_agent or group_agent) and not identity_schema_v2:
@@ -231,6 +250,8 @@ def validate(agent: dict[str, str], sidecar: dict[str, str], *, release: bool) -
             raise ContractError("release requires passive replies")
     if ordinary_agent and capture_only:
         raise ContractError("ordinary private channel cannot run in capture-only mode")
+    if group_agent and capture_only:
+        raise ContractError("group channel cannot run in capture-only mode")
     if agent_enabled and not agent_owner:
         raise ContractError("enabled official transport requires an owner binding")
 
