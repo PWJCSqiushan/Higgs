@@ -158,6 +158,8 @@ def config() -> OfficialQQConfig:
         group_enabled=True,
         private_allowlist_version=1,
         private_allowlist_fingerprint="a" * 64,
+        group_allowlist_version=1,
+        group_allowlist_fingerprint="b" * 64,
     )
 
 
