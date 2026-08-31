@@ -1,5 +1,5 @@
 # ruff: noqa: E501, RUF001
-"""Owner-only durable reminders with explicit confirmation and idempotent sends."""
+"""Durable reminders with explicit confirmation and idempotent sends."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from r_agent.skills import normalized_parameter_hash
+from r_agent.task_scope import DeliveryTarget, TaskScopeError
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 _RETRY_OFFSETS_MS = (0, 5 * 60_000, 15 * 60_000, 30 * 60_000)
@@ -62,6 +63,20 @@ class ReminderJob:
     source_kind: str | None = None
     source_id: str | None = None
     expires_at_ms: int | None = None
+
+    @property
+    def delivery_target(self) -> DeliveryTarget:
+        """Return the immutable target captured when this reminder was created."""
+
+        try:
+            return DeliveryTarget(
+                self.delivery_channel,
+                self.delivery_account_id,
+                self.delivery_target_id,
+                self.delivery_surface,
+            )
+        except TaskScopeError as exc:  # pragma: no cover - DB corruption guard
+            raise ReminderError("提醒投递目标无效") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -456,6 +471,152 @@ class ReminderStore:
             raise ReminderError("提醒ID不唯一，请输入更多位")
         return str(rows[0][0])
 
+    def _resolve_for_scope(
+        self,
+        short_id: str,
+        *,
+        principal_id: str,
+        delivery_target: DeliveryTarget,
+    ) -> str:
+        """Resolve an ID only inside its principal and exact target namespace."""
+
+        clean = short_id.strip().lower()
+        if len(clean) < 6:
+            raise ReminderError("提醒ID至少需要6位")
+        if not principal_id.strip():
+            raise ReminderError("提醒所属用户无效")
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT job_id FROM reminder_jobs
+                WHERE job_id LIKE ? AND owner_principal_id=?
+                  AND delivery_channel=? AND delivery_surface=?
+                  AND delivery_account_id=? AND delivery_target_id=?
+                LIMIT 2
+                """,
+                (
+                    f"{clean}%",
+                    principal_id,
+                    delivery_target.channel,
+                    delivery_target.surface,
+                    delivery_target.bot_account,
+                    delivery_target.target_id,
+                ),
+            ).fetchall()
+        if not rows:
+            raise ReminderError("未找到属于当前会话的提醒")
+        if len(rows) > 1:
+            raise ReminderError("提醒ID不唯一，请输入更多位")
+        return str(rows[0][0])
+
+    @staticmethod
+    def _require_target(delivery_target: DeliveryTarget) -> DeliveryTarget:
+        """Keep scoped task APIs on the strict target value object."""
+
+        if not isinstance(delivery_target, DeliveryTarget):
+            raise ReminderError("提醒投递目标无效")
+        return delivery_target
+
+    def _scoped_job_id(
+        self,
+        short_id: str,
+        *,
+        principal_id: str,
+        delivery_target: DeliveryTarget,
+    ) -> str:
+        try:
+            self._require_target(delivery_target)
+            return self._resolve_for_scope(
+                short_id,
+                principal_id=principal_id,
+                delivery_target=delivery_target,
+            )
+        except (TaskScopeError, TypeError) as exc:
+            raise ReminderError("提醒投递目标无效") from exc
+
+    def get_for_principal(
+        self,
+        short_id: str,
+        *,
+        principal_id: str,
+        delivery_target: DeliveryTarget,
+    ) -> ReminderJob:
+        """Read one reminder without leaking another user's task namespace."""
+
+        job_id = self._scoped_job_id(
+            short_id,
+            principal_id=principal_id,
+            delivery_target=delivery_target,
+        )
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM reminder_jobs WHERE job_id=?", (job_id,)).fetchone()
+        if row is None:  # pragma: no cover - concurrent deletion is not supported
+            raise ReminderError("未找到属于当前会话的提醒")
+        return self._row(row)
+
+    def resolve_contextual_for_principal(
+        self,
+        *,
+        principal_id: str,
+        statuses: frozenset[str],
+        conversation_id: str,
+        delivery_target: DeliveryTarget,
+        reply_message_id: str | None = None,
+    ) -> ReminderJob | None:
+        """Resolve a conversational reminder inside one user/Bot target scope."""
+
+        target = self._require_target(delivery_target)
+        if not principal_id.strip() or not conversation_id.strip():
+            raise ReminderError("提醒所属会话无效")
+        if not statuses or not statuses.issubset(self.STATUSES):
+            raise ReminderError("invalid reminder status filter")
+        placeholders = ",".join("?" for _ in statuses)
+        ordered_statuses = tuple(sorted(statuses))
+        scope = (
+            "j.owner_principal_id=? AND j.delivery_channel=? AND j.delivery_surface=? "
+            "AND j.delivery_account_id=? AND j.delivery_target_id=?"
+        )
+        scope_args: tuple[object, ...] = (
+            principal_id,
+            target.channel,
+            target.surface,
+            target.bot_account,
+            target.target_id,
+        )
+        with self._connect() as conn:
+            if reply_message_id:
+                rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT j.* FROM reminder_jobs j
+                    LEFT JOIN reminder_occurrences o ON o.job_id=j.job_id
+                    WHERE {scope} AND j.status IN ({placeholders})
+                      AND j.origin_conversation_id=?
+                      AND (j.source_message_id=? OR o.message_id=?)
+                    LIMIT 2
+                    """,
+                    (
+                        *scope_args,
+                        *ordered_statuses,
+                        conversation_id,
+                        reply_message_id,
+                        reply_message_id,
+                    ),
+                ).fetchall()
+                if len(rows) == 1:
+                    return self._row(rows[0])
+                if len(rows) > 1:
+                    return None
+            rows = conn.execute(
+                f"""
+                SELECT * FROM reminder_jobs
+                WHERE {scope} AND status IN ({placeholders})
+                  AND origin_conversation_id=?
+                ORDER BY created_at_ms DESC LIMIT 2
+                """,
+                (*scope_args, *ordered_statuses, conversation_id),
+            ).fetchall()
+        return self._row(rows[0]) if len(rows) == 1 else None
+
     def create_pending(
         self,
         *,
@@ -470,11 +631,15 @@ class ReminderStore:
         delivery_surface: str | None = None,
         delivery_account_id: str | None = None,
         delivery_target_id: str | None = None,
+        delivery_target: DeliveryTarget | None = None,
         source_message_id: str | None = None,
         delivery_policy: str = "persistent_ack",
         source_kind: str | None = None,
         source_id: str | None = None,
         expires_at_ms: int | None = None,
+        max_active_for_principal: int | None = None,
+        max_created_for_principal_since_ms: int | None = None,
+        max_created_for_principal: int | None = None,
         now_ms: int | None = None,
     ) -> ReminderJob:
         now = int(time.time() * 1000) if now_ms is None else now_ms
@@ -486,6 +651,18 @@ class ReminderStore:
             raise ReminderError("invalid reminder origin surface")
         if not normalized_origin_channel or not origin_conversation_id.strip():
             raise ReminderError("invalid reminder origin conversation")
+        if delivery_target is not None:
+            target = self._require_target(delivery_target)
+            explicit = (delivery_channel, delivery_surface, delivery_account_id, delivery_target_id)
+            if any(value is not None for value in explicit) and explicit != (
+                target.channel,
+                target.surface,
+                target.bot_account,
+                target.target_id,
+            ):
+                raise ReminderError("提醒投递目标参数冲突")
+            delivery_channel, delivery_surface = target.channel, target.surface
+            delivery_account_id, delivery_target_id = target.bot_account, target.target_id
         if any(
             value is None
             for value in (
@@ -519,6 +696,19 @@ class ReminderStore:
             raise ReminderError("invalid reminder delivery surface")
         if not normalized_delivery_account or not normalized_delivery_target:
             raise ReminderError("invalid reminder delivery target")
+        try:
+            validated_target = DeliveryTarget(
+                normalized_delivery_channel,
+                normalized_delivery_account,
+                normalized_delivery_target,
+                normalized_delivery_surface,
+            )
+        except TaskScopeError as exc:
+            raise ReminderError("invalid reminder delivery target") from exc
+        normalized_delivery_channel = validated_target.channel
+        normalized_delivery_surface = validated_target.surface
+        normalized_delivery_account = validated_target.bot_account
+        normalized_delivery_target = validated_target.target_id
         if normalized_delivery_channel == "qq_official" and (
             normalized_origin_channel != "qq_official"
             or origin_surface != "private"
@@ -534,6 +724,15 @@ class ReminderStore:
             raise ReminderError("reminder source kind and ID must be provided together")
         if expires_at_ms is not None and expires_at_ms <= due_at_ms:
             raise ReminderError("reminder expiry must be after due time")
+        if max_active_for_principal is not None and not 1 <= max_active_for_principal <= 100:
+            raise ReminderError("提醒活动数量限额无效")
+        if (
+            max_created_for_principal_since_ms is not None
+            and max_created_for_principal_since_ms < 0
+        ):
+            raise ReminderError("提醒创建限额起点无效")
+        if max_created_for_principal is not None and not 1 <= max_created_for_principal <= 100:
+            raise ReminderError("提醒每日创建限额无效")
         normalized_source_message_id = (
             source_message_id.strip() if source_message_id is not None else None
         )
@@ -593,6 +792,31 @@ class ReminderStore:
                     if actual != expected:
                         raise ReminderError("提醒消息幂等键与既有参数冲突")
                     return self._row(prior)
+            if max_active_for_principal is not None:
+                active = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM reminder_jobs
+                    WHERE owner_principal_id=? AND status IN
+                        ('pending_confirmation','scheduled','awaiting_ack')
+                    """,
+                    (owner_principal_id,),
+                ).fetchone()
+                if active is not None and int(active[0]) >= max_active_for_principal:
+                    raise ReminderError("你的活动提醒数量已达到上限")
+            if max_created_for_principal_since_ms is not None:
+                created = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM reminder_jobs
+                    WHERE owner_principal_id=? AND created_at_ms>=?
+                    """,
+                    (owner_principal_id, max_created_for_principal_since_ms),
+                ).fetchone()
+                if (
+                    max_created_for_principal is not None
+                    and created is not None
+                    and int(created[0]) >= max_created_for_principal
+                ):
+                    raise ReminderError("今天创建提醒的次数已达到上限")
             if not now + 5_000 <= due_at_ms <= now + 366 * 86_400_000:
                 raise ReminderError("提醒时间必须在5秒后到366天内")
             conn.execute(
@@ -646,6 +870,7 @@ class ReminderStore:
         delivery_surface: str | None = None,
         delivery_account_id: str | None = None,
         delivery_target_id: str | None = None,
+        delivery_target: DeliveryTarget | None = None,
         expires_at_ms: int | None = None,
         now_ms: int | None = None,
     ) -> ReminderJob:
@@ -675,6 +900,7 @@ class ReminderStore:
             delivery_surface=delivery_surface,
             delivery_account_id=delivery_account_id,
             delivery_target_id=delivery_target_id,
+            delivery_target=delivery_target,
             source_message_id=hashlib.sha256(creation_material.encode("utf-8")).hexdigest(),
             delivery_policy="agenda_once",
             source_kind=source_kind,
@@ -684,21 +910,63 @@ class ReminderStore:
         )
         return self.confirm(pending.job_id)
 
-    def cancel_by_source(self, *, source_kind: str, source_id: str) -> int:
+    def cancel_by_source(
+        self,
+        *,
+        source_kind: str,
+        source_id: str,
+        principal_id: str | None = None,
+        delivery_target: DeliveryTarget | None = None,
+    ) -> int:
+        """Cancel linked jobs, optionally restricted to one exact user target.
+
+        The owner/admin path intentionally remains global for backwards
+        compatibility. Ordinary users must provide both scope values; a
+        partially-scoped call is rejected rather than falling back globally.
+        """
+
+        if (principal_id is None) != (delivery_target is None):
+            raise ReminderError("提醒取消范围参数不完整")
+        target = self._require_target(delivery_target) if delivery_target is not None else None
         now = int(time.time() * 1000)
         with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                UPDATE reminder_jobs SET status='cancelled', cancelled_at_ms=?, updated_at_ms=?
-                WHERE source_kind=? AND source_id=?
-                  AND status IN ('pending_confirmation','scheduled','awaiting_ack')
-                """,
-                (now, now, source_kind, source_id),
-            )
+            if target is None and principal_id is None:
+                cursor = conn.execute(
+                    """
+                    UPDATE reminder_jobs SET status='cancelled', cancelled_at_ms=?, updated_at_ms=?
+                    WHERE source_kind=? AND source_id=?
+                      AND status IN ('pending_confirmation','scheduled','awaiting_ack')
+                    """,
+                    (now, now, source_kind, source_id),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    UPDATE reminder_jobs SET status='cancelled', cancelled_at_ms=?, updated_at_ms=?
+                    WHERE source_kind=? AND source_id=? AND owner_principal_id=?
+                      AND delivery_channel=? AND delivery_surface=?
+                      AND delivery_account_id=? AND delivery_target_id=?
+                      AND status IN ('pending_confirmation','scheduled','awaiting_ack')
+                    """,
+                    (
+                        now,
+                        now,
+                        source_kind,
+                        source_id,
+                        principal_id,
+                        target.channel,
+                        target.surface,
+                        target.bot_account,
+                        target.target_id,
+                    ),
+                )
         return cursor.rowcount
 
     def get(self, short_id: str) -> ReminderJob:
         job_id = self._resolve(short_id)
+        return self._get_exact(job_id)
+
+    def _get_exact(self, job_id: str) -> ReminderJob:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM reminder_jobs WHERE job_id=?", (job_id,)).fetchone()
         if row is None:
@@ -716,6 +984,29 @@ class ReminderStore:
             ).fetchone()
         return self._row(row) if row is not None else None
 
+    def latest_pending_for_principal(
+        self, principal_id: str, *, delivery_target: DeliveryTarget
+    ) -> ReminderJob | None:
+        target = self._require_target(delivery_target)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM reminder_jobs
+                WHERE owner_principal_id=? AND status='pending_confirmation'
+                  AND delivery_channel=? AND delivery_surface=?
+                  AND delivery_account_id=? AND delivery_target_id=?
+                ORDER BY created_at_ms DESC LIMIT 1
+                """,
+                (
+                    principal_id,
+                    target.channel,
+                    target.surface,
+                    target.bot_account,
+                    target.target_id,
+                ),
+            ).fetchone()
+        return self._row(row) if row is not None else None
+
     def latest_awaiting_ack(self, owner_principal_id: str) -> ReminderJob | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -724,6 +1015,29 @@ class ReminderStore:
                   AND status='awaiting_ack' ORDER BY due_at_ms DESC LIMIT 1
                 """,
                 (owner_principal_id,),
+            ).fetchone()
+        return self._row(row) if row is not None else None
+
+    def latest_awaiting_ack_for_principal(
+        self, principal_id: str, *, delivery_target: DeliveryTarget
+    ) -> ReminderJob | None:
+        target = self._require_target(delivery_target)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM reminder_jobs
+                WHERE owner_principal_id=? AND status='awaiting_ack'
+                  AND delivery_channel=? AND delivery_surface=?
+                  AND delivery_account_id=? AND delivery_target_id=?
+                ORDER BY due_at_ms DESC LIMIT 1
+                """,
+                (
+                    principal_id,
+                    target.channel,
+                    target.surface,
+                    target.bot_account,
+                    target.target_id,
+                ),
             ).fetchone()
         return self._row(row) if row is not None else None
 
@@ -776,6 +1090,9 @@ class ReminderStore:
 
     def _transition(self, short_id: str, *, allowed: set[str], target: str) -> ReminderJob:
         job_id = self._resolve(short_id)
+        return self._transition_job_id(job_id, allowed=allowed, target=target)
+
+    def _transition_job_id(self, job_id: str, *, allowed: set[str], target: str) -> ReminderJob:
         now = int(time.time() * 1000)
         marks = {
             "scheduled": "confirmed_at_ms",
@@ -799,10 +1116,9 @@ class ReminderStore:
                     "UPDATE reminder_jobs SET status=?, updated_at_ms=? WHERE job_id=?",
                     (target, now, job_id),
                 )
-        return self.get(job_id)
+        return self._get_exact(job_id)
 
-    def confirm(self, short_id: str) -> ReminderJob:
-        job_id = self._resolve(short_id)
+    def _confirm_job_id(self, job_id: str) -> ReminderJob:
         now = int(time.time() * 1000)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -821,7 +1137,26 @@ class ReminderStore:
                 """,
                 (now, digest, now, job_id),
             )
-        return self.get(job_id)
+        return self._get_exact(job_id)
+
+    def confirm(self, short_id: str) -> ReminderJob:
+        job_id = self._resolve(short_id)
+        return self._confirm_job_id(job_id)
+
+    def confirm_for_principal(
+        self,
+        short_id: str,
+        *,
+        principal_id: str,
+        delivery_target: DeliveryTarget,
+    ) -> ReminderJob:
+        """Confirm only a reminder owned by this user and exact Bot target."""
+
+        return self._confirm_job_id(
+            self._scoped_job_id(
+                short_id, principal_id=principal_id, delivery_target=delivery_target
+            )
+        )
 
     def acknowledge(self, short_id: str) -> ReminderJob:
         existing = self.get(short_id)
@@ -829,12 +1164,48 @@ class ReminderStore:
             return existing
         return self._transition(short_id, allowed={"awaiting_ack", "scheduled"}, target="completed")
 
+    def acknowledge_for_principal(
+        self,
+        short_id: str,
+        *,
+        principal_id: str,
+        delivery_target: DeliveryTarget,
+    ) -> ReminderJob:
+        job_id = self._scoped_job_id(
+            short_id, principal_id=principal_id, delivery_target=delivery_target
+        )
+        existing = self._get_exact(job_id)
+        if existing.status == "completed":
+            return existing
+        return self._transition_job_id(
+            job_id, allowed={"awaiting_ack", "scheduled"}, target="completed"
+        )
+
     def cancel(self, short_id: str) -> ReminderJob:
         existing = self.get(short_id)
         if existing.status == "cancelled":
             return existing
         return self._transition(
             short_id,
+            allowed={"pending_confirmation", "scheduled", "awaiting_ack"},
+            target="cancelled",
+        )
+
+    def cancel_for_principal(
+        self,
+        short_id: str,
+        *,
+        principal_id: str,
+        delivery_target: DeliveryTarget,
+    ) -> ReminderJob:
+        job_id = self._scoped_job_id(
+            short_id, principal_id=principal_id, delivery_target=delivery_target
+        )
+        existing = self._get_exact(job_id)
+        if existing.status == "cancelled":
+            return existing
+        return self._transition_job_id(
+            job_id,
             allowed={"pending_confirmation", "scheduled", "awaiting_ack"},
             target="cancelled",
         )
@@ -864,10 +1235,77 @@ class ReminderStore:
             )
         return self.get(job_id)
 
+    def snooze_for_principal(
+        self,
+        short_id: str,
+        minutes: int,
+        *,
+        principal_id: str,
+        delivery_target: DeliveryTarget,
+    ) -> ReminderJob:
+        if not 1 <= minutes <= 1440:
+            raise ReminderError("延后时间必须为1到1440分钟")
+        job_id = self._scoped_job_id(
+            short_id, principal_id=principal_id, delivery_target=delivery_target
+        )
+        now = int(time.time() * 1000)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM reminder_jobs WHERE job_id=?", (job_id,)
+            ).fetchone()
+            if row is None or str(row[0]) not in {"scheduled", "awaiting_ack"}:
+                raise ReminderError("当前提醒不能延后")
+            conn.execute(
+                """
+                UPDATE reminder_jobs SET due_at_ms=?, status='pending_confirmation',
+                    confirmed_at_ms=NULL, approved_parameter_sha256=NULL, updated_at_ms=?
+                WHERE job_id=?
+                """,
+                (now + minutes * 60_000, now, job_id),
+            )
+            conn.execute(
+                "UPDATE reminder_occurrences SET state='failed' WHERE job_id=? AND state='prepared'",
+                (job_id,),
+            )
+        return self._get_exact(job_id)
+
     def list(self, *, limit: int = 10) -> list[ReminderJob]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM reminder_jobs ORDER BY created_at_ms DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [self._row(row) for row in rows]
+
+    def list_for_principal(
+        self,
+        principal_id: str,
+        *,
+        delivery_target: DeliveryTarget,
+        limit: int = 10,
+    ) -> list[ReminderJob]:
+        """List only this principal's reminders for one Bot/channel target."""
+
+        target = self._require_target(delivery_target)
+        if not principal_id.strip():
+            raise ReminderError("提醒所属用户无效")
+        if not 1 <= limit <= 50:
+            raise ReminderError("提醒列表数量必须在 1 到 50 之间")
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM reminder_jobs
+                WHERE owner_principal_id=? AND delivery_channel=? AND delivery_surface=?
+                  AND delivery_account_id=? AND delivery_target_id=?
+                ORDER BY created_at_ms DESC LIMIT ?
+                """,
+                (
+                    principal_id,
+                    target.channel,
+                    target.surface,
+                    target.bot_account,
+                    target.target_id,
+                    limit,
+                ),
             ).fetchall()
         return [self._row(row) for row in rows]
 

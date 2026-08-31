@@ -27,6 +27,8 @@ from r_agent.planner import (
 )
 from r_agent.reminders import ReminderError, ReminderStore
 from r_agent.skills import SkillApprovalStore, SkillRegistry
+from r_agent.task_scope import TaskScopeError, ordinary_user_task_target
+from r_agent.transport import DeliveryTarget
 
 
 class DailyPlanError(RuntimeError):
@@ -39,6 +41,11 @@ class DailyPlanConfig:
     drafts_per_day: int = 10
     map_optimizations_per_day: int = 3
     max_tasks: int = 20
+    ordinary_mode: str = "off"
+    ordinary_proactive_enabled: bool = False
+    ordinary_drafts_per_day: int = 10
+    ordinary_reminders_per_day: int = 20
+    ordinary_active_reminders: int = 10
 
     def __post_init__(self) -> None:
         if self.mode not in {"off", "shadow", "live"}:
@@ -49,6 +56,16 @@ class DailyPlanConfig:
             raise DailyPlanError("daily plan map limit must be between 0 and 20")
         if not 1 <= self.max_tasks <= 20:
             raise DailyPlanError("daily plan task limit must be between 1 and 20")
+        if self.ordinary_mode not in {"off", "shadow", "live"}:
+            raise DailyPlanError("ordinary task mode must be off, shadow, or live")
+        if not isinstance(self.ordinary_proactive_enabled, bool):
+            raise DailyPlanError("ordinary proactive switch must be a boolean")
+        if not 1 <= self.ordinary_drafts_per_day <= 50:
+            raise DailyPlanError("ordinary daily-plan draft limit must be between 1 and 50")
+        if not 1 <= self.ordinary_reminders_per_day <= 100:
+            raise DailyPlanError("ordinary reminder limit must be between 1 and 100")
+        if not 1 <= self.ordinary_active_reminders <= 100:
+            raise DailyPlanError("ordinary active reminder limit must be between 1 and 100")
 
 
 def looks_like_daily_plan(text: str) -> bool:
@@ -169,6 +186,18 @@ class DailyPlanService:
         self.amap = amap
         self.official_proactive_enabled = official_proactive_enabled
 
+    def _mode(self, principal: Principal) -> str:
+        return self.config.mode if principal.role == "owner" else self.config.ordinary_mode
+
+    @staticmethod
+    def _ordinary_target(event: InboundEvent, principal: Principal) -> DeliveryTarget | None:
+        if principal.role != "user":
+            return None
+        try:
+            return ordinary_user_task_target(event)
+        except TaskScopeError as exc:
+            raise DailyPlanError("普通用户今日计划只允许在官方 QQ 私聊中使用") from exc
+
     @staticmethod
     def _request_key(event: InboundEvent, purpose: str) -> str:
         material = "\0".join(
@@ -181,14 +210,25 @@ class DailyPlanService:
         return datetime.fromtimestamp(event.occurred_at_ms / 1000, SHANGHAI)
 
     async def handle_event(self, event: InboundEvent, principal: Principal) -> str | None:
-        if self.config.mode == "off" or not looks_like_daily_plan(event.text):
+        if not looks_like_daily_plan(event.text):
             return None
+        if principal.role == "blocked":
+            return "当前身份不能使用今日计划。"
         if event.conversation_kind is not ConversationKind.PRIVATE:
             return "为保护位置和个人日程，今日计划第一版只在私聊中使用。"
-        if event.channel.casefold() == "qq_official" and principal.role != "owner":
-            return "官方 QQ 今日计划当前仅允许主人使用。"
         if principal.role not in {"owner", "user"}:
             return "当前身份不能使用今日计划。"
+        if principal.role == "user":
+            if event.channel.casefold() != "qq_official":
+                return "普通用户今日计划只允许在官方 QQ 私聊中使用。"
+            try:
+                self._ordinary_target(event, principal)
+            except DailyPlanError as exc:
+                return str(exc)
+        if self._mode(principal) == "off":
+            if principal.role == "user":
+                return "官方 QQ 今日计划当前仅允许主人使用。"
+            return None
         try:
             clean = event.text.strip()
             if clean.casefold().startswith("/higgs plan"):
@@ -198,17 +238,27 @@ class DailyPlanService:
             return f"今日计划没有执行：{exc}"
 
     async def _natural_create(self, text: str, *, event: InboundEvent, principal: Principal) -> str:
+        delivery_target = self._ordinary_target(event, principal)
+        draft_limit = (
+            self.config.ordinary_drafts_per_day
+            if principal.role == "user"
+            else self.config.drafts_per_day
+        )
         request_key = self._request_key(event, "natural-create")
         existing = await self._run_sync(
             self.store.get_by_request_key,
             request_key,
             principal_id=principal.principal_id,
+            delivery_target=delivery_target,
         )
         if existing is not None:
             stored_tasks = await self._run_sync(
-                self.store.tasks, existing.plan_id, principal_id=principal.principal_id
+                self.store.tasks,
+                existing.plan_id,
+                principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
-            return format_plan(existing, stored_tasks, shadow=self.config.mode == "shadow")
+            return format_plan(existing, stored_tasks, shadow=self._mode(principal) == "shadow")
         event_time = self._event_time(event)
         plan_day, tasks = await self.extractor.extract(text, now=event_time)
         start = event_time + timedelta(minutes=15)
@@ -228,12 +278,16 @@ class DailyPlanService:
             document=document,
             needs_map_consent=needs_map,
             request_key=request_key,
-            max_drafts_for_date=self.config.drafts_per_day,
+            max_drafts_for_date=draft_limit,
+            delivery_target=delivery_target,
         )
         stored_tasks = await self._run_sync(
-            self.store.tasks, plan.plan_id, principal_id=principal.principal_id
+            self.store.tasks,
+            plan.plan_id,
+            principal_id=principal.principal_id,
+            delivery_target=delivery_target,
         )
-        response = format_plan(plan, stored_tasks, shadow=self.config.mode == "shadow")
+        response = format_plan(plan, stored_tasks, shadow=self._mode(principal) == "shadow")
         if needs_map:
             response += (
                 "\n\n如需地图优化，请先确认每个地点名称，然后发送："
@@ -242,11 +296,18 @@ class DailyPlanService:
         return response
 
     async def _append_tasks(self, text: str, *, event: InboundEvent, principal: Principal) -> str:
+        delivery_target = self._ordinary_target(event, principal)
+        draft_limit = (
+            self.config.ordinary_drafts_per_day
+            if principal.role == "user"
+            else self.config.drafts_per_day
+        )
         request_key = self._request_key(event, "append-tasks")
         existing_request = await self._run_sync(
             self.store.get_by_request_key,
             request_key,
             principal_id=principal.principal_id,
+            delivery_target=delivery_target,
         )
         if existing_request is not None:
             if existing_request.parent_plan_id:
@@ -256,22 +317,31 @@ class DailyPlanService:
                     principal_id=principal.principal_id,
                     actor_principal_id=principal.principal_id,
                     replacement_plan_id=existing_request.plan_id,
+                    delivery_target=delivery_target,
                 )
             stored_tasks = await self._run_sync(
                 self.store.tasks,
                 existing_request.plan_id,
                 principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
             return "已生成包含新增任务的新草案；原正式计划尚未改变。\n" + format_plan(
                 existing_request,
                 stored_tasks,
-                shadow=self.config.mode == "shadow",
+                shadow=self._mode(principal) == "shadow",
             )
         event_time = self._event_time(event)
-        current = await self._run_sync(self.store.latest_pending, principal.principal_id)
+        current = await self._run_sync(
+            self.store.latest_pending,
+            principal.principal_id,
+            delivery_target=delivery_target,
+        )
         if current is None:
             plans = await self._run_sync(
-                self.store.list_for_principal, principal.principal_id, limit=10
+                self.store.list_for_principal,
+                principal.principal_id,
+                limit=10,
+                delivery_target=delivery_target,
             )
             today = event_time.date().isoformat()
             current = next(
@@ -286,7 +356,10 @@ class DailyPlanService:
         if plan_day.isoformat() != current.plan_date:
             raise DailyPlanError("新增任务必须与当前计划属于同一天")
         existing = await self._run_sync(
-            self.store.tasks, current.plan_id, principal_id=principal.principal_id
+            self.store.tasks,
+            current.plan_id,
+            principal_id=principal.principal_id,
+            delivery_target=delivery_target,
         )
         combined: list[PlanTask] = []
         for index, task in enumerate(existing, start=1):
@@ -328,7 +401,8 @@ class DailyPlanService:
             parent_plan_id=current.plan_id,
             needs_map_consent=(sum(item.location_text is not None for item in result.tasks) >= 2),
             request_key=request_key,
-            max_drafts_for_date=self.config.drafts_per_day,
+            max_drafts_for_date=draft_limit,
+            delivery_target=delivery_target,
         )
         if current.status != "active":
             await self._run_sync(
@@ -337,28 +411,38 @@ class DailyPlanService:
                 principal_id=principal.principal_id,
                 actor_principal_id=principal.principal_id,
                 replacement_plan_id=replacement.plan_id,
+                delivery_target=delivery_target,
             )
         replacement_tasks = await self._run_sync(
             self.store.tasks,
             replacement.plan_id,
             principal_id=principal.principal_id,
+            delivery_target=delivery_target,
         )
         return "已生成包含新增任务的新草案；原正式计划尚未改变。\n" + format_plan(
             replacement,
             replacement_tasks,
-            shadow=self.config.mode == "shadow",
+            shadow=self._mode(principal) == "shadow",
         )
 
     async def _command(self, text: str, *, event: InboundEvent, principal: Principal) -> str:
+        delivery_target = self._ordinary_target(event, principal)
         rest = text[len("/higgs plan") :].strip()
         parts = rest.split()
         command = parts[0].casefold() if parts else "today"
         args = parts[1:]
         if command in {"today", "draft"}:
-            pending = await self._run_sync(self.store.latest_pending, principal.principal_id)
+            pending = await self._run_sync(
+                self.store.latest_pending,
+                principal.principal_id,
+                delivery_target=delivery_target,
+            )
             if pending is None:
                 plans = await self._run_sync(
-                    self.store.list_for_principal, principal.principal_id, limit=10
+                    self.store.list_for_principal,
+                    principal.principal_id,
+                    limit=10,
+                    delivery_target=delivery_target,
                 )
                 today = datetime.now(SHANGHAI).date().isoformat()
                 pending = next((plan for plan in plans if plan.plan_date == today), None)
@@ -367,9 +451,12 @@ class DailyPlanService:
                     "今天还没有计划。直接告诉我多项待办，例如：今天要取快递、买水、买菜，帮我安排。"
                 )
             tasks = await self._run_sync(
-                self.store.tasks, pending.plan_id, principal_id=principal.principal_id
+                self.store.tasks,
+                pending.plan_id,
+                principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
-            return format_plan(pending, tasks, shadow=self.config.mode == "shadow")
+            return format_plan(pending, tasks, shadow=self._mode(principal) == "shadow")
         if command == "add":
             if not args:
                 raise DailyPlanError("用法：/higgs plan add 待办内容")
@@ -378,15 +465,24 @@ class DailyPlanService:
             if len(args) != 1:
                 raise DailyPlanError("用法：/higgs plan show 计划ID")
             plan = await self._run_sync(
-                self.store.get, args[0], principal_id=principal.principal_id
+                self.store.get,
+                args[0],
+                principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
             tasks = await self._run_sync(
-                self.store.tasks, plan.plan_id, principal_id=principal.principal_id
+                self.store.tasks,
+                plan.plan_id,
+                principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
-            return format_plan(plan, tasks, shadow=self.config.mode == "shadow")
+            return format_plan(plan, tasks, shadow=self._mode(principal) == "shadow")
         if command in {"history", "list"}:
             plans = await self._run_sync(
-                self.store.list_for_principal, principal.principal_id, limit=10
+                self.store.list_for_principal,
+                principal.principal_id,
+                limit=10,
+                delivery_target=delivery_target,
             )
             if not plans:
                 return "暂无今日计划历史。"
@@ -398,10 +494,16 @@ class DailyPlanService:
             if len(args) != 1:
                 raise DailyPlanError("用法：/higgs plan map-consent 计划ID")
             plan = await self._run_sync(
-                self.store.get, args[0], principal_id=principal.principal_id
+                self.store.get,
+                args[0],
+                principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
             tasks = await self._run_sync(
-                self.store.tasks, plan.plan_id, principal_id=principal.principal_id
+                self.store.tasks,
+                plan.plan_id,
+                principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
             local_midnight = datetime.combine(
                 datetime.now(SHANGHAI).date(), wall_time(0, 0), SHANGHAI
@@ -411,6 +513,7 @@ class DailyPlanService:
                 self.store.get_by_request_key,
                 map_request_key,
                 principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
             if existing_map is not None:
                 if existing_map.parent_plan_id != plan.plan_id:
@@ -421,16 +524,18 @@ class DailyPlanService:
                     principal_id=principal.principal_id,
                     actor_principal_id=principal.principal_id,
                     replacement_plan_id=existing_map.plan_id,
+                    delivery_target=delivery_target,
                 )
                 replacement_tasks = await self._run_sync(
                     self.store.tasks,
                     existing_map.plan_id,
                     principal_id=principal.principal_id,
+                    delivery_target=delivery_target,
                 )
                 return "地图路线已经计算，并生成了需要重新确认的新草案。\n" + format_plan(
                     existing_map,
                     replacement_tasks,
-                    shadow=self.config.mode == "shadow",
+                    shadow=self._mode(principal) == "shadow",
                 )
             locations = [task.location_text for task in tasks if task.location_text]
             parameters = {
@@ -449,6 +554,7 @@ class DailyPlanService:
                 consent_parameters=parameters,
                 quota_since_ms=int(local_midnight.timestamp() * 1000),
                 max_grants=self.config.map_optimizations_per_day,
+                delivery_target=delivery_target,
             )
             if self.amap is None:
                 return (
@@ -463,18 +569,28 @@ class DailyPlanService:
         if command == "confirm":
             plan_id = args[0] if args else None
             if plan_id is None:
-                plan = await self._run_sync(self.store.latest_pending, principal.principal_id)
+                plan = await self._run_sync(
+                    self.store.latest_pending,
+                    principal.principal_id,
+                    delivery_target=delivery_target,
+                )
                 if plan is None:
                     raise DailyPlanError("没有唯一待确认计划，请提供短 ID")
             else:
                 plan = await self._run_sync(
-                    self.store.get, plan_id, principal_id=principal.principal_id
+                    self.store.get,
+                    plan_id,
+                    principal_id=principal.principal_id,
+                    delivery_target=delivery_target,
                 )
             if plan.status == "awaiting_map_consent":
                 raise DailyPlanError("计划包含多个地点；请先授权地图或明确接受未验证路线")
-            if self.config.mode == "shadow":
+            if self._mode(principal) == "shadow":
                 tasks = await self._run_sync(
-                    self.store.tasks, plan.plan_id, principal_id=principal.principal_id
+                    self.store.tasks,
+                    plan.plan_id,
+                    principal_id=principal.principal_id,
+                    delivery_target=delivery_target,
                 )
                 return (
                     "当前为 SHADOW 模式：确认参数验证通过，但不会激活计划或创建真实提醒。\n"
@@ -491,11 +607,14 @@ class DailyPlanService:
                 principal_id=principal.principal_id,
                 actor_principal_id=principal.principal_id,
                 target=target,
+                delivery_target=delivery_target,
             )
             await self._run_sync(
                 self.reminders.cancel_by_source,
                 source_kind="agenda_task",
                 source_id=task.task_id,
+                principal_id=principal.principal_id if principal.role == "user" else None,
+                delivery_target=delivery_target if principal.role == "user" else None,
             )
             return f"任务 {task.task_id[:8]} 已标记为 {target}，尚未发送的节点提醒已取消。"
         if command == "cancel":
@@ -506,32 +625,44 @@ class DailyPlanService:
                 args[0],
                 principal_id=principal.principal_id,
                 actor_principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
             await self._run_sync(
                 self.reminders.cancel_by_source,
                 source_kind="agenda_plan",
                 source_id=plan.plan_id,
+                principal_id=principal.principal_id if principal.role == "user" else None,
+                delivery_target=delivery_target if principal.role == "user" else None,
             )
             for task in await self._run_sync(
-                self.store.tasks, plan.plan_id, principal_id=principal.principal_id
+                self.store.tasks,
+                plan.plan_id,
+                principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             ):
                 await self._run_sync(
                     self.reminders.cancel_by_source,
                     source_kind="agenda_task",
                     source_id=task.task_id,
+                    principal_id=principal.principal_id if principal.role == "user" else None,
+                    delivery_target=delivery_target if principal.role == "user" else None,
                 )
             return f"计划 {plan.plan_id[:8]} 已取消。"
         if command == "replan":
             if len(args) != 1:
                 raise DailyPlanError("用法：/higgs plan replan 计划ID")
             plan = await self._run_sync(
-                self.store.get, args[0], principal_id=principal.principal_id
+                self.store.get,
+                args[0],
+                principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
             request_key = self._request_key(event, "replan")
             existing_request = await self._run_sync(
                 self.store.get_by_request_key,
                 request_key,
                 principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
             if existing_request is not None:
                 if existing_request.parent_plan_id != plan.plan_id:
@@ -540,14 +671,18 @@ class DailyPlanService:
                     self.store.tasks,
                     existing_request.plan_id,
                     principal_id=principal.principal_id,
+                    delivery_target=delivery_target,
                 )
                 return "已生成重新规划草案，原计划尚未改变。\n" + format_plan(
                     existing_request,
                     draft_tasks,
-                    shadow=self.config.mode == "shadow",
+                    shadow=self._mode(principal) == "shadow",
                 )
             tasks = await self._run_sync(
-                self.store.tasks, plan.plan_id, principal_id=principal.principal_id
+                self.store.tasks,
+                plan.plan_id,
+                principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
             candidates = [
                 PlanTask(
@@ -572,13 +707,21 @@ class DailyPlanService:
                 parent_plan_id=plan.plan_id,
                 needs_map_consent=sum(item.location_text is not None for item in result.tasks) >= 2,
                 request_key=request_key,
-                max_drafts_for_date=self.config.drafts_per_day,
+                max_drafts_for_date=(
+                    self.config.ordinary_drafts_per_day
+                    if principal.role == "user"
+                    else self.config.drafts_per_day
+                ),
+                delivery_target=delivery_target,
             )
             draft_tasks = await self._run_sync(
-                self.store.tasks, draft.plan_id, principal_id=principal.principal_id
+                self.store.tasks,
+                draft.plan_id,
+                principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
             return "已生成重新规划草案，原计划尚未改变。\n" + format_plan(
-                draft, draft_tasks, shadow=self.config.mode == "shadow"
+                draft, draft_tasks, shadow=self._mode(principal) == "shadow"
             )
         if command == "admin":
             return await self._admin(args, principal=principal)
@@ -609,7 +752,13 @@ class DailyPlanService:
     async def _confirm_live(
         self, plan: DailyPlan, *, event: InboundEvent, principal: Principal
     ) -> str:
-        if event.channel.casefold() == "qq_official" and not self.official_proactive_enabled:
+        delivery_target = self._ordinary_target(event, principal)
+        proactive_enabled = (
+            self.config.ordinary_proactive_enabled
+            if principal.role == "user"
+            else self.official_proactive_enabled
+        )
+        if event.channel.casefold() == "qq_official" and not proactive_enabled:
             raise DailyPlanError("官方 QQ 主动提醒尚未启用，不能激活会产生节点提醒的计划")
         parameters = {
             "plan_id": plan.plan_id,
@@ -642,20 +791,26 @@ class DailyPlanService:
             principal_id=principal.principal_id,
             actor_principal_id=principal.principal_id,
             parameter_sha256=plan.parameter_sha256,
+            delivery_target=delivery_target,
         )
         tasks = await self._run_sync(
-            self.store.tasks, active.plan_id, principal_id=principal.principal_id
+            self.store.tasks,
+            active.plan_id,
+            principal_id=principal.principal_id,
+            delivery_target=delivery_target,
         )
         if active.parent_plan_id:
             parent = await self._run_sync(
                 self.store.get,
                 active.parent_plan_id,
                 principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
             parent_tasks = await self._run_sync(
                 self.store.tasks,
                 parent.plan_id,
                 principal_id=principal.principal_id,
+                delivery_target=delivery_target,
             )
             if parent.status == "active":
                 await self._run_sync(
@@ -664,18 +819,23 @@ class DailyPlanService:
                     principal_id=principal.principal_id,
                     actor_principal_id=principal.principal_id,
                     replacement_plan_id=active.plan_id,
+                    delivery_target=delivery_target,
                 )
             if parent.status in {"active", "superseded"}:
                 await self._run_sync(
                     self.reminders.cancel_by_source,
                     source_kind="agenda_plan",
                     source_id=parent.plan_id,
+                    principal_id=principal.principal_id if principal.role == "user" else None,
+                    delivery_target=delivery_target if principal.role == "user" else None,
                 )
                 for parent_task in parent_tasks:
                     await self._run_sync(
                         self.reminders.cancel_by_source,
                         source_kind="agenda_task",
                         source_id=parent_task.task_id,
+                        principal_id=principal.principal_id if principal.role == "user" else None,
+                        delivery_target=delivery_target if principal.role == "user" else None,
                     )
         await self._schedule_notifications(active, tasks, event=event, principal=principal)
         return "计划已确认并创建节点提醒。\n" + format_plan(active, tasks)
@@ -688,6 +848,7 @@ class DailyPlanService:
         event: InboundEvent,
         principal: Principal,
     ) -> str:
+        delivery_target = self._ordinary_target(event, principal)
         if self.amap is None:
             raise DailyPlanError("服务器尚未配置地图服务")
         locations = [task.location_text for task in tasks if task.location_text]
@@ -759,7 +920,12 @@ class DailyPlanService:
             parent_plan_id=plan.plan_id,
             needs_map_consent=False,
             request_key=self._request_key(event, "map-optimize"),
-            max_drafts_for_date=self.config.drafts_per_day,
+            max_drafts_for_date=(
+                self.config.ordinary_drafts_per_day
+                if principal.role == "user"
+                else self.config.drafts_per_day
+            ),
+            delivery_target=delivery_target,
         )
         await self._run_sync(
             self.store.supersede,
@@ -767,16 +933,18 @@ class DailyPlanService:
             principal_id=principal.principal_id,
             actor_principal_id=principal.principal_id,
             replacement_plan_id=replacement.plan_id,
+            delivery_target=delivery_target,
         )
         replacement_tasks = await self._run_sync(
             self.store.tasks,
             replacement.plan_id,
             principal_id=principal.principal_id,
+            delivery_target=delivery_target,
         )
         return "地图路线已经计算，并生成了需要重新确认的新草案。\n" + format_plan(
             replacement,
             replacement_tasks,
-            shadow=self.config.mode == "shadow",
+            shadow=self._mode(principal) == "shadow",
         )
 
     async def _schedule_notifications(
@@ -787,6 +955,7 @@ class DailyPlanService:
         event: InboundEvent,
         principal: Principal,
     ) -> None:
+        delivery_target = self._ordinary_target(event, principal)
         delivery = {
             "origin_channel": event.channel,
             "origin_surface": event.conversation_kind.value,
@@ -795,6 +964,15 @@ class DailyPlanService:
             "delivery_account_id": event.account_id,
             "delivery_target_id": event.sender_id,
         }
+        if delivery_target is not None:
+            delivery.update(
+                {
+                    "delivery_channel": delivery_target.channel,
+                    "delivery_surface": delivery_target.surface,
+                    "delivery_account_id": delivery_target.bot_account,
+                    "delivery_target_id": delivery_target.target_id,
+                }
+            )
         now_ms = int(time.time() * 1000)
         plan_day = date.fromisoformat(plan.plan_date)
         morning = int(datetime.combine(plan_day, wall_time(8, 0), SHANGHAI).timestamp() * 1000)

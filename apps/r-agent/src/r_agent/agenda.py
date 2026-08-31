@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from r_agent.skills import normalized_parameter_hash
+from r_agent.task_scope import TaskScopeError
+from r_agent.transport import DeliveryTarget
 
 
 class AgendaError(RuntimeError):
@@ -55,6 +57,33 @@ class DailyPlan:
     created_at_ms: int
     updated_at_ms: int
     confirmed_at_ms: int | None
+    delivery_channel: str | None = None
+    delivery_surface: str | None = None
+    delivery_account_id: str | None = None
+    delivery_target_id: str | None = None
+    delivery_binding_version: int = 1
+
+    @property
+    def delivery_target(self) -> DeliveryTarget | None:
+        fields = (
+            self.delivery_channel,
+            self.delivery_surface,
+            self.delivery_account_id,
+            self.delivery_target_id,
+        )
+        if all(value is None for value in fields):
+            return None
+        if any(value is None for value in fields):
+            raise AgendaError("计划投递目标无效")
+        try:
+            return DeliveryTarget(
+                self.delivery_channel or "",
+                self.delivery_account_id or "",
+                self.delivery_target_id or "",
+                self.delivery_surface or "",
+            )
+        except TaskScopeError as exc:
+            raise AgendaError("计划投递目标无效") from exc
 
 
 def _clean_title(value: str) -> str:
@@ -117,6 +146,11 @@ class AgendaStore:
                     created_at_ms INTEGER NOT NULL,
                     updated_at_ms INTEGER NOT NULL,
                     confirmed_at_ms INTEGER
+                    ,delivery_channel TEXT
+                    ,delivery_surface TEXT
+                    ,delivery_account_id TEXT
+                    ,delivery_target_id TEXT
+                    ,delivery_binding_version INTEGER NOT NULL DEFAULT 1
                 );
                 CREATE INDEX IF NOT EXISTS idx_agenda_owner_date
                     ON daily_plans(principal_id, plan_date, updated_at_ms DESC);
@@ -204,6 +238,15 @@ class AgendaStore:
             }
             if "request_key" not in columns:
                 conn.execute("ALTER TABLE daily_plans ADD COLUMN request_key TEXT")
+            for column, declaration in {
+                "delivery_channel": "TEXT",
+                "delivery_surface": "TEXT",
+                "delivery_account_id": "TEXT",
+                "delivery_target_id": "TEXT",
+                "delivery_binding_version": "INTEGER NOT NULL DEFAULT 1",
+            }.items():
+                if column not in columns:
+                    conn.execute(f"ALTER TABLE daily_plans ADD COLUMN {column} {declaration}")
             conn.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_agenda_request_key
@@ -235,6 +278,19 @@ class AgendaStore:
             confirmed_at_ms=(
                 int(row["confirmed_at_ms"]) if row["confirmed_at_ms"] is not None else None
             ),
+            delivery_channel=(
+                str(row["delivery_channel"]) if row["delivery_channel"] is not None else None
+            ),
+            delivery_surface=(
+                str(row["delivery_surface"]) if row["delivery_surface"] is not None else None
+            ),
+            delivery_account_id=(
+                str(row["delivery_account_id"]) if row["delivery_account_id"] is not None else None
+            ),
+            delivery_target_id=(
+                str(row["delivery_target_id"]) if row["delivery_target_id"] is not None else None
+            ),
+            delivery_binding_version=int(row["delivery_binding_version"]),
         )
 
     @staticmethod
@@ -319,6 +375,7 @@ class AgendaStore:
         needs_map_consent: bool = False,
         request_key: str | None = None,
         max_drafts_for_date: int | None = None,
+        delivery_target: DeliveryTarget | None = None,
         now_ms: int | None = None,
     ) -> DailyPlan:
         self._validate_document(document)
@@ -328,8 +385,13 @@ class AgendaStore:
             raise AgendaError("计划请求幂等键无效")
         if max_drafts_for_date is not None and not 1 <= max_drafts_for_date <= 50:
             raise AgendaError("计划草案限额无效")
+        if delivery_target is not None and not isinstance(delivery_target, DeliveryTarget):
+            raise AgendaError("计划投递目标无效")
         now = int(time.time() * 1000) if now_ms is None else now_ms
-        digest = normalized_parameter_hash(document)
+        digest_input: dict[str, Any] = document
+        if delivery_target is not None:
+            digest_input = {"document": document, "delivery_target": delivery_target.as_mapping()}
+        digest = normalized_parameter_hash(digest_input)
         status = "awaiting_map_consent" if needs_map_consent else "awaiting_confirmation"
         encoded = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         with self._connect() as conn:
@@ -354,7 +416,10 @@ class AgendaStore:
                     )
                     if actual != expected:
                         raise AgendaError("计划请求幂等键与既有参数冲突")
-                    return self._plan(prior)
+                    existing = self._plan(prior)
+                    if delivery_target is not None:
+                        self._assert_target(existing, delivery_target)
+                    return existing
             if max_drafts_for_date is not None:
                 count = conn.execute(
                     "SELECT COUNT(*) FROM daily_plans WHERE principal_id=? AND plan_date=?",
@@ -367,8 +432,10 @@ class AgendaStore:
                 """
                 INSERT INTO daily_plans(
                     plan_id, principal_id, plan_date, status, version, parameter_sha256,
-                    parent_plan_id, request_key, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+                    parent_plan_id, request_key, created_at_ms, updated_at_ms,
+                    delivery_channel, delivery_surface, delivery_account_id, delivery_target_id,
+                    delivery_binding_version
+                ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     plan_id,
@@ -380,6 +447,11 @@ class AgendaStore:
                     request_key,
                     now,
                     now,
+                    delivery_target.channel if delivery_target is not None else None,
+                    delivery_target.surface if delivery_target is not None else None,
+                    delivery_target.bot_account if delivery_target is not None else None,
+                    delivery_target.target_id if delivery_target is not None else None,
+                    2 if delivery_target is not None else 1,
                 ),
             )
             task_ids: dict[str, str] = {}
@@ -440,7 +512,7 @@ class AgendaStore:
                 detail={"version": 1, "parameter_sha256": digest},
                 now_ms=now,
             )
-        return self.get(plan_id, principal_id=principal_id)
+        return self.get(plan_id, principal_id=principal_id, delivery_target=delivery_target)
 
     def _resolve(self, short_id: str, *, principal_id: str | None) -> str:
         clean = short_id.strip().lower()
@@ -460,15 +532,55 @@ class AgendaStore:
             raise AgendaError("短 ID 不唯一，请输入更多位")
         return str(rows[0][0])
 
-    def get(self, short_id: str, *, principal_id: str | None) -> DailyPlan:
+    @staticmethod
+    def _assert_target(plan: DailyPlan, delivery_target: DeliveryTarget) -> DeliveryTarget:
+        if not isinstance(delivery_target, DeliveryTarget):
+            raise AgendaError("计划投递目标无效")
+        try:
+            stored = plan.delivery_target
+        except AgendaError:
+            raise
+        if stored != delivery_target:
+            raise AgendaError("计划不属于当前会话")
+        return delivery_target
+
+    def get(
+        self,
+        short_id: str,
+        *,
+        principal_id: str | None,
+        delivery_target: DeliveryTarget | None = None,
+    ) -> DailyPlan:
         plan_id = self._resolve(short_id, principal_id=principal_id)
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM daily_plans WHERE plan_id=?", (plan_id,)).fetchone()
         if row is None:
             raise AgendaError("未找到计划")
-        return self._plan(row)
+        plan = self._plan(row)
+        if delivery_target is not None:
+            self._assert_target(plan, delivery_target)
+        return plan
 
-    def get_by_request_key(self, request_key: str, *, principal_id: str) -> DailyPlan | None:
+    def get_for_principal(
+        self,
+        short_id: str,
+        *,
+        principal_id: str,
+        delivery_target: DeliveryTarget,
+    ) -> DailyPlan:
+        return self.get(
+            short_id,
+            principal_id=principal_id,
+            delivery_target=delivery_target,
+        )
+
+    def get_by_request_key(
+        self,
+        request_key: str,
+        *,
+        principal_id: str,
+        delivery_target: DeliveryTarget | None = None,
+    ) -> DailyPlan | None:
         if len(request_key) != 64 or any(char not in "0123456789abcdef" for char in request_key):
             raise AgendaError("计划请求幂等键无效")
         with self._connect() as conn:
@@ -476,40 +588,105 @@ class AgendaStore:
                 "SELECT * FROM daily_plans WHERE request_key=? AND principal_id=?",
                 (request_key, principal_id),
             ).fetchone()
-        return self._plan(row) if row is not None else None
+        if row is None:
+            return None
+        plan = self._plan(row)
+        if delivery_target is not None:
+            self._assert_target(plan, delivery_target)
+        return plan
 
-    def tasks(self, short_id: str, *, principal_id: str | None) -> list[AgendaTask]:
-        plan_id = self._resolve(short_id, principal_id=principal_id)
+    def tasks(
+        self,
+        short_id: str,
+        *,
+        principal_id: str | None,
+        delivery_target: DeliveryTarget | None = None,
+    ) -> list[AgendaTask]:
+        plan = self.get(short_id, principal_id=principal_id, delivery_target=delivery_target)
+        plan_id = plan.plan_id
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM agenda_tasks WHERE plan_id=? ORDER BY position", (plan_id,)
             ).fetchall()
         return [self._task(row) for row in rows]
 
-    def latest_pending(self, principal_id: str) -> DailyPlan | None:
+    def latest_pending(
+        self, principal_id: str, *, delivery_target: DeliveryTarget | None = None
+    ) -> DailyPlan | None:
+        target = delivery_target
         with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT * FROM daily_plans
-                WHERE principal_id=? AND status IN (
-                    'draft','awaiting_map_consent','awaiting_confirmation'
-                ) ORDER BY updated_at_ms DESC LIMIT 1
-                """,
-                (principal_id,),
-            ).fetchone()
-        return self._plan(row) if row is not None else None
+            if target is None:
+                row = conn.execute(
+                    """
+                    SELECT * FROM daily_plans
+                    WHERE principal_id=? AND status IN (
+                        'draft','awaiting_map_consent','awaiting_confirmation'
+                    ) ORDER BY updated_at_ms DESC LIMIT 1
+                    """,
+                    (principal_id,),
+                ).fetchone()
+            else:
+                if not isinstance(target, DeliveryTarget):
+                    raise AgendaError("计划投递目标无效")
+                row = conn.execute(
+                    """
+                    SELECT * FROM daily_plans
+                    WHERE principal_id=? AND status IN (
+                        'draft','awaiting_map_consent','awaiting_confirmation'
+                    ) AND delivery_channel=? AND delivery_surface=?
+                      AND delivery_account_id=? AND delivery_target_id=?
+                    ORDER BY updated_at_ms DESC LIMIT 1
+                    """,
+                    (
+                        principal_id,
+                        target.channel,
+                        target.surface,
+                        target.bot_account,
+                        target.target_id,
+                    ),
+                ).fetchone()
+        if row is None:
+            return None
+        plan = self._plan(row)
+        return plan
 
-    def list_for_principal(self, principal_id: str, *, limit: int = 10) -> list[DailyPlan]:
+    def list_for_principal(
+        self,
+        principal_id: str,
+        *,
+        limit: int = 10,
+        delivery_target: DeliveryTarget | None = None,
+    ) -> list[DailyPlan]:
         if not 1 <= limit <= 50:
             raise AgendaError("计划列表数量必须在 1 到 50 之间")
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT * FROM daily_plans WHERE principal_id=?
-                ORDER BY updated_at_ms DESC LIMIT ?
-                """,
-                (principal_id, limit),
-            ).fetchall()
+            if delivery_target is None:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM daily_plans WHERE principal_id=?
+                    ORDER BY updated_at_ms DESC LIMIT ?
+                    """,
+                    (principal_id, limit),
+                ).fetchall()
+            else:
+                if not isinstance(delivery_target, DeliveryTarget):
+                    raise AgendaError("计划投递目标无效")
+                rows = conn.execute(
+                    """
+                    SELECT * FROM daily_plans
+                    WHERE principal_id=? AND delivery_channel=? AND delivery_surface=?
+                      AND delivery_account_id=? AND delivery_target_id=?
+                    ORDER BY updated_at_ms DESC LIMIT ?
+                    """,
+                    (
+                        principal_id,
+                        delivery_target.channel,
+                        delivery_target.surface,
+                        delivery_target.bot_account,
+                        delivery_target.target_id,
+                        limit,
+                    ),
+                ).fetchall()
         return [self._plan(row) for row in rows]
 
     def count_for_date(self, principal_id: str, plan_date: date) -> int:
@@ -541,9 +718,10 @@ class AgendaStore:
         consent_parameters: dict[str, Any],
         quota_since_ms: int | None = None,
         max_grants: int | None = None,
+        delivery_target: DeliveryTarget | None = None,
         now_ms: int | None = None,
     ) -> DailyPlan:
-        plan = self.get(short_id, principal_id=principal_id)
+        plan = self.get(short_id, principal_id=principal_id, delivery_target=delivery_target)
         now = int(time.time() * 1000) if now_ms is None else now_ms
         digest = normalized_parameter_hash(consent_parameters)
         with self._connect() as conn:
@@ -593,7 +771,11 @@ class AgendaStore:
                 detail={"consent_sha256": digest},
                 now_ms=now,
             )
-        return self.get(plan.plan_id, principal_id=principal_id)
+        return self.get(
+            plan.plan_id,
+            principal_id=principal_id,
+            delivery_target=delivery_target,
+        )
 
     def confirm_exact_version(
         self,
@@ -602,9 +784,10 @@ class AgendaStore:
         principal_id: str,
         actor_principal_id: str,
         parameter_sha256: str,
+        delivery_target: DeliveryTarget | None = None,
         now_ms: int | None = None,
     ) -> DailyPlan:
-        plan = self.get(short_id, principal_id=principal_id)
+        plan = self.get(short_id, principal_id=principal_id, delivery_target=delivery_target)
         now = int(time.time() * 1000) if now_ms is None else now_ms
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -642,7 +825,11 @@ class AgendaStore:
                 detail={"version": current.version, "parameter_sha256": parameter_sha256},
                 now_ms=now,
             )
-        return self.get(plan.plan_id, principal_id=principal_id)
+        return self.get(
+            plan.plan_id,
+            principal_id=principal_id,
+            delivery_target=delivery_target,
+        )
 
     def supersede(
         self,
@@ -651,9 +838,14 @@ class AgendaStore:
         principal_id: str,
         actor_principal_id: str,
         replacement_plan_id: str,
+        delivery_target: DeliveryTarget | None = None,
     ) -> DailyPlan:
-        plan = self.get(short_id, principal_id=principal_id)
-        replacement = self.get(replacement_plan_id, principal_id=principal_id)
+        plan = self.get(short_id, principal_id=principal_id, delivery_target=delivery_target)
+        replacement = self.get(
+            replacement_plan_id,
+            principal_id=principal_id,
+            delivery_target=delivery_target,
+        )
         if plan.status == "superseded" and replacement.parent_plan_id == plan.plan_id:
             return plan
         if plan.status not in {
@@ -680,7 +872,11 @@ class AgendaStore:
                 detail={"replacement_plan_id": replacement.plan_id},
                 now_ms=now,
             )
-        return self.get(plan.plan_id, principal_id=principal_id)
+        return self.get(
+            plan.plan_id,
+            principal_id=principal_id,
+            delivery_target=delivery_target,
+        )
 
     def transition_task(
         self,
@@ -689,6 +885,7 @@ class AgendaStore:
         principal_id: str,
         actor_principal_id: str,
         target: str,
+        delivery_target: DeliveryTarget | None = None,
         now_ms: int | None = None,
     ) -> AgendaTask:
         if target not in {"completed", "skipped", "cancelled"}:
@@ -709,6 +906,13 @@ class AgendaStore:
             if len(rows) != 1:
                 raise AgendaError("未找到唯一任务")
             row = rows[0]
+            if delivery_target is not None:
+                plan_row = conn.execute(
+                    "SELECT * FROM daily_plans WHERE plan_id=?", (str(row["plan_id"]),)
+                ).fetchone()
+                if plan_row is None:
+                    raise AgendaError("未找到计划")
+                self._assert_target(self._plan(plan_row), delivery_target)
             if str(row["status"]) == target:
                 return self._task(row)
             if str(row["status"]) not in {"scheduled", "in_progress"}:
@@ -752,8 +956,9 @@ class AgendaStore:
         principal_id: str | None,
         actor_principal_id: str,
         reason: str | None = None,
+        delivery_target: DeliveryTarget | None = None,
     ) -> DailyPlan:
-        plan = self.get(short_id, principal_id=principal_id)
+        plan = self.get(short_id, principal_id=principal_id, delivery_target=delivery_target)
         if plan.status == "cancelled":
             return plan
         if plan.status not in {
@@ -787,7 +992,11 @@ class AgendaStore:
                 detail={"admin": principal_id is None},
                 now_ms=now,
             )
-        return self.get(plan.plan_id, principal_id=None if principal_id is None else principal_id)
+        return self.get(
+            plan.plan_id,
+            principal_id=None if principal_id is None else principal_id,
+            delivery_target=delivery_target,
+        )
 
     def link_reminder(
         self,

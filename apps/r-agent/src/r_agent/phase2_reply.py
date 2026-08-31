@@ -36,6 +36,8 @@ from r_agent.reminders import (
     format_job,
     parse_reminder_intent,
 )
+from r_agent.task_scope import TaskScopeError, ordinary_user_task_target
+from r_agent.transport import DeliveryTarget
 
 
 def _owner_reminder_message(event: InboundEvent, owner_ids: frozenset[str]) -> bool:
@@ -97,6 +99,38 @@ def _official_owner_operation_key(event: InboundEvent) -> str:
         ("owner-command-v1", event.channel.casefold(), event.account_id, event.message_id)
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _ordinary_task_command_allowed(text: str) -> bool:
+    """Limit ordinary official users to their own reminder/plan surface."""
+
+    parts = " ".join(text.strip().casefold().split()).split()
+    if len(parts) < 2 or parts[0] != "/higgs":
+        return False
+    if parts[1] == "remind":
+        return len(parts) == 2 or (
+            len(parts) >= 3 and parts[2] in {"list", "show", "confirm", "ack", "cancel", "snooze"}
+        )
+    if parts[1] == "plan":
+        return len(parts) == 2 or (
+            len(parts) >= 3
+            and parts[2]
+            in {
+                "today",
+                "draft",
+                "add",
+                "show",
+                "confirm",
+                "done",
+                "skip",
+                "replan",
+                "cancel",
+                "history",
+                "list",
+                "map-consent",
+            }
+        )
+    return False
 
 
 class ReplyDecision(StrEnum):
@@ -283,6 +317,10 @@ class PersonaBrain:
         reminders: ReminderStore | None = None,
         daily_plans: DailyPlanService | None = None,
         official_proactive_enabled: bool = False,
+        ordinary_task_mode: str = "off",
+        ordinary_proactive_enabled: bool = False,
+        ordinary_reminders_per_day: int = 20,
+        ordinary_active_reminders: int = 10,
         persona_bundle: PersonaBundle | None = None,
         persona_v2_gate: PersonaV2Gate | None = None,
         official_owner_id: str | None = None,
@@ -301,6 +339,17 @@ class PersonaBrain:
         self.persona_v2_gate = persona_v2_gate or PersonaV2Gate()
         self.official_owner_id = official_owner_id
         self.persona_guard = PersonaGuard(persona_bundle) if persona_bundle is not None else None
+
+        if ordinary_task_mode not in {"off", "shadow", "live"}:
+            raise ValueError("ordinary task mode must be off, shadow, or live")
+        if not 1 <= ordinary_reminders_per_day <= 100:
+            raise ValueError("ordinary reminders per day must be between 1 and 100")
+        if not 1 <= ordinary_active_reminders <= 100:
+            raise ValueError("ordinary active reminders must be between 1 and 100")
+        self.ordinary_task_mode = ordinary_task_mode
+        self.ordinary_proactive_enabled = ordinary_proactive_enabled
+        self.ordinary_reminders_per_day = ordinary_reminders_per_day
+        self.ordinary_active_reminders = ordinary_active_reminders
 
     def _persona_v2_allowed(self, event: InboundEvent, *, principal_role: str) -> bool:
         return self.persona_v2_gate.allows(
@@ -341,6 +390,153 @@ class PersonaBrain:
                 return repaired
         return guard.apply(text, reply_mode=reply_mode).text
 
+    async def _ordinary_reminder_command(
+        self,
+        text: str,
+        *,
+        event: InboundEvent,
+        principal_id: str,
+        target: DeliveryTarget,
+    ) -> str:
+        """Handle only principal-scoped reminder operations for ordinary users."""
+
+        if self.reminders is None:
+            return "个人提醒当前不可用。"
+        parts = text.split()
+        arguments = parts[2:]
+        action = arguments[0].casefold() if arguments else "list"
+        try:
+            if action == "list" and len(arguments) == 1:
+                jobs = await asyncio.to_thread(
+                    self.reminders.list_for_principal,
+                    principal_id,
+                    delivery_target=target,
+                    limit=10,
+                )
+                if not jobs:
+                    return "你还没有个人提醒。"
+                return "个人提醒：\n" + "\n".join(
+                    f"{job.job_id[:8]} | {job.status} | {job.content}" for job in jobs
+                )
+            if action == "show" and len(arguments) == 2:
+                job = await asyncio.to_thread(
+                    self.reminders.get_for_principal,
+                    arguments[1],
+                    principal_id=principal_id,
+                    delivery_target=target,
+                )
+                return format_job(job)
+            if action == "confirm" and len(arguments) == 2:
+                if self.ordinary_task_mode == "shadow":
+                    job = await asyncio.to_thread(
+                        self.reminders.get_for_principal,
+                        arguments[1],
+                        principal_id=principal_id,
+                        delivery_target=target,
+                    )
+                    return "当前为 SHADOW 模式：参数确认通过，但不会激活真实提醒。\n" + format_job(
+                        job
+                    )
+                if not self.ordinary_proactive_enabled:
+                    return "个人提醒创建开关已开启，但主动投递尚未开启，提醒仍待确认。"
+                job = await asyncio.to_thread(
+                    self.reminders.confirm_for_principal,
+                    arguments[1],
+                    principal_id=principal_id,
+                    delivery_target=target,
+                )
+                return "个人提醒已确认。\n" + format_job(job)
+            if action == "ack" and len(arguments) == 2:
+                job = await asyncio.to_thread(
+                    self.reminders.acknowledge_for_principal,
+                    arguments[1],
+                    principal_id=principal_id,
+                    delivery_target=target,
+                )
+                return f"提醒 {job.job_id[:8]} 已完成。"
+            if action == "cancel" and len(arguments) == 2:
+                job = await asyncio.to_thread(
+                    self.reminders.cancel_for_principal,
+                    arguments[1],
+                    principal_id=principal_id,
+                    delivery_target=target,
+                )
+                return f"提醒 {job.job_id[:8]} 已取消。"
+            if action == "snooze" and len(arguments) == 3:
+                suffix = arguments[2].casefold()
+                if not suffix.endswith("m") or not suffix[:-1].isdigit():
+                    return "延后时间请使用例如 10m。"
+                job = await asyncio.to_thread(
+                    self.reminders.snooze_for_principal,
+                    arguments[1],
+                    int(suffix[:-1]),
+                    principal_id=principal_id,
+                    delivery_target=target,
+                )
+                return "提醒已改为待确认。\n" + format_job(job)
+        except ReminderError as exc:
+            return f"个人提醒没有执行：{exc}"
+        return "用法：/higgs remind list|show|confirm|ack|cancel|snooze"
+
+    async def _ordinary_contextual_reminder(
+        self,
+        clean: str,
+        *,
+        event: InboundEvent,
+        principal_id: str,
+        target: DeliveryTarget,
+    ) -> str | None:
+        """Process ordinary natural confirmation/acknowledgement in scope."""
+
+        if self.reminders is None:
+            return None
+        if clean in {"确认", "确认提醒"}:
+            pending = await asyncio.to_thread(
+                self.reminders.resolve_contextual_for_principal,
+                principal_id=principal_id,
+                statuses=frozenset({"pending_confirmation"}),
+                conversation_id=event.conversation_id,
+                delivery_target=target,
+                reply_message_id=event.reply_message_id,
+            )
+            if pending is None:
+                return (
+                    "未能唯一确定要确认的个人提醒，请引用创建消息，"
+                    "或使用 /higgs remind confirm 短ID。"
+                )
+            if self.ordinary_task_mode == "shadow":
+                return "当前为 SHADOW 模式：参数确认通过，但不会激活真实提醒。\n" + format_job(
+                    pending
+                )
+            if not self.ordinary_proactive_enabled:
+                return "个人提醒创建开关已开启，但主动投递尚未开启，提醒仍待确认。"
+            confirmed = await asyncio.to_thread(
+                self.reminders.confirm_for_principal,
+                pending.job_id,
+                principal_id=principal_id,
+                delivery_target=target,
+            )
+            return "个人提醒已确认并生效。\n" + format_job(confirmed)
+        if clean in {"收到", "知道了", "完成了"}:
+            awaiting = await asyncio.to_thread(
+                self.reminders.resolve_contextual_for_principal,
+                principal_id=principal_id,
+                statuses=frozenset({"awaiting_ack"}),
+                conversation_id=event.conversation_id,
+                delivery_target=target,
+                reply_message_id=event.reply_message_id,
+            )
+            if awaiting is None:
+                return "未能唯一确定要签收的个人提醒，请引用提醒消息或使用 /higgs remind ack 短ID。"
+            completed = await asyncio.to_thread(
+                self.reminders.acknowledge_for_principal,
+                awaiting.job_id,
+                principal_id=principal_id,
+                delivery_target=target,
+            )
+            return f"收到，个人提醒 {completed.job_id[:8]} 已完成。"
+        return None
+
     async def draft(self, event: InboundEvent) -> str:
         if self.context_builder is not None:
             if self.identities is None:
@@ -354,6 +550,26 @@ class PersonaBrain:
             if official_channel and clean.casefold().startswith("/higgs"):
                 if event.conversation_kind is not ConversationKind.PRIVATE:
                     return "官方 QQ 主人命令仅允许在机器人私聊中使用。"
+                if principal.role == "user":
+                    if self.ordinary_task_mode == "off":
+                        return "该命令仅允许主人使用。"
+                    if not _ordinary_task_command_allowed(clean):
+                        return "普通用户只能使用自己的提醒和今日计划命令。"
+                    try:
+                        target = ordinary_user_task_target(event)
+                    except TaskScopeError:
+                        return "个人提醒和计划只允许在当前官方 QQ 私聊中使用。"
+                    if clean.casefold().startswith("/higgs remind"):
+                        return await self._ordinary_reminder_command(
+                            clean,
+                            event=event,
+                            principal_id=principal.principal_id,
+                            target=target,
+                        )
+                    if self.daily_plans is None:
+                        return "今日计划当前不可用。"
+                    plan_reply = await self.daily_plans.handle_event(event, principal)
+                    return plan_reply or "今日计划当前不可用。"
                 if principal.role != "owner":
                     return "该命令仅允许主人使用。"
                 if not _official_owner_command_allowed(clean):
@@ -383,6 +599,54 @@ class PersonaBrain:
                 plan_reply = await self.daily_plans.handle_event(event, principal)
                 if plan_reply is not None:
                     return plan_reply
+            ordinary_user = official_channel and principal.role == "user"
+            ordinary_target: DeliveryTarget | None = None
+            if ordinary_user and self.ordinary_task_mode != "off":
+                try:
+                    ordinary_target = ordinary_user_task_target(event)
+                except TaskScopeError:
+                    if parse_reminder_intent(clean) is not None or clean in {
+                        "确认",
+                        "确认提醒",
+                        "收到",
+                        "知道了",
+                        "完成了",
+                    }:
+                        return "个人提醒和计划只允许在当前官方 QQ 私聊中使用。"
+            if ordinary_target is not None and self.reminders is not None:
+                contextual = await self._ordinary_contextual_reminder(
+                    clean,
+                    event=event,
+                    principal_id=principal.principal_id,
+                    target=ordinary_target,
+                )
+                if contextual is not None:
+                    return contextual
+                parsed = parse_reminder_intent(
+                    clean,
+                    now=datetime.fromtimestamp(event.occurred_at_ms / 1000, SHANGHAI),
+                )
+                if parsed is not None:
+                    due_at_ms, content = parsed
+                    try:
+                        pending = await asyncio.to_thread(
+                            self.reminders.create_pending,
+                            owner_principal_id=principal.principal_id,
+                            owner_qq=event.sender_id,
+                            content=content,
+                            due_at_ms=due_at_ms,
+                            origin_channel=event.channel,
+                            origin_surface=event.conversation_kind.value,
+                            origin_conversation_id=event.conversation_id,
+                            delivery_target=ordinary_target,
+                            source_message_id=event.message_id,
+                            max_active_for_principal=self.ordinary_active_reminders,
+                            max_created_for_principal_since_ms=(event.occurred_at_ms - 86_400_000),
+                            max_created_for_principal=self.ordinary_reminders_per_day,
+                        )
+                    except ReminderError as exc:
+                        return f"个人提醒没有创建：{exc}"
+                    return "请核对后回复“确认”：\n" + format_job(pending)
             if self.reminders is not None and principal.role == "owner":
                 try:
                     if clean in {"\u786e\u8ba4", "\u786e\u8ba4\u63d0\u9192"}:

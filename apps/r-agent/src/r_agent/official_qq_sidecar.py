@@ -114,6 +114,7 @@ class SidecarConfig(Protocol):
     active_private_openids: frozenset[str]
     active_group_openids: frozenset[str]
     ordinary_private_enabled: bool
+    ordinary_proactive_enabled: bool
     group_enabled: bool
     private_rate_per_minute: int
     group_rate_per_minute: int
@@ -726,8 +727,6 @@ class OfficialQQSidecarAdapter:
             raise ValueError("official QQ text must contain 1-2000 characters")
         delivery_mode = "proactive" if reply_message_id is None else "passive"
         if delivery_mode == "proactive":
-            if not self.config.proactive_enabled:
-                raise TransportUnavailable("official QQ proactive sends are disabled")
             reply_id = None
         else:
             try:
@@ -769,6 +768,12 @@ class OfficialQQSidecarAdapter:
             raise TransportUnavailable("official QQ target kind is invalid")
         if delivery_mode == "proactive" and kind != "c2c":
             raise TransportUnavailable("official QQ proactive sends are owner private only")
+        if delivery_mode == "proactive":
+            if target_id == self.config.owner_openid:
+                if not self.config.proactive_enabled:
+                    raise TransportUnavailable("official QQ proactive sends are disabled")
+            elif not getattr(self.config, "ordinary_proactive_enabled", False):
+                raise TransportUnavailable("official QQ ordinary proactive sends are disabled")
         fingerprint = hashlib.sha256(
             "\0".join((delivery_mode, kind, target_id, content, reply_id or "")).encode("utf-8")
         ).hexdigest()

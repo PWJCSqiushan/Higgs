@@ -84,6 +84,7 @@ def test_reminder_targets_require_exact_persisted_channel_account_and_owner() ->
         official,
         owner_openid="owner-id",
         account_id="bot-id",
+        owner_proactive_enabled=True,
     )
     assert target is not None
     assert target.conversation_id == "qq_official:private:bot-id:owner-id"
@@ -92,6 +93,7 @@ def test_reminder_targets_require_exact_persisted_channel_account_and_owner() ->
             official,
             owner_openid="another-owner",
             account_id="bot-id",
+            owner_proactive_enabled=True,
         )
         is None
     )
@@ -100,6 +102,16 @@ def test_reminder_targets_require_exact_persisted_channel_account_and_owner() ->
             official,
             owner_openid="owner-id",
             account_id="another-bot",
+            owner_proactive_enabled=True,
+        )
+        is None
+    )
+    assert (
+        _official_reminder_target(
+            official,
+            owner_openid="owner-id",
+            account_id="bot-id",
+            owner_proactive_enabled=False,
         )
         is None
     )

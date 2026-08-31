@@ -113,10 +113,18 @@ The second gate defaults to false. Production currently enables it only for the
 explicitly bound owner C2C surface; changing the audience remains a separate
 operation even when the Node Gateway and UDS adapter are healthy.
 
-Official proactive delivery has two additional independent gates:
+Owner proactive delivery has two additional independent gates:
 `R_AGENT_OFFICIAL_QQ_PROACTIVE_ENABLED` in the Agent and
 `HIGGS_OFFICIAL_QQ_PROACTIVE_ENABLED` in the sidecar. Both default to false and
 require separate production acceptance. When separately approved, proactive
 sends are limited to the explicitly bound owner C2C target,
 omit `msgId`, and durably claim the idempotency key as `UNKNOWN` before crossing
 the provider boundary. They never provide a transparent fallback to OneBot.
+
+Ordinary-user proactive delivery is a different pair of gates:
+`R_AGENT_OFFICIAL_QQ_ORDINARY_PROACTIVE_ENABLED` and
+`HIGGS_OFFICIAL_QQ_ORDINARY_PROACTIVE_ENABLED`. Both also default to false and
+require the ordinary-private audience to be enabled from the same frozen,
+Bot-bound allowlist. Enabling the ordinary pair cannot enable owner delivery,
+and enabling the owner pair cannot send to an ordinary target. Group proactive
+delivery remains forbidden.

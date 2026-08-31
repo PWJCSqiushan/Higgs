@@ -75,6 +75,17 @@ def test_persona_surface_gate_cannot_widen_a_closed_channel() -> None:
         CONTRACT.validate(agent, sidecar, release=False)
 
 
+def test_ordinary_proactive_requires_matching_dual_gates_and_private_channel() -> None:
+    agent, sidecar = _base()
+    agent["R_AGENT_OFFICIAL_QQ_ORDINARY_PROACTIVE_ENABLED"] = "true"
+    with pytest.raises(CONTRACT.ContractError, match="ordinary proactive switches differ"):
+        CONTRACT.validate(agent, sidecar, release=False)
+
+    sidecar["HIGGS_OFFICIAL_QQ_ORDINARY_PROACTIVE_ENABLED"] = "true"
+    with pytest.raises(CONTRACT.ContractError, match="ordinary proactive requires"):
+        CONTRACT.validate(agent, sidecar, release=False)
+
+
 def test_group_contract_requires_matching_versioned_metadata_and_identity_schema() -> None:
     agent, sidecar = _base()
     agent.update(

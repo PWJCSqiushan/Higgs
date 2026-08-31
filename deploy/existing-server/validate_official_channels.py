@@ -65,7 +65,9 @@ def _ids(values: dict[str, str], key: str) -> frozenset[str]:
     return frozenset(result)
 
 
-def _int(values: dict[str, str], key: str, minimum: int, maximum: int, default: int) -> int:
+def _int(
+    values: dict[str, str], key: str, minimum: int, maximum: int, default: int
+) -> int:
     raw = values.get(key)
     if raw is None or not raw.strip():
         return default
@@ -146,14 +148,20 @@ def validate(agent: dict[str, str], sidecar: dict[str, str], *, release: bool) -
     ):
         raise ContractError("private allowlist metadata differs")
     if ordinary_agent and private_version_agent is None:
-        raise ContractError("ordinary private channel requires versioned allowlist metadata")
+        raise ContractError(
+            "ordinary private channel requires versioned allowlist metadata"
+        )
 
     groups_agent = _ids(agent, "R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS")
     groups_sidecar = _ids(sidecar, "HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS")
     if groups_agent != groups_sidecar:
         raise ContractError("group allowlists differ")
-    group_version_agent = _optional_version(agent, "R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION")
-    group_version_sidecar = _optional_version(sidecar, "HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION")
+    group_version_agent = _optional_version(
+        agent, "R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION"
+    )
+    group_version_sidecar = _optional_version(
+        sidecar, "HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION"
+    )
     group_fingerprint_agent = _optional_fingerprint(
         agent, "R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT"
     )
@@ -175,7 +183,10 @@ def validate(agent: dict[str, str], sidecar: dict[str, str], *, release: bool) -
     identity_schema_v2 = _bool(agent, "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED")
     if (ordinary_agent or group_agent) and not identity_schema_v2:
         raise ContractError("ordinary official audiences require identity schema v2")
-    if _bool(agent, "R_AGENT_PERSONA_V2_ORDINARY_PRIVATE_ENABLED") and not ordinary_agent:
+    if (
+        _bool(agent, "R_AGENT_PERSONA_V2_ORDINARY_PRIVATE_ENABLED")
+        and not ordinary_agent
+    ):
         raise ContractError("ordinary Persona V2 requires the ordinary private channel")
     if _bool(agent, "R_AGENT_PERSONA_V2_GROUP_ENABLED") and not group_agent:
         raise ContractError("group Persona V2 requires the official group channel")
@@ -235,6 +246,20 @@ def validate(agent: dict[str, str], sidecar: dict[str, str], *, release: bool) -
         raise ContractError("proactive switches differ")
     if proactive_agent and not _bool(agent, "R_AGENT_OFFICIAL_QQ_REPLY_ENABLED"):
         raise ContractError("proactive replies are not enabled")
+    ordinary_proactive_agent = _bool(
+        agent, "R_AGENT_OFFICIAL_QQ_ORDINARY_PROACTIVE_ENABLED"
+    )
+    ordinary_proactive_sidecar = _bool(
+        sidecar, "HIGGS_OFFICIAL_QQ_ORDINARY_PROACTIVE_ENABLED"
+    )
+    if ordinary_proactive_agent != ordinary_proactive_sidecar:
+        raise ContractError("ordinary proactive switches differ")
+    if ordinary_proactive_agent and (
+        not ordinary_agent or not _bool(agent, "R_AGENT_OFFICIAL_QQ_REPLY_ENABLED")
+    ):
+        raise ContractError(
+            "ordinary proactive requires ordinary private and passive replies"
+        )
     if _bool(agent, "R_AGENT_OFFICIAL_QQ_REPLY_ENABLED") and (
         not agent_enabled or not sidecar_enabled
     ):

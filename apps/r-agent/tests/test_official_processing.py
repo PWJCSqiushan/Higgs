@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from r_agent.access import IngressDecision
 from r_agent.conversation import ConversationStore
-from r_agent.events import ConversationKind, InboundEvent
+from r_agent.events import AttachmentRef, ConversationKind, InboundEvent
 from r_agent.ingest import IngestResult
-from r_agent.official_processing import OfficialDurableProcessor, OfficialProcessingStore
+from r_agent.official_processing import (
+    OfficialDurableProcessor,
+    OfficialProcessingError,
+    OfficialProcessingStore,
+    _event_from_json,
+)
 from r_agent.phase2_cli import deliver_prepared_reply
 from r_agent.phase2_reply import PreparedReply, ReplyAudit, ReplyDecision, ReplyPlan
 from r_agent.risk_ledger import RiskLedger
+from r_agent.safe_tools import AttachmentHandleStore, DocumentSecurityError, SafeReadOnlyTools
 from r_agent.transport import DeliveryReceipt, DeliveryState
 
 
@@ -24,6 +32,7 @@ def event(
     occurred_at_ms: int = 1_000,
     sender_id: str = "owner-openid",
     group_id: str | None = None,
+    attachments: tuple[AttachmentRef, ...] = (),
 ) -> InboundEvent:
     kind = ConversationKind.GROUP if group_id else ConversationKind.PRIVATE
     target = group_id or sender_id
@@ -38,11 +47,132 @@ def event(
         group_id=group_id,
         text=text,
         mentioned=group_id is not None,
+        attachments=attachments,
     )
 
 
 def accepted(*, stored: bool = True, duplicate: bool = False) -> IngestResult:
     return IngestResult(IngressDecision.ACCEPT, stored=stored, duplicate=duplicate)
+
+
+def test_durable_event_redacts_attachment_path_and_replay_uses_private_handle_scope(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "attachments"
+    root.mkdir()
+    (root / "note.txt").write_text("private attachment", encoding="utf-8")
+    reference = AttachmentRef(
+        kind="document",
+        file_name="note.txt",
+        attachment_id="opaque-replay-handle",
+        media_type="text/plain",
+    )
+    original = event("attachment-replay", "读取附件", attachments=(reference,))
+    handles = AttachmentHandleStore()
+    handles.bind(
+        original,
+        reference,
+        relative_path="note.txt",
+        session_id="session-replay",
+        principal_id="principal-replay",
+    )
+
+    store = OfficialProcessingStore(tmp_path / "official_processing.sqlite")
+    store.initialize(now_ms=1_000)
+    assert store.enqueue(original, accepted(), quiet_seconds=0.5, now_ms=1_000)
+    with sqlite3.connect(store.path) as connection:
+        raw = connection.execute(
+            "SELECT event_json FROM official_processing_batches ORDER BY created_at_ms LIMIT 1",
+        ).fetchone()[0]
+    assert '"relative_path"' not in raw
+    assert '"url"' not in raw
+    replayed = _event_from_json(raw)
+    assert not hasattr(replayed.attachments[0], "relative_path")
+
+    tools = SafeReadOnlyTools(
+        document_root=root,
+        attachment_handles=handles,
+        enabled=True,
+    )
+    result = tools.document_read(
+        replayed,
+        attachment_id="opaque-replay-handle",
+        session_id="session-replay",
+        principal_id="principal-replay",
+    )
+    assert result["text"] == "private attachment"
+
+    for changed in (
+        replace(replayed, account_id="different-bot"),
+        replace(replayed, sender_id="different-sender"),
+        replace(replayed, message_id="different-event"),
+    ):
+        with pytest.raises(DocumentSecurityError):
+            tools.document_read(
+                changed,
+                attachment_id="opaque-replay-handle",
+                session_id="session-replay",
+                principal_id="principal-replay",
+            )
+    with pytest.raises(DocumentSecurityError):
+        tools.document_read(
+            replayed,
+            attachment_id="opaque-replay-handle",
+            session_id="different-session",
+            principal_id="principal-replay",
+        )
+    with pytest.raises(DocumentSecurityError):
+        tools.document_read(
+            replayed,
+            attachment_id="opaque-replay-handle",
+            session_id="session-replay",
+            principal_id="different-principal",
+        )
+
+    legacy = json.loads(raw)
+    legacy["attachments"][0]["relative_path"] = "note.txt"
+    with pytest.raises(OfficialProcessingError):
+        _event_from_json(json.dumps(legacy))
+    legacy["attachments"][0].pop("relative_path")
+    legacy["attachments"][0]["url"] = "https://public.example/"
+    with pytest.raises(OfficialProcessingError):
+        _event_from_json(json.dumps(legacy))
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("kind", 7),
+        ("file_name", "bad\nname.txt"),
+        ("attachment_id", ""),
+        ("media_type", ["text/plain"]),
+        ("declared_size_bytes", True),
+        ("declared_size_bytes", 20 * 1024 * 1024),
+    ),
+)
+def test_durable_attachment_metadata_types_fail_closed(field: str, value: object) -> None:
+    payload = json.loads(
+        json.dumps(
+            {
+                "channel": "qq_official",
+                "account_id": "bot-openid",
+                "sender_id": "owner-openid",
+                "message_id": "malformed-attachment",
+                "occurred_at_ms": 1_000,
+                "conversation_kind": "private",
+                "conversation_id": "qq_official:private:bot-openid:owner-openid",
+                "group_id": None,
+                "text": "read",
+                "mentioned": False,
+                "reply_message_id": None,
+                "replied_to_account": False,
+                "attachments": [{"kind": "document", field: value}],
+            },
+            ensure_ascii=False,
+        )
+    )
+    with pytest.raises(OfficialProcessingError):
+        _event_from_json(json.dumps(payload, ensure_ascii=False))
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from r_agent.access import IngressDecision
@@ -36,19 +36,65 @@ class OfficialWorkItem:
     attempts: int
 
 
+_EVENT_FIELDS = (
+    "channel",
+    "account_id",
+    "sender_id",
+    "message_id",
+    "occurred_at_ms",
+    "conversation_id",
+    "group_id",
+    "text",
+    "mentioned",
+    "reply_message_id",
+    "replied_to_account",
+)
+_ATTACHMENT_FIELDS = frozenset(
+    {"kind", "file_name", "attachment_id", "media_type", "declared_size_bytes"}
+)
+
+
+def _attachment_to_json(attachment: AttachmentRef) -> dict[str, object]:
+    """Return only non-secret attachment metadata for the durable queue.
+
+    Ingress-local paths are deliberately not part of ``AttachmentRef``.  Keep
+    this explicit allow-list rather than using ``asdict`` so a future private
+    handle field cannot silently become durable event data.
+    """
+
+    return {
+        "kind": attachment.kind,
+        "file_name": attachment.file_name,
+        "attachment_id": attachment.attachment_id,
+        "media_type": attachment.media_type,
+        "declared_size_bytes": attachment.declared_size_bytes,
+    }
+
+
 def _event_to_json(event: InboundEvent) -> str:
-    payload = asdict(event)
+    payload = {name: getattr(event, name) for name in _EVENT_FIELDS}
     payload["conversation_kind"] = event.conversation_kind.value
-    payload["attachments"] = [asdict(item) for item in event.attachments]
+    payload["attachments"] = [_attachment_to_json(item) for item in event.attachments]
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def _event_from_json(raw: str) -> InboundEvent:
     try:
         payload = json.loads(raw)
-        attachments = tuple(AttachmentRef(**item) for item in payload.pop("attachments", []))
+        if not isinstance(payload, dict):
+            raise OfficialProcessingError("stored official event is not an object")
+        raw_attachments = payload.pop("attachments", [])
+        if not isinstance(raw_attachments, list):
+            raise OfficialProcessingError("stored official attachments are invalid")
+        attachments: list[AttachmentRef] = []
+        for item in raw_attachments:
+            if not isinstance(item, dict) or not set(item).issubset(_ATTACHMENT_FIELDS):
+                # In particular, reject a legacy/private ``relative_path`` or
+                # any URL field rather than accidentally carrying it forward.
+                raise OfficialProcessingError("stored official attachment metadata is invalid")
+            attachments.append(AttachmentRef(**item))
         payload["conversation_kind"] = ConversationKind(payload["conversation_kind"])
-        return InboundEvent(**payload, attachments=attachments)
+        return InboundEvent(**payload, attachments=tuple(attachments))
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise OfficialProcessingError("stored official event is invalid") from exc
 

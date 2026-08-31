@@ -73,6 +73,10 @@ export function loadConfig(env = process.env) {
   const enabled = boolEnv(env.HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED, false);
   const captureOnly = boolEnv(env.HIGGS_OFFICIAL_QQ_CAPTURE_ONLY, true);
   const proactiveEnabled = boolEnv(env.HIGGS_OFFICIAL_QQ_PROACTIVE_ENABLED, false);
+  const ordinaryProactiveEnabled = boolEnv(
+    env.HIGGS_OFFICIAL_QQ_ORDINARY_PROACTIVE_ENABLED,
+    false,
+  );
   const ordinaryPrivateEnabled = boolEnv(
     env.HIGGS_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED,
     false,
@@ -140,6 +144,9 @@ export function loadConfig(env = process.env) {
   if (proactiveEnabled && (!enabled || captureOnly)) {
     throw new Error("proactive sends require enabled full mode");
   }
+  if (ordinaryProactiveEnabled && (!enabled || captureOnly || !ordinaryPrivateEnabled)) {
+    throw new Error("ordinary proactive sends require enabled ordinary private full mode");
+  }
   if (enabled) {
     if (!/^\d{5,32}$/u.test(appId)) throw new Error("invalid AppID configuration");
     if (appSecret.length < 16 || appSecret.length > 512) {
@@ -186,6 +193,7 @@ export function loadConfig(env = process.env) {
     enabled,
     captureOnly,
     proactiveEnabled,
+    ordinaryProactiveEnabled,
     ordinaryPrivateEnabled,
     groupEnabled,
     appId,

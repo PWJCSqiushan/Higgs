@@ -588,3 +588,26 @@
 - 修复后本地全量为 Python `544 passed, 6 skipped`、Node `59 passed, 9 skipped`，38 条评测
   precision/recall/处置准确率均为 `1.0` 且零误激活/污染；Ruff、格式、发布与秘密门通过。
   生产保持所有阶段 3 开关关闭，未部署、迁移、发送消息、重建或改动 NapCat。
+
+## 节点 62：self-memory 合并并启动阶段 4
+
+- PR #68 合并为 main `517bb23a8a58aec70b7751740a86e2dae1d7da49`；修复后的两套
+  PR CI 与合并后 main run `33374862049` 全绿，Ubuntu Python 零跳过。首次绿色 CI 后仍先
+  完成独立审计修复再合并，未用自动测试替代隐私与并发复核。
+- 生产未随合并变化：self-memory v4/mode、摄影观点、普通 C2C、群、主动发送和自主成长
+  继续关闭；没有数据库迁移、部署、消息发送、容器重建或 NapCat 改动。当前服务器浏览器
+  会话未能形成新的匿名观察证据，因此本节点不声明生产即时健康或异常。
+- 阶段 4 从新 main 建立独立集成分支，工具与普通用户任务在各自 worktree 隔离实现。工具
+  只读且默认 shadow/disabled，必须限制 SSRF、重定向、DNS rebinding、大小、时限、文档
+  路径和下载隔离；普通用户提醒/计划只绑定本人和当前官方 Bot，创建与主动投递分门控制，
+  不向群投递、不跨 NapCat/官方切换。
+
+## 节点 63：安全只读工具与普通用户个人任务离线集成
+
+- 阶段 4 从 main `517bb23a8a58aec70b7751740a86e2dae1d7da49` 建立独立分支；工具和任务先在隔离 worktree 开发，再经主线程交叉审计合并。生产状态没有随源码开发改变。
+- 安全工具新增 `web_search/read_url/document_read` 的 fail-closed 边界。默认无网络 transport，真实执行必须绑定 caller role、surface、principal、session、data scope、规范参数审批决定与预算；模型 shadow 不能执行 handler。公网请求逐跳防 SSRF、DNS rebinding、私网/保留地址、危险端口、userinfo、重定向、超时、超大响应和错误 content type。
+- 附件只以事件中的 opaque handle 暴露；隔离相对路径只存在于受信 binding store，不进入 durable event。文档读取校验 Bot、sender、principal、session、事件、过期时间、symlink、路径穿越、大小、DOCX 外链/宏/压缩炸弹，并把文档内容标记为 untrusted。隔离文件清理只移动到 recycle。
+- 个人提醒和计划引入严格 `DeliveryTarget`。普通用户仅可在获准官方 Bot 私聊操作自己的任务；list/show/confirm/ack/cancel/snooze、计划草案/确认/重排和节点提醒均按 principal+Bot+target 作用域。普通任务创建/草案与 ordinary proactive 分开，owner/ordinary proactive 也在 Agent 和 Sidecar 两端分开，群与跨通道投递失败关闭。
+- 集成审计发现并修复两项阻断：attachment path 原本可能随事件持久化；普通 proactive 原本仍被 owner-only 目标函数拦截。进一步补上 owner proactive 关闭时不能借 ordinary proactive 通道投递的回归。
+- 独立终审修复后的完整合并测试为 Python `590 passed, 7 skipped`、Node `59 passed, 9 skipped`，Ruff、格式、Node 语法和 release gate 通过。本机无 Bash，Shell 语法与 Windows 跳过项必须由 Ubuntu PR CI 收口；本节点不代表代码已部署或功能已对用户开放。
+- PR #69 首轮 push run `33382686895` 与 pull_request run `33382728996` 均全绿；Ubuntu 已实际执行 Python 零跳过、Shell、Node POSIX/UDS/进程替换、发布包、镜像与 Compose。追加本证据后仍需新一轮 CI 复验再合并，生产开关与容器继续不变。
