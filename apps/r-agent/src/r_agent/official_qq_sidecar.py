@@ -21,7 +21,7 @@ from r_agent.transport import (
 )
 from r_agent.transport_state import TransportStateStore
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_TEXT_LENGTH = 4000
 _SAFE_REASONS = {
@@ -124,6 +124,8 @@ class SidecarConfig(Protocol):
     transport: str
     sidecar_socket_path: str
     proactive_enabled: bool
+    active_private_allowlist_version: int | None
+    active_private_allowlist_fingerprint: str | None
 
 
 class HttpxSidecarClient:
@@ -264,9 +266,38 @@ class OfficialQQSidecarAdapter:
             raise SidecarProtocolViolation("sidecar protocol version mismatch")
         return _safe_id(payload.get("generation"))
 
+    def _validate_private_allowlist_metadata(self, payload: Mapping[str, Any]) -> None:
+        version = payload.get("private_allowlist_version")
+        fingerprint = payload.get("private_allowlist_fingerprint")
+        expected_version = getattr(self.config, "active_private_allowlist_version", None)
+        expected_fingerprint = getattr(self.config, "active_private_allowlist_fingerprint", None)
+        if expected_version is None:
+            if version is not None or fingerprint is not None:
+                raise SidecarProtocolViolation("inactive private allowlist metadata is exposed")
+            return
+        if (
+            isinstance(version, bool)
+            or not isinstance(version, int)
+            or version < 1
+            or not isinstance(fingerprint, str)
+            or len(fingerprint) != 64
+            or any(char not in "0123456789abcdef" for char in fingerprint)
+        ):
+            raise SidecarProtocolViolation("private allowlist metadata is invalid")
+        if version != expected_version or fingerprint != expected_fingerprint:
+            raise SidecarProtocolViolation("private allowlist metadata does not match")
+
     async def _hello(self) -> tuple[str, int]:
         payload = await self._request("GET", "/v1/hello")
-        generation = self._validate_envelope(payload, {"event_cursor"})
+        generation = self._validate_envelope(
+            payload,
+            {
+                "event_cursor",
+                "private_allowlist_version",
+                "private_allowlist_fingerprint",
+            },
+        )
+        self._validate_private_allowlist_metadata(payload)
         cursor = payload.get("event_cursor")
         if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
             raise SidecarProtocolViolation("sidecar event cursor is invalid")
@@ -286,8 +317,11 @@ class OfficialQQSidecarAdapter:
                 "last_heartbeat_ack_at_ms",
                 "heartbeat_ack_observable",
                 "reason",
+                "private_allowlist_version",
+                "private_allowlist_fingerprint",
             },
         )
+        self._validate_private_allowlist_metadata(payload)
         for key in ("configured", "gateway_connected", "authenticated", "capture_only"):
             if not isinstance(payload.get(key), bool):
                 raise SidecarProtocolViolation("sidecar status boolean is invalid")

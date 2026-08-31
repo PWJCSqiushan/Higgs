@@ -16,6 +16,8 @@ def test_official_qq_defaults_to_disabled(monkeypatch: pytest.MonkeyPatch) -> No
         "R_AGENT_OFFICIAL_QQ_OWNER_OPENID",
         "R_AGENT_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS",
         "R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS",
+        "R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION",
+        "R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT",
         "R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED",
         "R_AGENT_OFFICIAL_QQ_GROUP_ENABLED",
         "R_AGENT_OFFICIAL_QQ_PRIVATE_RATE_PER_MINUTE",
@@ -71,11 +73,32 @@ def test_private_allowlist_is_normalized_and_owner_is_always_union_member(
         "member-openid, owner-openid, member-openid",
     )
     monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED", "true")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION", "1")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT", "a" * 64)
 
     config = OfficialQQConfig.from_env()
 
     assert config.allowed_private_openids == frozenset({"owner-openid", "member-openid"})
     assert config.active_private_openids == config.allowed_private_openids
+
+
+def test_ordinary_private_requires_versioned_allowlist_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ENABLED", "true")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_TRANSPORT", "sidecar")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_OWNER_OPENID", "owner-openid")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED", "true")
+    monkeypatch.delenv("R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION", raising=False)
+    monkeypatch.delenv("R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT", raising=False)
+
+    with pytest.raises(ConfigError, match="versioned allowlist metadata"):
+        OfficialQQConfig.from_env()
+
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION", "1")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT", "not-a-hash")
+    with pytest.raises(ConfigError, match="lowercase SHA-256"):
+        OfficialQQConfig.from_env()
 
 
 @pytest.mark.parametrize(

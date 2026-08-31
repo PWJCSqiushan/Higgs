@@ -62,12 +62,14 @@ def sidecar_config() -> OfficialQQConfig:
         group_enabled=True,
         transport="sidecar",
         reply_enabled=True,
+        private_allowlist_version=1,
+        private_allowlist_fingerprint="a" * 64,
     )
 
 
 def status_payload(*, generation: str = "generation-1") -> dict[str, object]:
     return {
-        "protocol_version": 1,
+        "protocol_version": 2,
         "generation": generation,
         "configured": True,
         "gateway_connected": True,
@@ -78,11 +80,19 @@ def status_payload(*, generation: str = "generation-1") -> dict[str, object]:
         "last_heartbeat_ack_at_ms": int(time.time() * 1000),
         "heartbeat_ack_observable": True,
         "reason": "ready",
+        "private_allowlist_version": 1,
+        "private_allowlist_fingerprint": "a" * 64,
     }
 
 
 def hello_payload(*, generation: str = "generation-1", cursor: int = 0) -> dict[str, object]:
-    return {"protocol_version": 1, "generation": generation, "event_cursor": cursor}
+    return {
+        "protocol_version": 2,
+        "generation": generation,
+        "event_cursor": cursor,
+        "private_allowlist_version": 1,
+        "private_allowlist_fingerprint": "a" * 64,
+    }
 
 
 def event_payload(
@@ -126,6 +136,25 @@ async def test_start_requires_exact_versioned_ready_status() -> None:
     assert status.authenticated is True
     assert status.account_id == "bot-id"
     assert client.requests[:2] == [("GET", "/v1/hello", None), ("GET", "/v1/status", None)]
+
+
+@pytest.mark.asyncio
+async def test_start_rejects_private_allowlist_version_or_fingerprint_drift() -> None:
+    drifted = hello_payload()
+    drifted["private_allowlist_fingerprint"] = "b" * 64
+    client = FakeSidecarClient([(200, drifted)])
+    adapter = OfficialQQSidecarAdapter(
+        sidecar_config(),
+        event_handler=_discard,
+        client=client,
+    )
+
+    with pytest.raises(TransportUnavailable, match="protocol"):
+        await adapter.start()
+
+    status = await adapter.status()
+    assert status.reason == "protocol_error"
+    assert status.authenticated is False
 
 
 @pytest.mark.asyncio
@@ -200,7 +229,7 @@ async def test_events_route_only_owner_and_allowlisted_group() -> None:
             (
                 200,
                 {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "generation": "generation-1",
                     "events": events,
                 },
@@ -209,7 +238,7 @@ async def test_events_route_only_owner_and_allowlisted_group() -> None:
                 (
                     200,
                     {
-                        "protocol_version": 1,
+                        "protocol_version": 2,
                         "generation": "generation-1",
                         "event_cursor": cursor,
                     },
@@ -239,14 +268,20 @@ async def test_owner_event_is_kept_when_new_ordinary_and_group_gates_are_off() -
     async def capture(event: InboundEvent) -> None:
         received.append(event)
 
+    owner_only_hello = hello_payload()
+    owner_only_hello["private_allowlist_version"] = None
+    owner_only_hello["private_allowlist_fingerprint"] = None
+    owner_only_status = status_payload()
+    owner_only_status["private_allowlist_version"] = None
+    owner_only_status["private_allowlist_fingerprint"] = None
     client = FakeSidecarClient(
         [
-            (200, hello_payload()),
-            (200, status_payload()),
+            (200, owner_only_hello),
+            (200, owner_only_status),
             (
                 200,
                 {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "generation": "generation-1",
                     "events": [
                         event_payload(1, sender_id="owner-id"),
@@ -265,7 +300,7 @@ async def test_owner_event_is_kept_when_new_ordinary_and_group_gates_are_off() -
                 (
                     200,
                     {
-                        "protocol_version": 1,
+                        "protocol_version": 2,
                         "generation": "generation-1",
                         "event_cursor": cursor,
                     },
@@ -308,7 +343,7 @@ async def test_allowlisted_ordinary_private_event_is_admitted_only_when_enabled(
             (
                 200,
                 {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "generation": "generation-1",
                     "events": [
                         event_payload(1, sender_id="ordinary-id"),
@@ -320,7 +355,7 @@ async def test_allowlisted_ordinary_private_event_is_admitted_only_when_enabled(
                 (
                     200,
                     {
-                        "protocol_version": 1,
+                        "protocol_version": 2,
                         "generation": "generation-1",
                         "event_cursor": cursor,
                     },
@@ -358,7 +393,7 @@ async def test_hello_restores_acknowledged_cursor_and_handler_failure_is_not_ack
             (
                 200,
                 {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "generation": "generation-1",
                     "events": [event_payload(6)],
                 },
@@ -396,7 +431,7 @@ async def test_ack_waits_for_real_durable_enqueue_and_replay_creates_one_batch(
         )
 
     events_payload = {
-        "protocol_version": 1,
+        "protocol_version": 2,
         "generation": "generation-1",
         "events": [event_payload(1)],
     }
@@ -409,7 +444,7 @@ async def test_ack_waits_for_real_durable_enqueue_and_replay_creates_one_batch(
             (
                 200,
                 {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "generation": "generation-1",
                     "event_cursor": 1,
                 },
@@ -448,7 +483,7 @@ async def test_lost_ack_response_resynchronizes_authoritative_cursor() -> None:
             (
                 200,
                 {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "generation": "generation-1",
                     "events": [event_payload(1)],
                 },
@@ -458,7 +493,7 @@ async def test_lost_ack_response_resynchronizes_authoritative_cursor() -> None:
             (
                 200,
                 {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "generation": "generation-1",
                     "events": [],
                 },
@@ -503,7 +538,7 @@ async def test_supervisor_recovers_lost_ack_response_without_reprocessing(
             (
                 200,
                 {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "generation": "generation-1",
                     "events": [event_payload(1)],
                 },
@@ -514,7 +549,7 @@ async def test_supervisor_recovers_lost_ack_response_without_reprocessing(
             (
                 200,
                 {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "generation": "generation-1",
                     "events": [],
                 },
@@ -567,7 +602,7 @@ async def test_cursor_gap_and_generation_change_fail_closed() -> None:
             (
                 200,
                 {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "generation": "generation-1",
                     "events": [event_payload(2)],
                 },
@@ -584,7 +619,7 @@ async def test_cursor_gap_and_generation_change_fail_closed() -> None:
         (
             200,
             {
-                "protocol_version": 1,
+                "protocol_version": 2,
                 "generation": "generation-2",
                 "events": [],
             },
@@ -668,7 +703,7 @@ async def test_send_is_passive_canonical_and_idempotent() -> None:
             (
                 200,
                 {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "generation": "generation-1",
                     "receipt": {
                         "request_id": "filled-by-test",
@@ -750,7 +785,7 @@ async def test_proactive_send_is_separately_gated_and_owner_private_only() -> No
             (
                 200,
                 {
-                    "protocol_version": 1,
+                    "protocol_version": 2,
                     "generation": "generation-1",
                     "receipt": {
                         "request_id": request_id,
@@ -868,7 +903,7 @@ async def test_unknown_or_rejected_send_never_claims_sent() -> None:
         (
             200,
             {
-                "protocol_version": 1,
+                "protocol_version": 2,
                 "generation": "generation-1",
                 "receipt": {
                     "request_id": "wrong-request",

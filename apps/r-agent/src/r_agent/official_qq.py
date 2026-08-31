@@ -9,10 +9,13 @@ the other process.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 from r_agent.config import ConfigError
+
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _bool_value(
@@ -70,6 +73,21 @@ def _bounded_int(
     return parsed
 
 
+def _optional_allowlist_version(value: str | None, *, name: str) -> int | None:
+    if value is None or not value.strip():
+        return None
+    return _bounded_int(value, default=1, minimum=1, maximum=2**31 - 1, name=name)
+
+
+def _optional_allowlist_fingerprint(value: str | None, *, name: str) -> str | None:
+    if value is None or not value.strip():
+        return None
+    clean = value.strip()
+    if not _SHA256.fullmatch(clean):
+        raise ConfigError(f"{name} must be a lowercase SHA-256 fingerprint")
+    return clean
+
+
 @dataclass(frozen=True, slots=True)
 class OfficialQQConfig:
     enabled: bool
@@ -91,6 +109,8 @@ class OfficialQQConfig:
     group_circuit_failure_limit: int = 5
     private_circuit_cooldown_seconds: int = 300
     group_circuit_cooldown_seconds: int = 300
+    private_allowlist_version: int | None = None
+    private_allowlist_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         owner_openid = (
@@ -119,6 +139,12 @@ class OfficialQQConfig:
                 raise ConfigError(f"{name} must be a boolean")
         if not self.enabled and (self.ordinary_private_enabled or self.group_enabled):
             raise ConfigError("official channel switches require an enabled transport")
+        if (self.private_allowlist_version is None) != (self.private_allowlist_fingerprint is None):
+            raise ConfigError(
+                "private allowlist version and fingerprint must be configured together"
+            )
+        if self.ordinary_private_enabled and self.private_allowlist_version is None:
+            raise ConfigError("ordinary private channel requires versioned allowlist metadata")
         for name, minimum, maximum in (
             ("private_rate_per_minute", 1, 120),
             ("group_rate_per_minute", 1, 240),
@@ -166,6 +192,14 @@ class OfficialQQConfig:
     @property
     def active_group_openids(self) -> frozenset[str]:
         return self.allowed_group_openids if self.enabled and self.group_enabled else frozenset()
+
+    @property
+    def active_private_allowlist_version(self) -> int | None:
+        return self.private_allowlist_version if self.ordinary_private_enabled else None
+
+    @property
+    def active_private_allowlist_fingerprint(self) -> str | None:
+        return self.private_allowlist_fingerprint if self.ordinary_private_enabled else None
 
     def __repr__(self) -> str:
         return (
@@ -234,6 +268,14 @@ class OfficialQQConfig:
         private_openids = _openid_set(
             os.environ.get("R_AGENT_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS"),
             name="R_AGENT_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS",
+        )
+        private_allowlist_version = _optional_allowlist_version(
+            os.environ.get("R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION"),
+            name="R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION",
+        )
+        private_allowlist_fingerprint = _optional_allowlist_fingerprint(
+            os.environ.get("R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT"),
+            name="R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT",
         )
         if app_id is not None and (
             not app_id.isascii() or not app_id.isdigit() or not 5 <= len(app_id) <= 32
@@ -326,6 +368,8 @@ class OfficialQQConfig:
                 maximum=3600,
                 name="R_AGENT_OFFICIAL_QQ_GROUP_CIRCUIT_COOLDOWN_SECONDS",
             ),
+            private_allowlist_version=private_allowlist_version,
+            private_allowlist_fingerprint=private_allowlist_fingerprint,
         )
 
 
