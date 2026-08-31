@@ -143,6 +143,9 @@ def _read_allowlist(path: Path, scope: str) -> dict[str, object]:
         or not SAFE_ID.fullmatch(value["epoch_id"])
         or not isinstance(value.get("nonce"), str)
         or not NONCE.fullmatch(value["nonce"])
+        or isinstance(value.get("frozen_at_ms"), bool)
+        or not isinstance(value.get("frozen_at_ms"), int)
+        or value["frozen_at_ms"] < 0
     ):
         raise ActivationError("allowlist metadata is invalid")
     expected = _canonical_fingerprint(
@@ -230,7 +233,9 @@ def prepare(
     agent_env: Path,
     sidecar_env: Path,
     allowlist_path: Path,
+    other_allowlist_path: Path | None,
     backup_dir: Path,
+    check_only: bool = False,
 ) -> None:
     if surface not in {"private", "group"}:
         raise ActivationError("surface is invalid")
@@ -274,6 +279,33 @@ def prepare(
     if audience_state[surface][0]:
         raise ActivationError("selected audience is already active")
 
+    other_surface = "group" if surface == "private" else "private"
+    if audience_state[other_surface][0]:
+        if other_allowlist_path is None:
+            raise ActivationError("active audience allowlist is unavailable")
+        other_allowlist = _read_allowlist(other_allowlist_path, other_surface)
+        if sidecar.get("QQBOT_APP_ID", "").strip() != other_allowlist["app_id"]:
+            raise ActivationError("active audience App binding differs")
+        if other_surface == "private":
+            other_agent_ids = "R_AGENT_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS"
+            other_sidecar_ids = "HIGGS_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS"
+            other_agent_meta = "R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST"
+            other_sidecar_meta = "HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST"
+        else:
+            other_agent_ids = "R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS"
+            other_sidecar_ids = "HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS"
+            other_agent_meta = "R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST"
+            other_sidecar_meta = "HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST"
+        if (
+            _ids(agent, other_agent_ids) != other_allowlist["openids"]
+            or _ids(sidecar, other_sidecar_ids) != other_allowlist["openids"]
+            or _metadata(agent, other_agent_meta)
+            != (other_allowlist["allowlist_version"], other_allowlist["fingerprint"])
+            or _metadata(sidecar, other_sidecar_meta)
+            != (other_allowlist["allowlist_version"], other_allowlist["fingerprint"])
+        ):
+            raise ActivationError("active audience provenance differs")
+
     if sidecar.get("QQBOT_APP_ID", "").strip() != allowlist["app_id"]:
         raise ActivationError("allowlist App binding differs")
     if surface == "private":
@@ -301,6 +333,11 @@ def prepare(
         or _metadata(sidecar, sidecar_meta) != expected_metadata
     ):
         raise ActivationError("allowlist provenance differs")
+
+    if surface == "group" and len(frozen_ids) != 1:
+        raise ActivationError("first group activation requires exactly one group")
+    if check_only:
+        return
 
     backup_dir.mkdir(mode=0o700, parents=True)
     agent_backup = backup_dir / "higgs.env"
@@ -330,7 +367,9 @@ def main() -> int:
     parser.add_argument("--agent-env", required=True)
     parser.add_argument("--sidecar-env", required=True)
     parser.add_argument("--allowlist", required=True)
+    parser.add_argument("--other-allowlist")
     parser.add_argument("--backup-dir", required=True)
+    parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
     try:
         prepare(
@@ -338,7 +377,9 @@ def main() -> int:
             agent_env=Path(args.agent_env),
             sidecar_env=Path(args.sidecar_env),
             allowlist_path=Path(args.allowlist),
+            other_allowlist_path=(Path(args.other_allowlist) if args.other_allowlist else None),
             backup_dir=Path(args.backup_dir),
+            check_only=args.check_only,
         )
     except (ActivationError, OSError, UnicodeError, ValueError):
         print("audience_activation=failed")

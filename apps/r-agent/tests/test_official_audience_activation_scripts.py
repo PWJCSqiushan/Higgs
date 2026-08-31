@@ -9,9 +9,12 @@ def test_shared_audience_activation_backs_up_identity_and_never_rebuilds_napcat(
 
     assert "ACTIVATE_VERSIONED_OFFICIAL_AUDIENCE" in script
     assert "PRODUCTION_AUDIENCE_CONFIRMED" in script
-    assert "/srv/trash/higgs-official-audience-" in script
+    assert "HIGGS_RECYCLE_ROOT" in script
+    assert "higgs-official-audience-" in script
     assert "identity.sqlite" in script
     assert "prepare_official_audience_activation.py" in script
+    assert "--check-only" in script
+    assert "activation_started_ms" in script
     assert "validate_official_channels.py" in script
     assert "--force-recreate official-qq-sidecar" in script
     assert "--force-recreate agent" in script
@@ -28,3 +31,5 @@ def test_surface_wrappers_require_explicit_versioned_confirmation() -> None:
     assert "legacy fixed-stability activation is disabled" in group
     assert "ACTIVATE_VERSIONED_OFFICIAL_AUDIENCE private" in private
     assert "ACTIVATE_VERSIONED_OFFICIAL_AUDIENCE group" in group
+    assert 'exec sh "$script_dir/activate_official_audience.sh"' in private
+    assert 'exec sh "$script_dir/activate_official_audience.sh"' in group

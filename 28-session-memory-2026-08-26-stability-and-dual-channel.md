@@ -505,7 +505,10 @@
 - 激活器支持两个受众按任意顺序逐个打开，不会为了第二个受众关闭第一个；已有受众的三重
   门、identity schema 或名单 provenance 不一致时拒绝执行。旧固定 72 小时群激活入口已在
   有效路径上禁用，固定观察不再阻塞离线开发，但每次真实受众扩大仍须单独确认。
-- Windows 完整门禁为 Python `478 passed, 5 skipped`、Node `59 passed, 9 skipped`；Ruff、
+- Windows 完整门禁为 Python `481 passed, 5 skipped`、Node `59 passed, 9 skipped`；Ruff、
   格式、Node 语法、Shell `bash -n`、release gate、秘密边界、Shell LF 和 diff 检查通过。
   当前尚未部署、迁移、捕获、冻结、激活、发送消息或重建任何生产容器，下一步为阶段 PR 与
   Ubuntu 零跳过 CI。
+- 独立上线脚本审计发现并修复了 `100644` wrapper 直接执行、校验失败误重建、备份残留、
+  回滚不等健康、只看旧 transport 回执与首群数量未锁定等风险；最终入口显式 `exec sh`，
+  只读预检通过后才备份和改配置，真实激活仍需主人另行确认。

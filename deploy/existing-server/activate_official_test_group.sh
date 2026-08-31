@@ -4,7 +4,7 @@ set -eu
 if [ "${1:-}" = "ACTIVATE_VERSIONED_TEST_GROUP" ] && \
   [ "${2:-}" = "PRODUCTION_AUDIENCE_CONFIRMED" ] && [ "$#" -eq 2 ]; then
   script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-  exec "$script_dir/activate_official_audience.sh" \
+  exec sh "$script_dir/activate_official_audience.sh" \
     ACTIVATE_VERSIONED_OFFICIAL_AUDIENCE group PRODUCTION_AUDIENCE_CONFIRMED
 fi
 

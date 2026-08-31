@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 if [ "${1:-}" != "ACTIVATE_VERSIONED_OFFICIAL_AUDIENCE" ] || \
   { [ "${2:-}" != private ] && [ "${2:-}" != group ]; } || \
@@ -15,18 +16,29 @@ stack_env=$config_dir/stack.env
 higgs_env=$config_dir/higgs.env
 side_env=$config_dir/official-qq.env
 private_dir=$data_root/official-qq-private
-current=/srv/apps/higgs/current
+current=${HIGGS_CURRENT_DIR:-/srv/apps/higgs/current}
+recycle_root=${HIGGS_RECYCLE_ROOT:-/srv/trash}
 case "$surface" in
-  private) allowlist_file=$private_dir/allowed-private-openids.json ;;
-  group) allowlist_file=$private_dir/allowed-group-openids.json ;;
+  private)
+    allowlist_file=$private_dir/allowed-private-openids.json
+    other_allowlist_file=$private_dir/allowed-group-openids.json
+    ;;
+  group)
+    allowlist_file=$private_dir/allowed-group-openids.json
+    other_allowlist_file=$private_dir/allowed-private-openids.json
+    ;;
 esac
 
-for command in docker flock python3 install cp mv stat date chown chmod wc sleep; do
+for command in docker flock python3 install cp mv stat date chown chmod wc sleep grep; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "audience_activate: required command is unavailable" >&2
     exit 2
   }
 done
+if [ ! -d "$current" ] || [ ! -d "$recycle_root" ] || [ -L "$recycle_root" ]; then
+  echo "audience_activate: deployment or recycle root is unsafe" >&2
+  exit 2
+fi
 for file in "$stack_env" "$higgs_env" "$side_env" "$allowlist_file"; do
   if [ ! -f "$file" ] || [ -L "$file" ] || [ "$(stat -c %a "$file")" != 600 ]; then
     echo "audience_activate: private input is unsafe" >&2
@@ -37,6 +49,14 @@ if [ "$(stat -c %u:%g "$allowlist_file")" != 10001:10001 ]; then
   echo "audience_activate: allowlist ownership is unsafe" >&2
   exit 2
 fi
+if [ -e "$other_allowlist_file" ] || [ -L "$other_allowlist_file" ]; then
+  if [ ! -f "$other_allowlist_file" ] || [ -L "$other_allowlist_file" ] || \
+    [ "$(stat -c %a "$other_allowlist_file")" != 600 ] || \
+    [ "$(stat -c %u:%g "$other_allowlist_file")" != 10001:10001 ]; then
+    echo "audience_activate: existing audience allowlist is unsafe" >&2
+    exit 2
+  fi
+fi
 
 cd "$current/deploy/existing-server"
 compose() {
@@ -44,17 +64,20 @@ compose() {
     -f compose.yml -f compose.official-qq.yml --profile official-qq "$@"
 }
 compose config --quiet
-agent_id=$(compose ps -q agent)
-sidecar_id=$(compose ps -q official-qq-sidecar)
-napcat_id=$(compose ps -q napcat)
-if [ -z "$agent_id" ] || [ -z "$sidecar_id" ] || [ -z "$napcat_id" ]; then
+agent_count=$(compose ps -q agent | wc -l)
+sidecar_count=$(compose ps -q official-qq-sidecar | wc -l)
+napcat_count=$(compose ps -q napcat | wc -l)
+if [ "$agent_count" -ne 1 ] || [ "$sidecar_count" -ne 1 ] || \
+  [ "$napcat_count" -ne 1 ]; then
   echo "audience_activate: official stack is incomplete" >&2
   exit 3
 fi
+agent_id=$(compose ps -q agent)
+sidecar_id=$(compose ps -q official-qq-sidecar)
+napcat_id=$(compose ps -q napcat)
 if [ "$(docker inspect --format '{{.State.Health.Status}}' "$agent_id")" != healthy ] || \
   [ "$(docker inspect --format '{{.State.Health.Status}}' "$sidecar_id")" != healthy ] || \
-  [ "$(docker inspect --format '{{.State.Health.Status}}' "$napcat_id")" != healthy ] || \
-  [ "$(docker ps --filter label=com.docker.compose.service=official-qq-sidecar --format '{{.ID}}' | wc -l)" -ne 1 ]; then
+  [ "$(docker inspect --format '{{.State.Health.Status}}' "$napcat_id")" != healthy ]; then
   echo "audience_activate: production preflight is unhealthy" >&2
   exit 3
 fi
@@ -70,13 +93,36 @@ flock -n 9 || {
 }
 
 timestamp=$(date +%Y%m%d%H%M%S)
-backup_dir=/srv/trash/higgs-official-audience-$surface-$timestamp-$$
+backup_dir=$recycle_root/higgs-official-audience-$surface-$timestamp-$$
 identity_staging=$data_root/agent/backups/.identity-audience-$surface-$timestamp-$$.sqlite
 if [ -e "$backup_dir" ] || [ -L "$backup_dir" ] || \
   [ -e "$identity_staging" ] || [ -L "$identity_staging" ]; then
   echo "audience_activate: backup target already exists" >&2
   exit 3
 fi
+
+python3 "$current/deploy/existing-server/prepare_official_audience_activation.py" \
+  --surface "$surface" \
+  --agent-env "$higgs_env" \
+  --sidecar-env "$side_env" \
+  --allowlist "$allowlist_file" \
+  --other-allowlist "$other_allowlist_file" \
+  --backup-dir "$backup_dir" \
+  --check-only
+
+archive_incomplete_identity_backup() {
+  result=$?
+  trap - EXIT INT TERM
+  if [ -e "$identity_staging" ] || [ -L "$identity_staging" ]; then
+    install -d -m 0700 "$backup_dir" || result=1
+    mv "$identity_staging" "$backup_dir/identity.incomplete.sqlite" || result=1
+    if [ ! -L "$backup_dir/identity.incomplete.sqlite" ]; then
+      chmod 0600 "$backup_dir/identity.incomplete.sqlite" || result=1
+    fi
+  fi
+  exit "$result"
+}
+trap archive_incomplete_identity_backup EXIT INT TERM
 
 docker exec "$agent_id" python - "$identity_staging" <<'PY'
 import sqlite3
@@ -88,6 +134,8 @@ source = sqlite3.connect("file:/var/lib/higgs/identity.sqlite?mode=ro", uri=True
 destination = sqlite3.connect(f"/var/lib/higgs/backups/{target}")
 try:
     source.backup(destination)
+    if destination.execute("PRAGMA quick_check").fetchone() != ("ok",):
+        raise RuntimeError("identity backup integrity check failed")
 finally:
     destination.close()
     source.close()
@@ -97,6 +145,22 @@ if [ ! -f "$identity_staging" ] || [ -L "$identity_staging" ]; then
   exit 3
 fi
 chmod 0600 "$identity_staging"
+trap - EXIT INT TERM
+
+wait_for_healthy() {
+  wait_service=$1
+  wait_deadline=$(( $(date +%s) + 180 ))
+  while [ "$(date +%s)" -lt "$wait_deadline" ]; do
+    wait_count=$(compose ps -q "$wait_service" | wc -l)
+    wait_id=$(compose ps -q "$wait_service")
+    if [ "$wait_count" -eq 1 ] && [ -n "$wait_id" ] && \
+      [ "$(docker inspect --format '{{.State.Health.Status}}' "$wait_id")" = healthy ]; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
 
 rollback_required=true
 rollback() {
@@ -142,7 +206,16 @@ rollback() {
       mv "$identity_staging" "$backup_dir/identity.sqlite" || result=1
     fi
     compose up -d --no-deps --force-recreate official-qq-sidecar >/dev/null || result=1
+    wait_for_healthy official-qq-sidecar || result=1
     compose up -d --no-deps --force-recreate agent >/dev/null || result=1
+    wait_for_healthy agent || result=1
+    rollback_napcat_id=$(compose ps -q napcat)
+    if [ "$(compose ps -q napcat | wc -l)" -ne 1 ] || \
+      [ "$rollback_napcat_id" != "$napcat_id" ] || \
+      [ "$(docker inspect --format '{{.State.StartedAt}}' "$rollback_napcat_id")" != "$napcat_started" ] || \
+      [ "$(docker inspect --format '{{.RestartCount}}' "$rollback_napcat_id")" != "$napcat_restarts" ]; then
+      result=1
+    fi
   fi
   exit "$result"
 }
@@ -153,19 +226,21 @@ python3 "$current/deploy/existing-server/prepare_official_audience_activation.py
   --agent-env "$higgs_env" \
   --sidecar-env "$side_env" \
   --allowlist "$allowlist_file" \
+  --other-allowlist "$other_allowlist_file" \
   --backup-dir "$backup_dir"
 mv "$identity_staging" "$backup_dir/identity.sqlite"
 chmod 0600 "$backup_dir/identity.sqlite"
 
 compose config --quiet
+activation_started_ms=$(( $(date +%s) * 1000 ))
 compose up -d --no-deps --force-recreate official-qq-sidecar >/dev/null
 deadline=$(( $(date +%s) + 180 ))
 sidecar_ready=false
 while [ "$(date +%s)" -lt "$deadline" ]; do
+  new_sidecar_count=$(compose ps -q official-qq-sidecar | wc -l)
   new_sidecar_id=$(compose ps -q official-qq-sidecar)
-  if [ -n "$new_sidecar_id" ] && \
-    [ "$(docker inspect --format '{{.State.Health.Status}}' "$new_sidecar_id")" = healthy ] && \
-    [ "$(docker ps --filter label=com.docker.compose.service=official-qq-sidecar --format '{{.ID}}' | wc -l)" -eq 1 ]; then
+  if [ "$new_sidecar_count" -eq 1 ] && [ -n "$new_sidecar_id" ] && \
+    [ "$(docker inspect --format '{{.State.Health.Status}}' "$new_sidecar_id")" = healthy ]; then
     sidecar_ready=true
     break
   fi
@@ -180,8 +255,9 @@ compose up -d --no-deps --force-recreate agent >/dev/null
 deadline=$(( $(date +%s) + 180 ))
 agent_ready=false
 while [ "$(date +%s)" -lt "$deadline" ]; do
+  new_agent_count=$(compose ps -q agent | wc -l)
   new_agent_id=$(compose ps -q agent)
-  if [ -n "$new_agent_id" ] && \
+  if [ "$new_agent_count" -eq 1 ] && [ -n "$new_agent_id" ] && \
     [ "$(docker inspect --format '{{.State.Health.Status}}' "$new_agent_id")" = healthy ]; then
     agent_ready=true
     break
@@ -193,13 +269,35 @@ done
   exit 4
 }
 
+case "$surface" in
+  private)
+    expected_agent_gate=R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED=true
+    expected_persona_gate=R_AGENT_PERSONA_V2_ORDINARY_PRIVATE_ENABLED=true
+    expected_sidecar_gate=HIGGS_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED=true
+    ;;
+  group)
+    expected_agent_gate=R_AGENT_OFFICIAL_QQ_GROUP_ENABLED=true
+    expected_persona_gate=R_AGENT_PERSONA_V2_GROUP_ENABLED=true
+    expected_sidecar_gate=HIGGS_OFFICIAL_QQ_GROUP_ENABLED=true
+    ;;
+esac
+docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$new_agent_id" |
+  grep -qx 'R_AGENT_IDENTITY_SCHEMA_V2_ENABLED=true'
+docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$new_agent_id" |
+  grep -qx "$expected_agent_gate"
+docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$new_agent_id" |
+  grep -qx "$expected_persona_gate"
+docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$new_sidecar_id" |
+  grep -qx "$expected_sidecar_gate"
+
 python3 "$current/deploy/existing-server/validate_official_channels.py" \
   --agent-env "$higgs_env" --sidecar-env "$side_env" --release
-docker exec "$new_agent_id" python -c "import sqlite3,sys,time; c=sqlite3.connect('file:/var/lib/higgs/transport.sqlite?mode=ro',uri=True); c.execute('PRAGMA query_only=ON'); r=c.execute(\"SELECT state,onebot_reachable,qq_online,account_match,last_health_state,last_health_at_ms FROM transport_state WHERE channel='qq_official'\").fetchone(); now=int(time.time()*1000); sys.exit(0 if r and r[0]=='verified' and r[1:5]==(1,1,1,'ok') and r[5] is not None and 0<=now-r[5]<=120000 else 1)"
+docker exec "$new_agent_id" python -c "import sqlite3,sys,time; start=int(sys.argv[1]); c=sqlite3.connect('file:/var/lib/higgs/transport.sqlite?mode=ro',uri=True); c.execute('PRAGMA query_only=ON'); r=c.execute(\"SELECT state,onebot_reachable,qq_online,account_match,last_health_state,last_health_at_ms FROM transport_state WHERE channel='qq_official'\").fetchone(); now=int(time.time()*1000); sys.exit(0 if r and r[0]=='verified' and r[1:5]==(1,1,1,'ok') and r[5] is not None and start<=r[5]<=now and now-r[5]<=120000 else 1)" "$activation_started_ms"
 docker exec "$new_agent_id" python -c "import sqlite3,sys; c=sqlite3.connect('file:/var/lib/higgs/official_processing.sqlite?mode=ro',uri=True); c.execute('PRAGMA query_only=ON'); n=c.execute(\"SELECT COUNT(*) FROM official_processing_batches WHERE state!='complete'\").fetchone()[0]; sys.exit(0 if n==0 else 1)"
 
 current_napcat_id=$(compose ps -q napcat)
-if [ "$current_napcat_id" != "$napcat_id" ] || \
+if [ "$(compose ps -q napcat | wc -l)" -ne 1 ] || \
+  [ "$current_napcat_id" != "$napcat_id" ] || \
   [ "$(docker inspect --format '{{.State.StartedAt}}' "$current_napcat_id")" != "$napcat_started" ] || \
   [ "$(docker inspect --format '{{.RestartCount}}' "$current_napcat_id")" != "$napcat_restarts" ]; then
   echo "audience_activate: NapCat changed unexpectedly" >&2

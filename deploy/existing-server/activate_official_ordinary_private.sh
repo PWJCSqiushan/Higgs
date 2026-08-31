@@ -8,5 +8,5 @@ if [ "${1:-}" != "ACTIVATE_VERSIONED_ORDINARY_PRIVATE" ] || \
 fi
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec "$script_dir/activate_official_audience.sh" \
+exec sh "$script_dir/activate_official_audience.sh" \
   ACTIVATE_VERSIONED_OFFICIAL_AUDIENCE private PRODUCTION_AUDIENCE_CONFIRMED
