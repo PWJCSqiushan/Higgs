@@ -507,3 +507,26 @@
 - 本节点只修改公开文档，没有连接生产、修改配置或数据库、发送消息、重建容器、读取身份
   或凭据，也没有改变正在运行的观察自动化。下一步先完成本分支质量门、PR/CI，再从最新
   主线建立阶段 1 分支。
+
+## 50. 2026-08-31 官方普通用户与官方群 V2 离线闭环
+
+- 阶段 1 分支从远端主线 `8c2c4982e5ff2785ff8a21089548ba1a215145df` 建立，完成
+  Bot 账户绑定的私聊与群 `CaptureEpoch + AllowlistVersion`。每轮捕获拥有 nonce、截止
+  时间、最大候选数和前序版本；冻结后的 Agent/Sidecar 身份集合、版本和规范指纹必须完全
+  一致，v1 文件、wildcard、错误 Bot、READY/RESUME 漂移或版本链断裂均失败关闭。
+- 官方 principal 已增加显式 account scope；只有单独开启 identity schema v2 后才迁移。
+  普通 C2C、官方群和各自 Persona 2.2 门均默认关闭。未知用户、未知群、未 `@` 群事件和
+  错误 Bot 会在 durable queue、Journal、模型与记忆之前拒绝；普通用户仍不能继承主人命令、
+  工具、审批、配置或跨用户治理。
+- 私聊与群捕获/冻结均可重复受控执行：新版本以前一版本为基线增量生成，旧名单、失败状态
+  和私有配置只移动到 `/srv/trash`。冻结不启用受众；生产激活由另一个精确确认入口完成，
+  在线备份 identity 数据库，只重建 official sidecar 与 Agent，并验证 NapCat 指纹完全不变。
+- 激活支持先普通 C2C 后单群或相反顺序。已有受众的 Agent/Sidecar/Persona 三重门必须一致，
+  identity schema 必须已启用；所选受众重复激活、名单 provenance 漂移、单 Gateway、健康、
+  transport 新鲜度或 active batches 任一不满足都会失败并恢复私有配置与 identity 备份。
+- 本地完整验收为 Python `478 passed, 5 skipped`、Node `59 passed, 9 skipped`；Ruff 格式与
+  检查、Node 语法、Shell `bash -n`、release gate、秘密扫描、Shell LF 与 diff 检查均通过。
+  Windows 跳过项等待 PR Ubuntu CI 零跳过收口。
+- 本节点没有连接生产、运行捕获或冻结、迁移数据库、开启普通用户/群、发送消息、重建容器
+  或改动 NapCat。下一步提交阶段 PR 并等待 CI；即使合并，生产仍须按普通 C2C 与单群分别
+  获得确认，不能把代码合并视为上线。

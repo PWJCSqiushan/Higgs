@@ -39,6 +39,15 @@ Agent.
 - In full mode the sidecar independently enforces the private owner and group
   allowlist before queueing an event or creating a reply authorization. The
   Python process applies the same policy again.
+- Ordinary C2C and group audiences each use a Bot-bound v2 capture epoch and
+  immutable allowlist version. Repeated capture is incremental: the previous
+  version and fingerprint form an explicit chain, while old files are archived
+  by deployment wrappers before replacement. The sidecar verifies scope,
+  AppID, READY/RESUME Bot identity, configured IDs, version and canonical
+  SHA-256 before either audience can start.
+- `/v1/hello` and `/v1/status` expose only the content-free active allowlist
+  version and fingerprint for each audience. Closed audiences expose `null`;
+  Agent/sidecar drift is a terminal protocol failure.
 - Sending is passive-reply-only. A reply message ID is mandatory, target and
   payload fields are strictly validated, and a bounded authorization cache
   binds that message ID to its original conversation. Concurrent identical
@@ -68,7 +77,8 @@ Agent.
   quiet window, prepared reply, risk reservation, send/finalize lifecycle and
   source tombstone in `official_processing.sqlite`. Owner C2C passive replies
   have passed real end-to-end acceptance; ordinary users, groups and proactive
-  delivery remain behind separate default-off gates.
+  delivery remain behind separate default-off gates. Persona, identity schema,
+  ordinary C2C and group activation are independent release gates.
 
 ## Local verification
 
