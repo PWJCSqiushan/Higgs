@@ -40,15 +40,58 @@ R_AGENT_SELF_MEMORY_MODE=off
 
 ## 摄影观点种子
 
-预览不写数据库：
+预览不写数据库，也不检查路径是否存在、读取 schema 或创建备份：
 
 ```bash
 r-agent-self-memory-seed --db /private/memory.sqlite
 ```
 
-生产导入必须先完成一致性备份，并在独立审批中使用命令预览返回的精确确认串执行
-`--confirm --confirmation ...`。工具只导入摄影观点及其原句，不导入聊天正文；重复执行
-复用同一幂等记录。
+正式导入必须在独立审批中使用预览返回的精确确认串：
+
+```bash
+r-agent-self-memory-seed \
+  --db /private/memory.sqlite \
+  --confirm \
+  --confirmation CONFIRM_HIGGS_PHOTOGRAPHY_STANCE_V1
+```
+
+确认路径会先验证数据库是普通文件而非符号链接、文件大小不超过 512 MiB、SQLite
+`quick_check` 通过且 schema v4 已经由另一项审批完成。工具随后使用 SQLite backup API 在
+数据库同目录生成一致性备份；备份创建失败、校验失败、被替换为链接或不在同目录时，导入
+都会失败关闭。备份权限会尽力收紧为 `0600`。工具不会隐式执行 schema 迁移。
+
+成功或失败回执只包含时间、seed/备份 SHA-256、路径 SHA-256、备份大小、权限结果和
+内容无关状态，不输出数据库路径、观点正文或聊天内容。导入发生异常时，一致性备份保留，
+可先离线执行 `quick_check`，再按既有恢复流程恢复；工具不会在异常路径直接删除备份。
+重复执行复用 `seed:photography-stance-v1` 幂等记录，不会生成第二条观点，但每次正式确认
+仍会先生成新的导入前备份。
+
+## 30+ 条中文 shadow 评测门
+
+版本化数据集 `self-memory-shadow-zh-v1` 同时覆盖 `self_stance` 和 `adopted_idea`，包括
+应提取、空结果、隔离、拒绝、冲突、敏感内容、提示注入以及身份/权限诱导。默认命令使用
+固定的离线 extractor fixture；也可以用 `--outputs` 提供一个由 case ID 到原始 extractor
+输出字符串的 JSON 对象：
+
+```bash
+r-agent-self-memory-eval
+r-agent-self-memory-eval --outputs /private/eval-outputs.json
+```
+
+输出只包含聚合 JSON，不含案例正文或候选内容。发布门固定要求：precision 至少 0.95、
+recall 至少 0.90、处置准确率至少 0.95，误激活、污染和非预期解析失败均为零；不达标退出
+码为 `1`，输入或数据集无效退出码为 `2`。固定 fixture 只验证评测器和解析安全边界，不可
+替代真实模型 shadow 结果。
+
+## 独立生产确认
 
 代码部署、schema v4 迁移、shadow、摄影种子导入和 autonomous-low-risk 是五个不同的
-生产动作，不能由一次批准合并授权。
+生产动作，不能由一次批准合并授权：
+
+1. 部署代码时所有新开关保持关闭；
+2. 备份并单独批准 schema v4 迁移；
+3. 单独批准真实模型 shadow，只生成候选；
+4. shadow 指标达标后，单独批准摄影种子导入；
+5. 经过真实审核和观察后，才可另行批准 `autonomous-low-risk`。
+
+任一步失败都不会自动推进下一步，也不能用测试 fixture 的绿色结果代替生产 shadow 验收。

@@ -28,7 +28,8 @@ dev = [
 r-agent = "r_agent.cli:main"
 r-agent-memory-eval = "r_agent.model_memory_eval_cli:main"
 r-agent-official-owner-capture = "r_agent.official_qq_owner_capture_cli:main"
-r-agent-self-memory-seed = "r_agent.persona_evolution:main"
+r-agent-self-memory-eval = "r_agent.self_memory_eval_cli:main"
+r-agent-self-memory-seed = "r_agent.self_memory_seed_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/r_agent"]
