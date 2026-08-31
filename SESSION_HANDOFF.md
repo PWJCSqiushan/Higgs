@@ -619,3 +619,16 @@
 - 修复后本地 Python 为 `544 passed, 6 skipped`，Node 为 `59 passed, 9 skipped`；Ruff、格式、
   release gate、秘密边界、Shell LF、Node 语法和 38 例评测均通过。生产仍未部署、迁移、运行
   shadow、导入观点、发送消息或重建容器；须重新推送并等待 PR #68 新一轮 Ubuntu CI。
+
+## 56. 2026-08-31 PR #68 合并并进入安全工具与个人任务阶段
+
+- PR #68 已合并为 main `517bb23a8a58aec70b7751740a86e2dae1d7da49`。审计修复后的
+  push/pull_request 两套 CI 和合并后 main run `33374862049` 均成功；Ubuntu Python 零
+  跳过，官方 Sidecar、Shell、发布包、秘密边界、镜像与 Compose 同时通过。
+- 合并只更新 GitHub 主线。生产 self-memory schema/mode、普通 C2C、官方群、摄影种子、
+  自主成长、搜索工具和普通用户主动任务仍关闭；没有部署、迁移、发送消息、重建或改动
+  NapCat。生产匿名观察页面连接仍未在本节点重新建立，状态不可臆测。
+- 阶段 4 已从该提交建立 `codex/higgs-safe-tools-personal-tasks-20260831`，并在隔离 worktree
+  并行实现两块：安全 `web_search/read_url/document_read`；普通白名单用户本人提醒与计划。
+  两块都必须默认关闭、作用域绑定当前 Bot/principal/session，并经独立审计与全量门禁后才
+  能进入阶段 PR；任何真实网络工具、普通用户任务或主动投递启用仍须分别确认。
