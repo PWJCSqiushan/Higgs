@@ -253,21 +253,26 @@ def prepare(
         raise ActivationError("sidecar full-mode baseline is unavailable")
     if not _bool(agent, "R_AGENT_PERSONA_V2_ENABLED"):
         raise ActivationError("global Persona V2 is unavailable")
-    closed_agent = (
-        "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED",
-        "R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED",
-        "R_AGENT_OFFICIAL_QQ_GROUP_ENABLED",
-        "R_AGENT_PERSONA_V2_ORDINARY_PRIVATE_ENABLED",
-        "R_AGENT_PERSONA_V2_GROUP_ENABLED",
-    )
-    closed_sidecar = (
-        "HIGGS_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED",
-        "HIGGS_OFFICIAL_QQ_GROUP_ENABLED",
-    )
-    if any(_bool(agent, key) for key in closed_agent) or any(
-        _bool(sidecar, key) for key in closed_sidecar
-    ):
-        raise ActivationError("audience activation baseline is not closed")
+    identity_schema_v2 = _bool(agent, "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED")
+    audience_state = {
+        "private": (
+            _bool(agent, "R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED"),
+            _bool(sidecar, "HIGGS_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED"),
+            _bool(agent, "R_AGENT_PERSONA_V2_ORDINARY_PRIVATE_ENABLED"),
+        ),
+        "group": (
+            _bool(agent, "R_AGENT_OFFICIAL_QQ_GROUP_ENABLED"),
+            _bool(sidecar, "HIGGS_OFFICIAL_QQ_GROUP_ENABLED"),
+            _bool(agent, "R_AGENT_PERSONA_V2_GROUP_ENABLED"),
+        ),
+    }
+    for state in audience_state.values():
+        if len(set(state)) != 1:
+            raise ActivationError("audience and Persona gates differ")
+    if any(state[0] for state in audience_state.values()) and not identity_schema_v2:
+        raise ActivationError("active audience requires identity schema v2")
+    if audience_state[surface][0]:
+        raise ActivationError("selected audience is already active")
 
     if sidecar.get("QQBOT_APP_ID", "").strip() != allowlist["app_id"]:
         raise ActivationError("allowlist App binding differs")

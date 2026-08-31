@@ -183,3 +183,75 @@ def test_prepare_restores_both_envs_if_the_second_atomic_write_fails(
 
     assert agent.read_bytes() == original_agent
     assert sidecar.read_bytes() == original_sidecar
+
+
+@pytest.mark.parametrize(("first", "second"), [("private", "group"), ("group", "private")])
+def test_prepare_can_activate_the_second_audience_without_closing_the_first(
+    tmp_path: Path,
+    first: str,
+    second: str,
+) -> None:
+    agent, sidecar, allowlist, backup = _fixture(tmp_path, second)
+    agent_first = (
+        "R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED"
+        if first == "private"
+        else "R_AGENT_OFFICIAL_QQ_GROUP_ENABLED"
+    )
+    sidecar_first = (
+        "HIGGS_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED"
+        if first == "private"
+        else "HIGGS_OFFICIAL_QQ_GROUP_ENABLED"
+    )
+    persona_first = (
+        "R_AGENT_PERSONA_V2_ORDINARY_PRIVATE_ENABLED"
+        if first == "private"
+        else "R_AGENT_PERSONA_V2_GROUP_ENABLED"
+    )
+    _write_private(
+        agent,
+        agent.read_text(encoding="utf-8")
+        .replace(
+            "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED=false",
+            "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED=true",
+        )
+        .replace(f"{agent_first}=false", f"{agent_first}=true")
+        .replace(f"{persona_first}=false", f"{persona_first}=true"),
+    )
+    _write_private(
+        sidecar,
+        sidecar.read_text(encoding="utf-8").replace(
+            f"{sidecar_first}=false", f"{sidecar_first}=true"
+        ),
+    )
+
+    ACTIVATION.prepare(
+        surface=second,
+        agent_env=agent,
+        sidecar_env=sidecar,
+        allowlist_path=allowlist,
+        backup_dir=backup,
+    )
+
+    assert f"{agent_first}=true" in agent.read_text(encoding="utf-8")
+    assert f"{sidecar_first}=true" in sidecar.read_text(encoding="utf-8")
+    assert f"{persona_first}=true" in agent.read_text(encoding="utf-8")
+
+
+def test_prepare_rejects_mismatched_existing_audience_gates(tmp_path: Path) -> None:
+    agent, sidecar, allowlist, backup = _fixture(tmp_path, "group")
+    _write_private(
+        agent,
+        agent.read_text(encoding="utf-8").replace(
+            "R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED=false",
+            "R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED=true",
+        ),
+    )
+
+    with pytest.raises(ACTIVATION.ActivationError, match="gates differ"):
+        ACTIVATION.prepare(
+            surface="group",
+            agent_env=agent,
+            sidecar_env=sidecar,
+            allowlist_path=allowlist,
+            backup_dir=backup,
+        )

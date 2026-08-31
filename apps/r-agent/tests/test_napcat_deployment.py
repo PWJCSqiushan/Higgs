@@ -120,18 +120,14 @@ def test_official_test_group_capture_is_versioned_bounded_and_non_activating() -
 
 
 def test_official_test_group_freeze_moves_baseline_and_syncs_metadata() -> None:
-    text = (ROOT / "deploy/existing-server/freeze_official_group.sh").read_text(
-        encoding="utf-8"
-    )
-    helper = (ROOT / "deploy/existing-server/freeze_official_group.py").read_text(
-        encoding="utf-8"
-    )
+    text = (ROOT / "deploy/existing-server/freeze_official_group.sh").read_text(encoding="utf-8")
+    helper = (ROOT / "deploy/existing-server/freeze_official_group.py").read_text(encoding="utf-8")
     assert "FREEZE_OFFICIAL_TEST_GROUP" in text
     assert "group-capture.json" in text
     assert "allowed-group-openids.json" in text
     assert "group.openid requires explicit import" in text
     assert "/srv/trash/higgs-official-group-freeze-" in text
-    assert "mv \"$allowlist_file\" \"$previous_allowlist_file\"" in text
+    assert 'mv "$allowlist_file" "$previous_allowlist_file"' in text
     assert "group-capture.failed.json" in text
     assert "allowed-group-openids.failed.json" in text
     assert "PREVIOUS_ALLOWLIST_FILE" in text
@@ -144,7 +140,7 @@ def test_official_test_group_freeze_moves_baseline_and_syncs_metadata() -> None:
     assert "official_processing_batches WHERE state!='complete'" in text
     assert "audience_gates=unchanged" in text
     assert "rollback" in helper
-    assert 'print(len(openids))' in helper
+    assert "print(len(openids))" in helper
     assert "R_AGENT_OFFICIAL_QQ_ENABLED" not in text
     assert "HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED" not in text
     assert 'echo "$group' not in text
@@ -154,15 +150,17 @@ def test_official_test_group_freeze_moves_baseline_and_syncs_metadata() -> None:
     assert ".unlink(" not in text
 
 
-def test_group_activation_remains_deferred_until_follow_up_slice() -> None:
+def test_group_activation_uses_versioned_audience_gate_and_rejects_legacy_path() -> None:
     text = (ROOT / "deploy/existing-server/activate_official_test_group.sh").read_text(
         encoding="utf-8"
     )
-    assert "ACTIVATE_ONE_BOUND_TEST_GROUP" in text
-    assert "STABILITY_72H_ACCEPTED" in text
-    assert "R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS" in text
-    assert "HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS" in text
-    assert "only group-at events are accepted" in text
+    active_prefix = text.split("exit 2", 1)[0]
+    assert "ACTIVATE_VERSIONED_TEST_GROUP" in active_prefix
+    assert "PRODUCTION_AUDIENCE_CONFIRMED" in active_prefix
+    assert "ACTIVATE_VERSIONED_OFFICIAL_AUDIENCE group" in active_prefix
+    assert "legacy fixed-stability activation is disabled" in text
+    assert "ACTIVATE_ONE_BOUND_TEST_GROUP" not in active_prefix
+    assert "STABILITY_72H_ACCEPTED" not in active_prefix
     assert "docker logs" not in text
     assert "\nrm " not in text
     assert ".unlink(" not in text
