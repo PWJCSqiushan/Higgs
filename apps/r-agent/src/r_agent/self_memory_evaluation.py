@@ -7,7 +7,9 @@ from the returned report so CI logs cannot become a second conversation store.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +23,7 @@ from r_agent.persona_evolution import (
 )
 
 DATASET_VERSION = "self-memory-shadow-zh-v1"
+EVALUATOR_VERSION = "self-memory-evaluator-v2"
 MINIMUM_CASES = 30
 MINIMUM_PRECISION = 0.95
 MINIMUM_RECALL = 0.90
@@ -350,3 +353,67 @@ async def evaluate_extractor(
 
 def fixed_fixture_outputs(cases: Iterable[SelfMemoryEvalCase]) -> dict[str, str]:
     return {case.case_id: fixture_output(case) for case in cases}
+
+
+def evaluation_report(
+    metrics: SelfMemoryEvalMetrics,
+    *,
+    cases: Iterable[SelfMemoryEvalCase],
+    outputs: Mapping[str, str],
+    model_version: str,
+    prompt_version: str,
+    evaluated_at_ms: int | None = None,
+) -> dict[str, object]:
+    """Attach a content-free, reproducible receipt to aggregate metrics."""
+
+    normalized = tuple(cases)
+    clean_model = str(model_version).strip()
+    clean_prompt = str(prompt_version).strip()
+    if not clean_model or len(clean_model) > 128:
+        raise ValueError("evaluation model version is invalid")
+    if not clean_prompt or len(clean_prompt) > 128:
+        raise ValueError("evaluation prompt version is invalid")
+    dataset_summary = [
+        {
+            "id": case.case_id,
+            "lane": case.lane.value,
+            "input_sha256": hashlib.sha256(case.text.encode("utf-8")).hexdigest(),
+            "expected": case.expected,
+            "fixture_mode": case.fixture_mode,
+            "normalized_sha256": (
+                hashlib.sha256(case.normalized_content.encode("utf-8")).hexdigest()
+                if case.normalized_content is not None
+                else None
+            ),
+            "expected_parse_failure": case.expected_parse_failure,
+        }
+        for case in normalized
+    ]
+    output_summary = {
+        case.case_id: hashlib.sha256(outputs.get(case.case_id, "").encode("utf-8")).hexdigest()
+        for case in normalized
+    }
+    dataset_sha256 = hashlib.sha256(
+        json.dumps(dataset_summary, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    outputs_sha256 = hashlib.sha256(
+        json.dumps(output_summary, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    timestamp = int(time.time() * 1_000) if evaluated_at_ms is None else int(evaluated_at_ms)
+    run_id = hashlib.sha256(
+        (
+            f"{EVALUATOR_VERSION}:{dataset_sha256}:{outputs_sha256}:"
+            f"{clean_model}:{clean_prompt}:{timestamp}"
+        ).encode()
+    ).hexdigest()[:32]
+    report = metrics.report()
+    report["receipt"] = {
+        "run_id": run_id,
+        "evaluated_at_ms": timestamp,
+        "evaluator_version": EVALUATOR_VERSION,
+        "dataset_sha256": dataset_sha256,
+        "outputs_sha256": outputs_sha256,
+        "model_version": clean_model,
+        "prompt_version": clean_prompt,
+    }
+    return report

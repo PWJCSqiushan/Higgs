@@ -39,7 +39,7 @@
 | 官方群 `@Higgs` 回复 | `implemented` | 旧版 `deployed-off`；V2 未部署 | V2 群名单已经 PR #66 合并并绑定 Bot；只接受 `GROUP_AT_MESSAGE_CREATE`，生产尚未激活测试群 |
 | 群成员 principal 私有记忆 | `implemented` | `deployed-off` | 作用域隔离已有测试；尚无真实 A/B 成员生产验收 |
 | 群公共记忆 | `implemented` | `deployed-off` | 去标识化、两成员佐证或 owner 审批已实现；群伴随表尚未生产迁移 |
-| Higgs 自我记忆 v4 | `implemented`（阶段 3 分支强化） | `deployed-off` | SENT-only、证据/替代链、shadow 硬门、匿名收据、失败重放、内容去重和真实原句校验已实现；schema/mode 关闭 |
+| Higgs 自我记忆 v4 | `implemented`（PR #68 审核中） | `deployed-off` | SENT-only、证据/替代链、shadow 硬门、匿名版本收据、失败重放、并发语义去重、处理后/启动时正文清理和真实原句校验已实现；schema/mode 关闭 |
 | 摄影观点种子 | `implemented`（阶段 3 分支强化） | 未导入 | 预览不触碰 DB；正式导入要求既有 v4、精确确认和同目录 SQLite 一致性备份；生产没有该种子 |
 | 模型辅助记忆候选 | `implemented` | `deployed-off` | self-memory 新增 38 例中文聚合评测和门槛；真实生产模型 shadow 尚未获准运行 |
 | 官方主动提醒与主动发送 | `implemented` | `deployed-off` | `channel + account + target + surface`、双门和 durable claim 已实现；生产双门关闭 |
@@ -73,7 +73,7 @@ transport 状态和 active durable batches；本账本不能替代现场预检�
 1. 版本化普通用户/群捕获、Persona 全用户覆盖和身份隔离强化（PR #66 已合并且主线 CI
    全绿；生产未部署、未迁移、未激活）。
 2. 普通用户自然记忆更新、纠正与遗忘（PR #67 已合并且主线 CI 全绿；生产未部署、迁移或启用）。
-3. 自我记忆真实 shadow、摄影观点种子和低风险成长（阶段 3 离线实现与本地门禁已完成，等待 PR/Ubuntu CI；生产保持关闭）。
+3. 自我记忆真实 shadow、摄影观点种子和低风险成长（PR #68 已建立；独立审计阻断已修复，等待修复提交后的 Ubuntu CI；生产保持关闭）。
 4. 搜索、网页/文档读取与普通用户个人提醒/计划。
 5. 多模态、知识库、管理台、指标和后续通道。
 

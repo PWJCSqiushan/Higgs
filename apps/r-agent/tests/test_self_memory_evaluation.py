@@ -72,7 +72,19 @@ def test_unsafe_candidate_fails_thresholds_and_cli_exits_nonzero(tmp_path, capsy
 
     output_path = tmp_path / "outputs.json"
     output_path.write_text(json.dumps(outputs, ensure_ascii=False), encoding="utf-8")
-    assert main(["--outputs", str(output_path)]) == 1
+    assert (
+        main(
+            [
+                "--outputs",
+                str(output_path),
+                "--model-version",
+                "test-model-v1",
+                "--prompt-version",
+                "memory-evolution-v1",
+            ]
+        )
+        == 1
+    )
     cli_output = capsys.readouterr().out
     assert "不该进入记忆" not in cli_output
     assert '"passed":false' in cli_output
@@ -98,3 +110,21 @@ def test_cli_fixed_fixture_passes_with_aggregate_json_only(capsys) -> None:
     assert payload["cases"] >= 30
     assert "text" not in payload
     assert "candidate" not in payload
+    receipt = payload["receipt"]
+    assert len(receipt["run_id"]) == 32
+    assert len(receipt["dataset_sha256"]) == 64
+    assert len(receipt["outputs_sha256"]) == 64
+    assert receipt["model_version"] == "fixed-fixture-v1"
+    assert receipt["prompt_version"] == "memory-evolution-v1"
+
+
+def test_cli_requires_model_and_prompt_version_for_external_outputs(tmp_path, capsys) -> None:
+    cases = load_cases()
+    output_path = tmp_path / "outputs.json"
+    output_path.write_text(
+        json.dumps(fixed_fixture_outputs(cases), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    assert main(["--outputs", str(output_path)]) == 2
+    assert "invalid offline evaluation input" in capsys.readouterr().err

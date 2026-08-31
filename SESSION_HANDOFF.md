@@ -602,3 +602,20 @@
 - 本地门禁为 Python `538 passed, 6 skipped`、Node `59 passed, 9 skipped`；Ruff、格式、
   Node 语法、release gate、秘密边界、Shell LF 与 diff 检查通过。生产没有部署、迁移、运行
   shadow、导入摄影种子、开启自主成长、发送消息或重建容器；下一步为阶段 PR 与 Ubuntu CI。
+
+## 55. 2026-08-31 PR #68 独立审计后的隐私与幂等收束
+
+- 阶段分支已创建 PR #68；首轮 push 与 pull_request CI 均全绿，但独立只读审计发现失败
+  提取的临时 SENT 正文、post-SENT 回调异常、并发相同观点和评测收据四项发布阻断，因此
+  暂未合并，先在同一 PR 修复。
+- observation 正文现在只保留到当前 self lane 结束；成功、空结果、隔离或异常都会释放，
+  无 evidence 的 observation 同时移除。若进程在两步之间崩溃，新服务实例启动时会立即清理
+  所有旧正文和孤立记录。重放只能用与既有 SENT fingerprint 精确匹配的瞬时回复文本恢复校验。
+- transport 已经返回 `SENT` 后，记忆观察或 risk ledger 收尾异常只匿名告警，不能把发送状态
+  反向变为 retry。self-memory proposal 增加 persona/kind/content 语义幂等指纹，不同来源
+  并发写入同一观点也只复用一个 item；并发激活竞争会重新读取已激活状态。
+- 评测 JSON 现带内容无关的 run ID、时间、评测器/模型/提示版本、数据集与输出集合哈希；
+  外部模型 outputs 未声明精确 model/prompt 版本时退出码 2。固定 fixture 仍不代表真实模型。
+- 修复后本地 Python 为 `544 passed, 6 skipped`，Node 为 `59 passed, 9 skipped`；Ruff、格式、
+  release gate、秘密边界、Shell LF、Node 语法和 38 例评测均通过。生产仍未部署、迁移、运行
+  shadow、导入观点、发送消息或重建容器；须重新推送并等待 PR #68 新一轮 Ubuntu CI。

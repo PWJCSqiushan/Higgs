@@ -571,3 +571,20 @@
 - 本地 Python `538 passed, 6 skipped`、Node `59 passed, 9 skipped`；Ruff、格式、发布包、
   秘密边界、Shell LF、Node 语法和 diff 检查全部通过。生产保持 schema=false/mode=off，未
   部署、迁移、跑 shadow、导入观点、开启自主成长、发送消息或重建任何容器。
+
+## 节点 61：PR #68 审计阻断修复与重新验收
+
+- PR #68 首轮 CI 虽全绿，独立复核仍发现：模型失败时完整 SENT 回复可能长期残留、post-SENT
+  观察异常可能让 durable batch 回到发送重试、不同来源并发可能生成重复观点，以及聚合评测
+  缺少可复核版本收据。阶段没有因 CI 绿色而提前合并。
+- self observation 改为处理结束必释放正文、无 evidence 自动移除；新服务实例启动即清理
+  所有旧的崩溃残留。重放使用瞬时文本时必须重新匹配既有 fingerprint，不接受伪造正文。已经确认
+  SENT 后，记忆/risk 后处理异常只记录类型，不再改变最终发送决定。
+- self-memory proposal 使用 persona、kind 与规范内容构成的语义幂等键；两个来源并发提交同一
+  观点时共享同一 memory item，激活竞争也按已激活结果收敛。hard delete 仍清理已关联证据，
+  空结果或隔离路径不再遗留包含正文的孤立 observation。
+- 评测回执新增 run ID、时间、evaluator/model/prompt 版本、数据集 SHA-256 和 outputs 集合
+  SHA-256。真实 outputs 缺精确版本标签时失败关闭；收据继续不含案例正文或候选内容。
+- 修复后本地全量为 Python `544 passed, 6 skipped`、Node `59 passed, 9 skipped`，38 条评测
+  precision/recall/处置准确率均为 `1.0` 且零误激活/污染；Ruff、格式、发布与秘密门通过。
+  生产保持所有阶段 3 开关关闭，未部署、迁移、发送消息、重建或改动 NapCat。

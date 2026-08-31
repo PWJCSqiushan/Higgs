@@ -718,6 +718,7 @@ class MemoryStore:
         valid_from_ms: int | None = None,
         valid_to_ms: int | None = None,
         supersedes_item_id: str | None = None,
+        dedupe_key: str | None = None,
         now_ms: int | None = None,
     ) -> MemoryRecord:
         if not isinstance(scope, MemoryScope):
@@ -760,19 +761,34 @@ class MemoryStore:
         initial_status = (
             MemoryStatus.QUARANTINED if risk is MemoryRisk.HIGH else MemoryStatus.CANDIDATE
         )
+        clean_dedupe_key = (
+            self._clean_required(dedupe_key, field="dedupe_key", limit=256)
+            if dedupe_key is not None
+            else None
+        )
         fingerprint_payload = json.dumps(
-            {
-                "scope": scope.value,
-                "scope_id": clean_scope_id,
-                "kind": kind.value,
-                "text": clean_text,
-                "source_channel": clean_source_channel,
-                "source_account_id": clean_source_account,
-                "source_message_id": clean_source_message,
-                "source_principal_id": clean_source_principal,
-                "valid_from_ms": valid_from,
-                "supersedes_item_id": clean_supersedes,
-            },
+            (
+                {
+                    "dedupe_key": clean_dedupe_key,
+                    "scope": scope.value,
+                    "scope_id": clean_scope_id,
+                    "kind": kind.value,
+                    "text": clean_text,
+                }
+                if clean_dedupe_key is not None
+                else {
+                    "scope": scope.value,
+                    "scope_id": clean_scope_id,
+                    "kind": kind.value,
+                    "text": clean_text,
+                    "source_channel": clean_source_channel,
+                    "source_account_id": clean_source_account,
+                    "source_message_id": clean_source_message,
+                    "source_principal_id": clean_source_principal,
+                    "valid_from_ms": valid_from,
+                    "supersedes_item_id": clean_supersedes,
+                }
+            ),
             ensure_ascii=False,
             sort_keys=True,
         )

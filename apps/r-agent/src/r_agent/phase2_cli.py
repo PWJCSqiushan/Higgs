@@ -582,9 +582,22 @@ async def deliver_prepared_reply(
             )
         return ReplyPlan(ReplyDecision.SEND_FAILED, prepared.text)
     if on_sent is not None:
-        await on_sent(event, prepared.text, receipt)
+        try:
+            await on_sent(event, prepared.text, receipt)
+        except Exception as exc:
+            # The provider has already acknowledged SENT.  Observation and
+            # memory are best-effort post-send lanes and must never turn that
+            # durable outcome back into a retryable send.
+            _log.warning("post_send_observer_failed type=%s", type(exc).__name__)
     if risk_ledger is not None and prepared.reservation_id is not None:
-        await asyncio.to_thread(risk_ledger.finish_send, prepared.reservation_id, outcome="sent")
+        try:
+            await asyncio.to_thread(
+                risk_ledger.finish_send,
+                prepared.reservation_id,
+                outcome="sent",
+            )
+        except Exception as exc:
+            _log.error("post_send_risk_finalize_failed type=%s", type(exc).__name__)
     return ReplyPlan(ReplyDecision.SENT, prepared.text)
 
 
@@ -1069,11 +1082,11 @@ async def listen() -> None:
     ) -> None:
         if self_memory is None or phase.self_memory_mode == "off":
             return
-        principal = await asyncio.to_thread(
-            service.identities.resolve_event,
-            event,
-        )
         try:
+            principal = await asyncio.to_thread(
+                service.identities.resolve_event,
+                event,
+            )
             await asyncio.to_thread(
                 self_memory.record_delivery,
                 receipt=receipt,
@@ -1106,6 +1119,7 @@ async def listen() -> None:
                 """Run one extractor lane behind a durable, hard-gated receipt."""
 
                 run = None
+                observation = None
                 candidate_count = 0
                 rejected_count = 0
                 quarantined_count = 0
@@ -1118,15 +1132,6 @@ async def listen() -> None:
                         now_ms=event.occurred_at_ms,
                     )
                     if run.state is ShadowRunState.COMPLETE:
-                        if lane is MemoryKind.SELF_STANCE:
-                            observation = await asyncio.to_thread(
-                                self_memory.get_observation_by_idempotency_key,
-                                key,
-                            )
-                            await asyncio.to_thread(
-                                self_memory.redact_observation_reply_text,
-                                observation.observation_id,
-                            )
                         return
                     source, observation = await source_builder()
                     results = await evolution_extractor.extract(
@@ -1171,7 +1176,7 @@ async def listen() -> None:
                             rejected_count += 1
                         else:
                             candidate_count += 1
-                    completed = await asyncio.to_thread(
+                    await asyncio.to_thread(
                         self_memory.complete_shadow_run,
                         run,
                         candidate_count=candidate_count,
@@ -1179,15 +1184,6 @@ async def listen() -> None:
                         quarantined_count=quarantined_count,
                         now_ms=event.occurred_at_ms,
                     )
-                    if (
-                        lane is MemoryKind.SELF_STANCE
-                        and completed.state is ShadowRunState.COMPLETE
-                        and observation is not None
-                    ):
-                        await asyncio.to_thread(
-                            self_memory.redact_observation_reply_text,
-                            observation.observation_id,
-                        )
                 except Exception as exc:
                     if run is not None:
                         try:
@@ -1210,11 +1206,30 @@ async def listen() -> None:
                         lane.value,
                         type(exc).__name__,
                     )
+                finally:
+                    if lane is MemoryKind.SELF_STANCE:
+                        try:
+                            if observation is None:
+                                observation = await asyncio.to_thread(
+                                    self_memory.get_observation_by_idempotency_key,
+                                    key,
+                                    reply_text=reply_text,
+                                )
+                            await asyncio.to_thread(
+                                self_memory.release_observation_payload,
+                                observation.observation_id,
+                            )
+                        except Exception as cleanup_exc:
+                            _log.warning(
+                                "self_memory_observation_cleanup_failed type=%s",
+                                type(cleanup_exc).__name__,
+                            )
 
             async def build_self_source() -> tuple[object, object | None]:
                 observation = await asyncio.to_thread(
                     self_memory.get_observation_by_idempotency_key,
                     key,
+                    reply_text=reply_text,
                 )
                 return (
                     EvolutionSource(
@@ -1250,10 +1265,12 @@ async def listen() -> None:
             )
             return
         allow_auto = phase.self_memory_mode == "autonomous-low-risk"
+        observation = None
         try:
             observation = await asyncio.to_thread(
                 self_memory.get_observation_by_idempotency_key,
                 key,
+                reply_text=reply_text,
             )
             self_results = await evolution_extractor.extract(
                 EvolutionSource(
@@ -1275,10 +1292,6 @@ async def listen() -> None:
                     allow_auto_activate=allow_auto,
                     now_ms=event.occurred_at_ms,
                 )
-            await asyncio.to_thread(
-                self_memory.redact_observation_reply_text,
-                observation.observation_id,
-            )
             external_results = await evolution_extractor.extract(
                 EvolutionSource(
                     message_id=event.message_id,
@@ -1302,6 +1315,18 @@ async def listen() -> None:
                 )
         except Exception as exc:
             _log.warning("self_memory_evolution_failed type=%s", type(exc).__name__)
+        finally:
+            if observation is not None:
+                try:
+                    await asyncio.to_thread(
+                        self_memory.release_observation_payload,
+                        observation.observation_id,
+                    )
+                except Exception as cleanup_exc:
+                    _log.warning(
+                        "self_memory_observation_cleanup_failed type=%s",
+                        type(cleanup_exc).__name__,
+                    )
 
     async def reconcile_group_memory(
         event: InboundEvent,

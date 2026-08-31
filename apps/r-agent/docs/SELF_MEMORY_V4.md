@@ -32,6 +32,11 @@ R_AGENT_SELF_MEMORY_MODE=off
 说过”。外部思想的原句和来源主体不会进入共享上下文；它们只能以去标识化后的规范观点
 出现。主人可通过以下命令治理：
 
+完整 SENT 回复只为当前观点提取临时保存。无论提取成功或失败，处理结束都会清空正文；
+没有形成证据的 observation 会同时移除。进程在中途崩溃时，新服务实例会立即清空所有
+启动前遗留正文并删除无证据 observation，避免形成第二份聊天档案。相同 persona、类型和规范观点
+使用语义幂等键，即使不同来源并发提交也只会形成一个 memory item。
+
 ```text
 /higgs memory self show <ID>
 /higgs memory self why <ID>
@@ -75,13 +80,18 @@ r-agent-self-memory-seed \
 
 ```bash
 r-agent-self-memory-eval
-r-agent-self-memory-eval --outputs /private/eval-outputs.json
+r-agent-self-memory-eval \
+  --outputs /private/eval-outputs.json \
+  --model-version exact-provider-model-version \
+  --prompt-version memory-evolution-v1
 ```
 
 输出只包含聚合 JSON，不含案例正文或候选内容。发布门固定要求：precision 至少 0.95、
 recall 至少 0.90、处置准确率至少 0.95，误激活、污染和非预期解析失败均为零；不达标退出
 码为 `1`，输入或数据集无效退出码为 `2`。固定 fixture 只验证评测器和解析安全边界，不可
-替代真实模型 shadow 结果。
+替代真实模型 shadow 结果。每次报告都带内容无关收据：运行 ID、时间、评测器版本、数据集
+SHA-256、输出集合 SHA-256、精确模型版本和提示版本；外部 outputs 缺任一版本标签时失败
+关闭。
 
 ## 独立生产确认
 

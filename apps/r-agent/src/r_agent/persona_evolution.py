@@ -22,7 +22,7 @@ import math
 import sqlite3
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
@@ -36,6 +36,7 @@ from r_agent.memory import (
     MemoryScope,
     MemoryStatus,
     MemoryStore,
+    MemoryTransitionError,
     MemoryValidationError,
 )
 
@@ -638,6 +639,9 @@ class SelfMemoryService:
         # durable state.
         self._require_v4_schema()
         self._initialize_shadow_schema()
+        # Any row predating this service instance is crash residue: no
+        # in-flight extractor in this process can still need its body.
+        self.purge_stale_observations(before_ms=self._now(None) + 1)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.memory.path, timeout=5)
@@ -1032,6 +1036,32 @@ class SelfMemoryService:
             created_at_ms=int(row["created_at_ms"]),
         )
 
+    @staticmethod
+    def _observation_fingerprint(record: SelfObservationRecord, reply_text: str) -> str:
+        payload = {
+            "reply_message_id": record.reply_message_id,
+            "reply_text": reply_text,
+            "channel": record.channel,
+            "account_id": record.account_id,
+            "conversation_id": record.conversation_id,
+            "principal_id": record.principal_id,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    def _with_verified_reply_text(
+        self,
+        record: SelfObservationRecord,
+        reply_text: str,
+    ) -> SelfObservationRecord:
+        clean_text = _clean(reply_text, field="reply_text", limit=4_000)
+        if self._observation_fingerprint(record, clean_text) != record.reply_fingerprint:
+            raise SelfObservationConflict("reply text does not match the SENT observation")
+        if record.reply_text and record.reply_text != clean_text:
+            raise SelfObservationConflict("stored SENT reply text changed unexpectedly")
+        return replace(record, reply_text=clean_text)
+
     def record_sent_reply(
         self,
         *,
@@ -1182,7 +1212,12 @@ class SelfMemoryService:
             raise SelfMemoryError("self observation was not found")
         return self._record_from_observation(row)
 
-    def get_observation_by_idempotency_key(self, key: str) -> SelfObservationRecord:
+    def get_observation_by_idempotency_key(
+        self,
+        key: str,
+        *,
+        reply_text: str | None = None,
+    ) -> SelfObservationRecord:
         clean = _clean_key(key)
         with self._connect() as conn:
             row = conn.execute(
@@ -1191,7 +1226,10 @@ class SelfMemoryService:
             ).fetchone()
         if row is None:
             raise SelfMemoryError("self observation was not found")
-        return self._record_from_observation(row)
+        record = self._record_from_observation(row)
+        return (
+            self._with_verified_reply_text(record, reply_text) if reply_text is not None else record
+        )
 
     def redact_observation_reply_text(self, observation_id: str) -> SelfObservationRecord:
         """Discard a processed reply body while retaining its SENT proof and hash.
@@ -1225,6 +1263,69 @@ class SelfMemoryService:
         if updated is None:
             raise SelfMemoryError("self observation could not be read back")
         return self._record_from_observation(updated)
+
+    def release_observation_payload(self, observation_id: str) -> None:
+        """Redact a reply and remove the observation when no item evidence needs it."""
+
+        clean = _clean_key(observation_id, field="observation_id")
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT 1 FROM self_memory_observations WHERE observation_id = ?",
+                (clean,),
+            ).fetchone()
+            if row is None:
+                return
+            conn.execute(
+                "UPDATE self_memory_observations SET reply_text = '' WHERE observation_id = ?",
+                (clean,),
+            )
+            evidence = conn.execute(
+                "SELECT 1 FROM self_memory_evidence WHERE observation_id = ? LIMIT 1",
+                (clean,),
+            ).fetchone()
+            if evidence is None:
+                conn.execute(
+                    "UPDATE self_memory_evolution_observations "
+                    "SET observation_id = NULL WHERE observation_id = ?",
+                    (clean,),
+                )
+                conn.execute(
+                    "DELETE FROM self_memory_observations WHERE observation_id = ?",
+                    (clean,),
+                )
+
+    def purge_stale_observations(self, *, before_ms: int) -> int:
+        """Bound crash residue without retaining content or orphan identifiers."""
+
+        cutoff = int(before_ms)
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT observation_id FROM self_memory_observations WHERE created_at_ms < ?",
+                (cutoff,),
+            ).fetchall()
+            for row in rows:
+                observation_id = str(row["observation_id"])
+                conn.execute(
+                    "UPDATE self_memory_observations SET reply_text = '' WHERE observation_id = ?",
+                    (observation_id,),
+                )
+                evidence = conn.execute(
+                    "SELECT 1 FROM self_memory_evidence WHERE observation_id = ? LIMIT 1",
+                    (observation_id,),
+                ).fetchone()
+                if evidence is None:
+                    conn.execute(
+                        "UPDATE self_memory_evolution_observations "
+                        "SET observation_id = NULL WHERE observation_id = ?",
+                        (observation_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM self_memory_observations WHERE observation_id = ?",
+                        (observation_id,),
+                    )
+        return len(rows)
 
     @staticmethod
     def _record_from_evolution(row: sqlite3.Row) -> EvolutionObservationRecord:
@@ -1353,6 +1454,7 @@ class SelfMemoryService:
         source_principal_id: str = "unknown",
         source_principal_role: str = "user",
         observation_id: str | None = None,
+        observation_reply_text: str | None = None,
         allow_auto_activate: bool = True,
         shadow: bool = False,
         now_ms: int | None = None,
@@ -1398,6 +1500,11 @@ class SelfMemoryService:
                 raise SelfObservationRejected("curated self quote is not recognized")
             if observation_id is not None:
                 stored_observation = self.get_observation(observation_id)
+                if observation_reply_text is not None:
+                    stored_observation = self._with_verified_reply_text(
+                        stored_observation,
+                        observation_reply_text,
+                    )
                 if stored_observation.reply_message_id != evidence_id:
                     raise SelfObservationRejected(
                         "self_stance evidence does not match the SENT observation"
@@ -1528,6 +1635,11 @@ class SelfMemoryService:
                     confidence=confidence,
                     source_trust=1.0 if source_principal_role == "owner" else 0.5,
                     supersedes_item_id=superseded.item_id if superseded is not None else None,
+                    dedupe_key=(
+                        "self-memory-v4:"
+                        f"{kind.value}:"
+                        f"{hashlib.sha256(content.encode('utf-8')).hexdigest()}"
+                    ),
                     valid_from_ms=timestamp,
                     now_ms=timestamp,
                 )
@@ -1536,11 +1648,18 @@ class SelfMemoryService:
                 # role in the existing auditable state machine; the caller's
                 # feature flag remains the separate production gate.
                 if item.status is MemoryStatus.CANDIDATE:
-                    item = self.memory.activate(
-                        item.item_id,
-                        actor=Principal("system:self-memory-v4", "owner"),
-                        reason=reason,
-                    )
+                    try:
+                        item = self.memory.activate(
+                            item.item_id,
+                            actor=Principal("system:self-memory-v4", "owner"),
+                            reason=reason,
+                        )
+                    except MemoryTransitionError:
+                        # A concurrent source may have activated the same
+                        # semantic item after the status read above.
+                        item = self.memory.get(item.item_id)
+                        if item.status is not MemoryStatus.ACTIVE:
+                            raise
                 elif item.status is not MemoryStatus.ACTIVE:
                     raise SelfMemoryError(
                         "self-memory item was not recoverable after interrupted activation"
@@ -1681,6 +1800,8 @@ class SelfMemoryService:
         # Always reload the row.  A caller cannot forge a dataclass carrying a
         # SENT flag without the corresponding durable observation.
         record = self.get_observation(observation_id)
+        if isinstance(observation, SelfObservationRecord) and observation.reply_text:
+            record = self._with_verified_reply_text(record, observation.reply_text)
         if candidate.evidence_message_id != record.reply_message_id:
             raise MemoryValidationError("self candidate evidence must be provider reply ID")
         return self.submit_candidate(
@@ -1689,6 +1810,7 @@ class SelfMemoryService:
             source_principal_id="persona:higgs",
             source_principal_role="owner",
             observation_id=record.observation_id,
+            observation_reply_text=record.reply_text,
             allow_auto_activate=allow_auto_activate,
             shadow=shadow,
             now_ms=now_ms,

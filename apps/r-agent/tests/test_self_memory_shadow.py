@@ -1,4 +1,5 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -247,6 +248,73 @@ def test_processed_sent_observation_can_drop_full_reply_but_keep_proof(tmp_path:
     assert redacted.delivery_status == "SENT"
 
 
+def test_redacted_observation_accepts_only_transient_text_matching_sent_fingerprint(
+    tmp_path: Path,
+) -> None:
+    _, evolution = service(tmp_path)
+    observed = evolution.record_sent_reply(
+        idempotency_key="reply-transient",
+        reply_message_id="provider-transient",
+        text="我仍然认为理解题材比盲目升级器材更重要。",
+        delivery_status="sent",
+        now_ms=100,
+    )
+    evolution.redact_observation_reply_text(observed.observation_id)
+
+    recovered = evolution.get_observation_by_idempotency_key(
+        "reply-transient",
+        reply_text="我仍然认为理解题材比盲目升级器材更重要。",
+    )
+    assert recovered.reply_text.startswith("我仍然认为")
+    with pytest.raises(SelfObservationConflict):
+        evolution.get_observation_by_idempotency_key(
+            "reply-transient",
+            reply_text="伪造的已发送回复",
+        )
+
+
+def test_release_and_purge_remove_unreferenced_reply_observations(tmp_path: Path) -> None:
+    _, evolution = service(tmp_path)
+    released = evolution.record_sent_reply(
+        idempotency_key="reply-release",
+        reply_message_id="provider-release",
+        text="提取失败也不能把完整回复长期留在数据库。",
+        delivery_status="sent",
+        now_ms=100,
+    )
+    evolution.release_observation_payload(released.observation_id)
+    stale = evolution.record_sent_reply(
+        idempotency_key="reply-stale",
+        reply_message_id="provider-stale",
+        text="进程崩溃留下的正文也必须有明确期限。",
+        delivery_status="sent",
+        now_ms=200,
+    )
+    assert evolution.purge_stale_observations(before_ms=201) == 1
+
+    with sqlite3.connect(evolution.memory.path) as conn:
+        remaining = conn.execute(
+            "SELECT observation_id FROM self_memory_observations WHERE observation_id IN (?, ?)",
+            (released.observation_id, stale.observation_id),
+        ).fetchall()
+    assert remaining == []
+
+
+def test_service_restart_immediately_clears_crash_residue(tmp_path: Path) -> None:
+    memory, evolution = service(tmp_path)
+    observed = evolution.record_sent_reply(
+        idempotency_key="reply-crash-residue",
+        reply_message_id="provider-crash-residue",
+        text="即使刚写入就崩溃，重启也不能继续保存完整正文。",
+        delivery_status="sent",
+    )
+
+    restarted = SelfMemoryService(memory)
+
+    with pytest.raises(SelfMemoryError, match="not found"):
+        restarted.get_observation(observed.observation_id)
+
+
 def test_quarantined_candidate_redacts_content_and_quote_from_evolution_record(
     tmp_path: Path,
 ) -> None:
@@ -320,6 +388,30 @@ def test_same_persona_kind_content_reuses_item_and_appends_evidence(tmp_path: Pa
             ).fetchone()[0]
             == 2
         )
+
+
+def test_concurrent_sources_cannot_create_duplicate_persona_content(tmp_path: Path) -> None:
+    memory, evolution = service(tmp_path)
+
+    def submit(index: int):
+        evidence = f"concurrent-source-{index}"
+        return evolution.submit_candidate(
+            idea(content="同一观点并发写入也只能有一条记忆", evidence=evidence),
+            source_message_id=evidence,
+            source_principal_id=f"member-{index}",
+            now_ms=100 + index,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(submit, (1, 2)))
+
+    assert results[0].item_id == results[1].item_id
+    with sqlite3.connect(memory.path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM memory_items WHERE scope_type='persona' "
+            "AND scope_id='persona:higgs' AND kind='adopted_idea' AND text=?",
+            ("同一观点并发写入也只能有一条记忆",),
+        ).fetchone() == (1,)
 
 
 def test_self_quote_must_be_verified_substring_of_sent_reply(tmp_path: Path) -> None:
