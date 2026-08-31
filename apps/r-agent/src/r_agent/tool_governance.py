@@ -75,6 +75,42 @@ _MAX_RESULT_BYTES = 256 * 1024
 _ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 
 
+@dataclass(frozen=True, slots=True)
+class ToolBudget:
+    """Bounded invocation and result budgets declared by a tool.
+
+    ``ToolGovernance`` continues to enforce the historical per-tool actor
+    rate limit.  Newer adapters may additionally enforce these dimensions
+    (notably a session budget) before opening the handler gate.  Keeping the
+    declaration here makes the policy visible to every adapter without
+    changing the existing ``ToolSpec`` constructor contract.
+    """
+
+    max_requests_per_actor_per_minute: int | None = None
+    max_requests_per_session_per_minute: int | None = None
+    max_input_bytes: int | None = None
+    max_output_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        for name in (
+            "max_requests_per_actor_per_minute",
+            "max_requests_per_session_per_minute",
+        ):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 600
+            ):
+                raise ToolValidationError(f"{name} must be between 1 and 600")
+        for name in ("max_input_bytes", "max_output_bytes"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not 1 <= value <= 16 * 1024 * 1024
+            ):
+                raise ToolValidationError(f"{name} must be between 1 and 16 MiB")
+
+
 def _reject_control_characters(value: str, *, label: str, max_length: int) -> str:
     normalized = unicodedata.normalize("NFKC", value)
     if not normalized or len(normalized) > max_length:
@@ -282,8 +318,21 @@ class ToolSpec:
     timeout_seconds: float = 5.0
     rate_limit_per_minute: int = 6
     persist_result: bool = False
+    # New policy names are accepted alongside the original names so existing
+    # owner tools remain source-compatible.  When supplied, the explicit
+    # ``allowed_*`` values become the authoritative sets.
+    allowed_roles: frozenset[str] | None = None
+    allowed_surfaces: frozenset[str] | None = None
+    allowed_data_scopes: frozenset[str] | None = None
+    network_policy: Mapping[str, Any] | None = None
+    result_retention_seconds: int | None = None
+    budget: ToolBudget | None = None
 
     def __post_init__(self) -> None:
+        if self.allowed_roles is not None:
+            object.__setattr__(self, "caller_roles", frozenset(self.allowed_roles))
+        if self.allowed_surfaces is not None:
+            object.__setattr__(self, "surfaces", frozenset(self.allowed_surfaces))
         if _TOOL_NAME_RE.fullmatch(self.name) is None:
             raise ToolValidationError("tool name is invalid")
         _reject_control_characters(self.description, label="tool description", max_length=512)
@@ -298,6 +347,14 @@ class ToolSpec:
             for surface in self.surfaces
         ):
             raise ToolValidationError("tool surfaces are invalid")
+        if self.allowed_data_scopes is not None and (
+            not self.allowed_data_scopes
+            or any(
+                not isinstance(scope, str) or re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", scope) is None
+                for scope in self.allowed_data_scopes
+            )
+        ):
+            raise ToolValidationError("tool data scopes are invalid")
         if (
             isinstance(self.timeout_seconds, bool)
             or not isinstance(self.timeout_seconds, (int, float))
@@ -311,6 +368,42 @@ class ToolSpec:
             or not 1 <= self.rate_limit_per_minute <= 600
         ):
             raise ToolValidationError("tool rate limit must be between 1 and 600 per minute")
+        if self.network_policy is not None:
+            if not isinstance(self.network_policy, Mapping):
+                raise ToolValidationError("tool network policy must be a mapping")
+            # Policy metadata is configuration, not executable input.  Keep it
+            # small and JSON-shaped so it can safely be inspected by tooling.
+            try:
+                canonical = json.dumps(
+                    normalize_parameters(self.network_policy),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            except (TypeError, ValueError) as exc:
+                raise ToolValidationError("tool network policy is not safe JSON") from exc
+            if len(canonical.encode("utf-8")) > 8 * 1024:
+                raise ToolValidationError("tool network policy is too large")
+        if self.result_retention_seconds is not None and (
+            isinstance(self.result_retention_seconds, bool)
+            or not isinstance(self.result_retention_seconds, int)
+            or not 0 <= self.result_retention_seconds <= 7 * 24 * 3600
+        ):
+            raise ToolValidationError("tool result retention is invalid")
+        if self.budget is not None and not isinstance(self.budget, ToolBudget):
+            raise ToolValidationError("tool budget is invalid")
+
+    @property
+    def allowed_role_set(self) -> frozenset[str]:
+        """Normalized role policy for adapters that use the new spelling."""
+
+        return self.caller_roles
+
+    @property
+    def allowed_surface_set(self) -> frozenset[str]:
+        """Normalized surface policy for adapters that use the new spelling."""
+
+        return self.surfaces
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,6 +416,12 @@ class ToolRequest:
     actor_id: str = ""
     source: str = ToolRequestSource.MODEL_SHADOW.value
     surface: str = "unknown"
+    # A request that comes from a user-facing adapter must carry the current
+    # session and data scope.  They are included in the approval digest by
+    # ``parameter_sha256`` below so an approval cannot be replayed in another
+    # conversation or against another scope.
+    session_id: str = ""
+    data_scope: str = "conversation"
     idempotency_key: str | None = None
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     created_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
@@ -340,6 +439,22 @@ class ToolRequest:
         if self.source not in _SOURCE_VALUES:
             raise ToolValidationError("tool request source is unknown")
         _reject_control_characters(self.surface, label="tool request surface", max_length=64)
+        if not isinstance(self.session_id, str) or len(self.session_id) > 256:
+            raise ToolValidationError("tool request session id is invalid")
+        if self.session_id:
+            _reject_control_characters(
+                self.session_id, label="tool request session id", max_length=256
+            )
+        if not isinstance(self.data_scope, str):
+            raise ToolValidationError("tool request data scope is invalid")
+        clean_scope = _reject_control_characters(
+            self.data_scope,
+            label="tool request data scope",
+            max_length=64,
+        ).casefold()
+        if not re.fullmatch(r"[a-z][a-z0-9_.-]{0,63}", clean_scope):
+            raise ToolValidationError("tool request data scope is invalid")
+        object.__setattr__(self, "data_scope", clean_scope)
         if not isinstance(self.request_id, str) or not 1 <= len(self.request_id) <= 128:
             raise ToolValidationError("tool request id is invalid")
         key = self.idempotency_key or self.request_id
@@ -354,7 +469,14 @@ class ToolRequest:
 
     @property
     def parameter_sha256(self) -> str:
-        return parameter_approval_hash(self.tool_name, self.parameters)
+        # Keep the public ``parameter_approval_hash`` helper backwards
+        # compatible while binding a request approval to its caller scope.
+        scoped = {
+            "parameters": self.parameters,
+            "session_id": self.session_id or "unbound-session",
+            "data_scope": self.data_scope,
+        }
+        return parameter_approval_hash(self.tool_name, scoped)
 
     @property
     def approval_hash(self) -> str:
@@ -959,6 +1081,8 @@ class ToolGovernance:
         self.registry = registry or ToolRegistry()
         self.audit = audit or ToolAuditStore(audit_path)
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
+        self._budget_lock = threading.RLock()
+        self._budget_events: list[tuple[str, str, str, int, int, str]] = []
 
     def register(self, spec: ToolSpec, handler: ToolHandler) -> None:
         self.registry.register(spec, handler)
@@ -993,6 +1117,11 @@ class ToolGovernance:
             return self._deny(request, "caller_role_not_allowed", parameter_sha256, now)
         if request.surface not in spec.surfaces:
             return self._deny(request, "surface_not_allowed", parameter_sha256, now)
+        if (
+            spec.allowed_data_scopes is not None
+            and request.data_scope not in spec.allowed_data_scopes
+        ):
+            return self._deny(request, "data_scope_not_allowed", parameter_sha256, now)
         if (
             request.source == ToolRequestSource.MODEL_SHADOW.value
             and not spec.allow_model_execution
@@ -1034,6 +1163,117 @@ class ToolGovernance:
             reason=reason,
             parameter_sha256=parameter_sha256,
             decided_at_ms=now_ms,
+        )
+
+    def _budget_reason(self, request: ToolRequest, spec: ToolSpec, *, now_ms: int) -> str | None:
+        """Apply optional actor/session budgets before a handler is reserved.
+
+        The durable audit store remains the source of truth for idempotency and
+        the historical per-tool rate limit.  These additional dimensions are
+        intentionally kept in a small process-local ledger: a restart clears
+        only recent counters, never an idempotency reservation.  IDs are
+        hashed, and request payloads are represented only by their byte count.
+        """
+
+        budget = spec.budget
+        if budget is None:
+            return None
+        actor_hash = self.audit._actor_hash(request.actor_id)
+        session_hash = hashlib.sha256(request.session_id.encode("utf-8")).hexdigest()
+        input_bytes = len(canonical_parameters(request.parameters).encode("utf-8"))
+        with self._budget_lock:
+            self._budget_events = [
+                item for item in self._budget_events if now_ms - item[3] < 60_000
+            ]
+            actor_count = sum(
+                1
+                for tool_name, item_actor_hash, _, _, _, _ in self._budget_events
+                if tool_name == request.tool_name and item_actor_hash == actor_hash
+            )
+            if (
+                budget.max_requests_per_actor_per_minute is not None
+                and actor_count >= budget.max_requests_per_actor_per_minute
+            ):
+                return "tool_actor_budget"
+            if request.session_id:
+                session_count = sum(
+                    1
+                    for tool_name, _, item_session_hash, _, _, _ in self._budget_events
+                    if tool_name == request.tool_name and item_session_hash == session_hash
+                )
+                if (
+                    budget.max_requests_per_session_per_minute is not None
+                    and session_count >= budget.max_requests_per_session_per_minute
+                ):
+                    return "tool_session_budget"
+            if budget.max_input_bytes is not None and input_bytes > budget.max_input_bytes:
+                return "tool_input_budget"
+            # Reserve only after all checks pass.  The final boolean is kept
+            # for future byte-budget accounting without storing request text.
+            self._budget_events.append(
+                (
+                    request.tool_name,
+                    actor_hash,
+                    session_hash,
+                    now_ms,
+                    input_bytes,
+                    request.request_id,
+                )
+            )
+        return None
+
+    def _budget_release(self, request: ToolRequest, *, now_ms: int) -> None:
+        """Release a provisional budget reservation for a duplicate request."""
+
+        actor_hash = self.audit._actor_hash(request.actor_id)
+        session_hash = hashlib.sha256(request.session_id.encode("utf-8")).hexdigest()
+        with self._budget_lock:
+            for index in range(len(self._budget_events) - 1, -1, -1):
+                (
+                    tool_name,
+                    item_actor_hash,
+                    item_session_hash,
+                    created_at,
+                    _,
+                    request_id,
+                ) = self._budget_events[index]
+                if (
+                    tool_name == request.tool_name
+                    and item_actor_hash == actor_hash
+                    and item_session_hash == session_hash
+                    and request_id == request.request_id
+                    and now_ms - created_at < 60_000
+                ):
+                    self._budget_events.pop(index)
+                    return
+
+    def _budget_limited_receipt(
+        self,
+        request: ToolRequest,
+        *,
+        reason: str,
+        now_ms: int,
+    ) -> ToolReceipt:
+        try:
+            audit_id = self.audit.record_event(
+                event_type="budget_limited",
+                request=request,
+                reason=reason,
+                state=ToolReceiptState.RATE_LIMITED,
+                now_ms=now_ms,
+            )
+        except ToolAuditError:
+            audit_id = None
+        return ToolReceipt(
+            request_id=request.request_id,
+            tool_name=request.tool_name,
+            state=ToolReceiptState.RATE_LIMITED,
+            idempotency_key=str(request.idempotency_key),
+            parameter_sha256=request.parameter_sha256,
+            reason=reason,
+            error_code=reason,
+            audit_id=audit_id,
+            completed_at_ms=now_ms,
         )
 
     def _denied_receipt(self, request: ToolRequest, decision: ToolDecision) -> ToolReceipt:
@@ -1141,7 +1381,7 @@ class ToolGovernance:
         return ToolExecutionResult(payload=value)
 
     @staticmethod
-    def _validate_result(result: Any) -> Any:
+    def _validate_result(result: Any, *, max_bytes: int | None = None) -> Any:
         try:
             encoded = json.dumps(
                 result,
@@ -1152,7 +1392,8 @@ class ToolGovernance:
             )
         except (TypeError, ValueError) as exc:
             raise ToolValidationError("tool result is not safe JSON") from exc
-        if len(encoded.encode("utf-8")) > _MAX_RESULT_BYTES:
+        limit = _MAX_RESULT_BYTES if max_bytes is None else min(_MAX_RESULT_BYTES, max_bytes)
+        if len(encoded.encode("utf-8")) > limit:
             raise ToolValidationError("tool result exceeded size limit")
         return json.loads(encoded)
 
@@ -1169,9 +1410,17 @@ class ToolGovernance:
             return preflight
         spec, _ = preflight
         started = self._clock_ms()
+        budget_reason = self._budget_reason(request, spec, now_ms=started)
+        if budget_reason is not None:
+            return self._budget_limited_receipt(
+                request,
+                reason=budget_reason,
+                now_ms=started,
+            )
         try:
             reservation = self.audit.reserve(request, spec, now_ms=started)
         except ToolAuditError:
+            self._budget_release(request, now_ms=self._clock_ms())
             return ToolReceipt(
                 request_id=request.request_id,
                 tool_name=request.tool_name,
@@ -1184,6 +1433,7 @@ class ToolGovernance:
                 completed_at_ms=self._clock_ms(),
             )
         if reservation.kind == "duplicate":
+            self._budget_release(request, now_ms=self._clock_ms())
             state = ToolReceiptState.DUPLICATE
             if reservation.prior_state is ToolReceiptState.UNKNOWN:
                 # A previous process may have died while the handler was in
@@ -1203,6 +1453,7 @@ class ToolGovernance:
                 completed_at_ms=self._clock_ms(),
             )
         if reservation.kind == "rate_limited":
+            self._budget_release(request, now_ms=self._clock_ms())
             return ToolReceipt(
                 request_id=request.request_id,
                 tool_name=request.tool_name,
@@ -1215,6 +1466,7 @@ class ToolGovernance:
                 completed_at_ms=self._clock_ms(),
             )
         if reservation.kind == "conflict":
+            self._budget_release(request, now_ms=self._clock_ms())
             return ToolReceipt(
                 request_id=request.request_id,
                 tool_name=request.tool_name,
@@ -1232,7 +1484,10 @@ class ToolGovernance:
                 timeout=spec.timeout_seconds,
             )
             execution = self._classify(raw)
-            safe_result = self._validate_result(execution.payload)
+            safe_result = self._validate_result(
+                execution.payload,
+                max_bytes=spec.budget.max_output_bytes if spec.budget else None,
+            )
             state = execution.state
             reason = (
                 "execution_completed"
@@ -1312,9 +1567,17 @@ class ToolGovernance:
             return preflight
         spec, _ = preflight
         started = self._clock_ms()
+        budget_reason = self._budget_reason(request, spec, now_ms=started)
+        if budget_reason is not None:
+            return self._budget_limited_receipt(
+                request,
+                reason=budget_reason,
+                now_ms=started,
+            )
         try:
             reservation = self.audit.reserve(request, spec, now_ms=started)
         except ToolAuditError:
+            self._budget_release(request, now_ms=self._clock_ms())
             return ToolReceipt(
                 request_id=request.request_id,
                 tool_name=request.tool_name,
@@ -1327,6 +1590,7 @@ class ToolGovernance:
                 completed_at_ms=self._clock_ms(),
             )
         if reservation.kind != "new":
+            self._budget_release(request, now_ms=self._clock_ms())
             state = (
                 ToolReceiptState.DUPLICATE
                 if reservation.kind == "duplicate"
@@ -1363,7 +1627,10 @@ class ToolGovernance:
             if inspect.isawaitable(raw):
                 raise ToolValidationError("async handler requires execute()")
             execution = self._classify(raw)
-            safe_result = self._validate_result(execution.payload)
+            safe_result = self._validate_result(
+                execution.payload,
+                max_bytes=spec.budget.max_output_bytes if spec.budget else None,
+            )
             elapsed_ms = self._clock_ms() - started
             if elapsed_ms > int(spec.timeout_seconds * 1000):
                 state = ToolReceiptState.TIMED_OUT
