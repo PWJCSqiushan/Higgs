@@ -610,3 +610,4 @@
 - 个人提醒和计划引入严格 `DeliveryTarget`。普通用户仅可在获准官方 Bot 私聊操作自己的任务；list/show/confirm/ack/cancel/snooze、计划草案/确认/重排和节点提醒均按 principal+Bot+target 作用域。普通任务创建/草案与 ordinary proactive 分开，owner/ordinary proactive 也在 Agent 和 Sidecar 两端分开，群与跨通道投递失败关闭。
 - 集成审计发现并修复两项阻断：attachment path 原本可能随事件持久化；普通 proactive 原本仍被 owner-only 目标函数拦截。进一步补上 owner proactive 关闭时不能借 ordinary proactive 通道投递的回归。
 - 独立终审修复后的完整合并测试为 Python `590 passed, 7 skipped`、Node `59 passed, 9 skipped`，Ruff、格式、Node 语法和 release gate 通过。本机无 Bash，Shell 语法与 Windows 跳过项必须由 Ubuntu PR CI 收口；本节点不代表代码已部署或功能已对用户开放。
+- PR #69 首轮 push run `33382686895` 与 pull_request run `33382728996` 均全绿；Ubuntu 已实际执行 Python 零跳过、Shell、Node POSIX/UDS/进程替换、发布包、镜像与 Compose。追加本证据后仍需新一轮 CI 复验再合并，生产开关与容器继续不变。

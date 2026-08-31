@@ -8,7 +8,8 @@
 
 - GitHub `main`：`517bb23a8a58aec70b7751740a86e2dae1d7da49`；PR #68 已合并，
   修复后 push、pull_request 与合并后 main CI 全绿。阶段 4 从该主线建立
-  `codex/higgs-safe-tools-personal-tasks-20260831`，未经新 PR/CI 不视为主线能力。
+  `codex/higgs-safe-tools-personal-tasks-20260831`；PR #69 首轮 push run `33382686895`
+  与 pull_request run `33382728996` 均全绿，尚未合并前仍不视为主线能力。
 - 生产 Agent 代码：`6682be3c33c78b1e486286fb224af986419cb922`，Persona Bundle
   `2.2.0`。其后的当前主线提交只收束生产记录，没有再次扩展生产能力。
 - corlinman 研究 pin：`v1.56.5` / `27bdf9c8f7a8f103aff82fde8fc822d8695e0906`，

@@ -642,3 +642,4 @@
 - `DeliveryTarget(channel, bot_account, target_id, surface)` 成为个人任务持久目标。普通任务 mode 与普通 proactive 为独立开关；owner proactive 和 ordinary proactive 在 Agent 与 Sidecar 两端分别校验，普通主动目标还必须属于当前 Bot 的冻结私聊名单。任何一边未开都不发送，提醒不会向群或跨通道回退。
 - 独立审计修复后的完整回归为 Python `590 passed, 7 skipped`、Node `59 passed, 9 skipped`；Ruff、格式、Node 语法和 release gate 通过。本机没有 Bash，Shell `bash -n` 与 Windows 跳过项由 Ubuntu PR CI 收口，不能把本节点写成 PR/CI 或生产验收。
 - 生产没有改变：未部署代码、配置真实搜索 provider、开放网络、迁移数据库、开启普通任务/主动投递、捕获用户、发送消息或重建容器；NapCat 未参与。下一步是收束独立审计、最终门禁、阶段 PR/CI，任何生产动作仍需单独确认。
+- 阶段 PR #69 已创建。首轮 push run `33382686895` 与 pull_request run `33382728996` 的 Python/Sidecar 两项任务全部成功，Ubuntu 已收口 Windows 跳过项、Shell、POSIX/UDS、镜像和 Compose。本次追加 CI 证据后仍须等待新一轮两套 CI，再合并；生产边界不变。
