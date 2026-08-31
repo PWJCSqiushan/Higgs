@@ -471,3 +471,22 @@
 - 本次仅强制重建 Agent，未触发回滚。独立后验确认新 release/镜像/Bundle 精确匹配、三容器 healthy/零重启、Gateway=1、transport verified/connected/authenticated/account-match/ok 且回执新鲜，零 active/rejected/fatal/Resume/reconnect。除 Agent 镜像标签外私有配置无变化，official sidecar 与 NapCat 指纹保持不变。
 - 没有迁移数据库、导入观点、发送测试消息、读取身份/正文、重新登录或重启 NapCat。`higgs-72` 已重置到 2026-08-31 01:11:51 至 2026-09-01 01:11:51 的 Persona 2.2 只读观察；真实沉浸度继续由主人对话验收，其他能力的生产开启仍需独立确认。
 - 生产记录 PR #63 的首轮 runs `33324831703`、`33324845285` 与复验 runs `33324963637`、`33324966549` 均全绿，并合并为 main `d944306da48b15f29e1d3d1745c013dfb7e1b698`；合并后 main run `33325020959` 再次通过且 Linux Python 零跳过。记录提交本身未触发任何生产动作。
+
+## 节点 55：完整聊天助手能力盘点与阶段 0 开工
+
+- 全量只读审计覆盖 GitHub 从 `8e4656a85d` 到当前 `5f6f2a6599` 的 195 个提交、PR
+  #1–#64、09–28 阶段记忆、当前源码、测试和生产交接。能力状态改用五态账本：
+  `implemented / deployed-off / active / accepted / deferred`，避免再次把默认关闭代码写成
+  已上线能力。
+- 新账本固定当前生产 Agent `6682be3c33c78b1e486286fb224af986419cb922`、Persona
+  `2.2.0` 和 corlinman `v1.56.5` / `27bdf9c8`。corlinman 只作为架构、记忆、审批、
+  搜索隔离和运维参考，不整体复制，也不采用其尚未实现 Resume 的官方 QQ Adapter。
+- 当前已验收核心是官方 owner C2C、durable transport/reply 与 owner Persona 2.2。普通
+  C2C、官方群 `@`、群双层记忆、自我记忆、摄影种子、官方 proactive 和 live 计划均有
+  不同程度的代码基础，但生产仍关闭或未迁移。
+- 产品决定为官方群只接受任何获准成员的 `@Higgs`；普通白名单用户默认拥有自己的长期
+  记忆，只通过自然对话纠正；安全搜索、资料理解和本人提醒/计划以后向普通用户开放，
+  服务器、配置、审批和跨用户治理仍只限主人。
+- 本节点仅整理公开文档和下一阶段边界，不连接生产、不修改私有状态、不发送消息、不重建
+  任何容器。阶段 0 通过独立分支、PR/CI 后，立即进入版本化捕获、Persona 全用户覆盖和
+  principal 隔离强化。

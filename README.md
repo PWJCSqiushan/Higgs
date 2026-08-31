@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![OneBot](https://img.shields.io/badge/OneBot-v11-7B61FF)
 ![Official QQ](https://img.shields.io/badge/QQ%20Bot-official-1677FF)
-![Status](https://img.shields.io/badge/status-V2.1%20active-2EA44F)
+![Status](https://img.shields.io/badge/status-Persona%202.2%20owner%20active-2EA44F)
 
 Higgs 是一个面向个人长期使用的、自托管的 QQ 智能体。它不只负责“调用大模型回复消息”，还把主人权限、人格、长期记忆、提醒、限频、审计和备份放进同一套可治理的系统中。
 
@@ -15,7 +15,7 @@ Higgs 是一个面向个人长期使用的、自托管的 QQ 智能体。它不�
 | 能力 | 当前实现 |
 | --- | --- |
 | QQ 对话 | 双通道：NapCat + OneBot v11 保留既有好友/群；官方 QQ Bot 已完成主人 C2C 被动回复真实验收，测试群与主动发送继续分门灰度 |
-| 独立人格 | 从私有人格文件注入稳定设定；聊天内容不能修改 `self_core` 或主人关系 |
+| 独立人格 | Persona 2.2 已在官方 owner C2C 上线；普通用户和官方群覆盖仍在独立灰度，聊天内容不能修改 `self_core` 或主人关系 |
 | 模型接入 | OpenAI-compatible API；已验证智谱 GLM；支持 `live`、`draft`、`off` 三种模式 |
 | 回复治理 | 连续短消息合并、纯文本输出、敏感内容过滤、通道回执校验、会话与全局限频；官方群处理和发送边界均持久化 |
 | Memory V2.1 | 观察队列、原子事实提取、候选/隔离/激活/失效状态机、FTS5 + 向量混合召回、短 ID 审核与召回台账 |
@@ -391,8 +391,8 @@ GitHub Actions 会执行同样的质量门。提交前还应确认 `.env`、SQLi
 
 ## 当前限制与路线
 
-- 当前原子事实提取器故意保守，大量普通闲聊会被标记为 `no_atomic_fact`；受限结构化模型提取仍在 shadow 设计阶段，模型未来也只能提出候选。
-- NapCat 属于非官方 QQ 自动化通道，仍存在账号风控与登录态失效风险。官方 Bot 已承担主人 C2C 被动回复，但测试群、主动提醒和更多用户范围仍必须按独立门禁逐步开放；两条通道不做透明故障切换。
+- 当前原子事实提取器故意保守，大量普通闲聊会被标记为 `no_atomic_fact`；受限结构化模型候选代码和 36 例离线评测已经存在，但生产模式仍关闭，模型也只能提出候选。
+- NapCat 属于非官方 QQ 自动化通道，仍存在账号风控与登录态失效风险。官方 Bot 已承担主人 C2C 被动回复；普通用户、白名单群 `@Higgs`、主动提醒和更多用户范围已有部分默认关闭代码，仍须分别完成名单、迁移和真实验收。两条通道不做透明故障切换。
 - 默认本地 trigram-hash 向量更重视隐私和可重复性，不等于高质量中文语义模型；远程 embedding 必须显式开启。
 - 自主进化只允许走“主人纠正 → 改进提案 → shadow 测试 → 人工批准 → 可回滚发布”，群友和模型不能直接修改核心代码。
 
@@ -404,6 +404,7 @@ GitHub Actions 会执行同样的质量门。提交前还应确认 `.env`、SQLi
 - [Memory V2.1 实现状态](docs/13-memory-v2-implementation-status.md)
 - [QQ 低频风控](docs/14-qq-risk-control.md)
 - [双通道 transport 路线](docs/21-dual-channel-transport.md)
+- [权威能力账本](docs/29-capability-ledger-2026-08-31.md)
 - [目标架构与安全模型](docs/02-target-architecture.md)
 - [记忆治理 ADR](docs/adr/0002-memory-governance.md)
 - [corlinman 研究快照](research/UPSTREAM_PIN.md)
