@@ -122,6 +122,7 @@ def test_official_event_without_bot_account_is_rejected_before_journal(tmp_path:
             tmp_path / "identity.sqlite",
             owner_qq="800001",
             owner_identities=(("qq_official", "official-owner"),),
+            account_scoped_official_enabled=True,
         ),
         journal=Journal(tmp_path / "journal.sqlite"),
     )

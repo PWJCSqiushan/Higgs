@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,29 @@ def test_explicit_official_owner_binding_reuses_owner_principal(tmp_path: Path) 
     assert official_owner.role == "owner"
     assert regular_user.principal_id != official_owner.principal_id
     assert regular_user.role == "user"
+
+
+def test_account_scoped_schema_defaults_off_without_breaking_existing_owner(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "identity.sqlite"
+    store = IdentityStore(
+        path,
+        owner_qq="10001",
+        owner_identities=(("qq_official", "owner-openid"),),
+    )
+    store.initialize()
+
+    owner = store.resolve_event(_official_event(account_id="bot-a", sender_id="owner-openid"))
+    assert owner == store.resolve("qq", "10001")
+    with sqlite3.connect(path) as conn:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='account_external_identities'"
+            ).fetchone()
+            is None
+        )
 
 
 def test_explicit_binding_refuses_to_overwrite_existing_user(tmp_path: Path) -> None:
@@ -91,7 +115,11 @@ def test_official_group_members_remain_principal_isolated_across_channels(
 
 
 def test_official_identity_is_isolated_by_bot_account(tmp_path: Path) -> None:
-    store = IdentityStore(tmp_path / "identity.sqlite", owner_qq="10001")
+    store = IdentityStore(
+        tmp_path / "identity.sqlite",
+        owner_qq="10001",
+        account_scoped_official_enabled=True,
+    )
     store.initialize()
 
     first = store.resolve_event(_official_event(account_id="bot-a", sender_id="same-openid"))
@@ -117,6 +145,7 @@ def test_configured_owner_migrates_to_one_authenticated_bot_without_changing_pri
         path,
         owner_qq="10001",
         owner_identities=(("qq_official", "owner-openid"),),
+        account_scoped_official_enabled=True,
     )
     store.initialize()
     legacy_owner = store.resolve("qq_official", "owner-openid")
@@ -130,6 +159,7 @@ def test_configured_owner_migrates_to_one_authenticated_bot_without_changing_pri
         path,
         owner_qq="10001",
         owner_identities=(("qq_official", "owner-openid"),),
+        account_scoped_official_enabled=True,
     )
     reopened.initialize()
     assert (
@@ -143,7 +173,11 @@ def test_configured_owner_migrates_to_one_authenticated_bot_without_changing_pri
 def test_legacy_ordinary_official_identity_is_not_guessed_into_bot_scope(
     tmp_path: Path,
 ) -> None:
-    store = IdentityStore(tmp_path / "identity.sqlite", owner_qq="10001")
+    store = IdentityStore(
+        tmp_path / "identity.sqlite",
+        owner_qq="10001",
+        account_scoped_official_enabled=True,
+    )
     store.initialize()
     legacy = store.resolve("qq_official", "ordinary-openid")
 

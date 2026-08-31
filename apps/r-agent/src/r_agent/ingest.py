@@ -37,7 +37,11 @@ class IngestService:
         decision = self.policy.decide(event)
         if decision is not IngressDecision.ACCEPT:
             return IngestResult(decision=decision)
-        if event.channel.strip().casefold() == "qq_official" and not event.account_id.strip():
+        if (
+            self.identities.account_scoped_official_enabled
+            and event.channel.strip().casefold() == "qq_official"
+            and not event.account_id.strip()
+        ):
             return IngestResult(decision=IngressDecision.ACCOUNT_NOT_ALLOWED)
         try:
             principal = self.identities.resolve_event(event)

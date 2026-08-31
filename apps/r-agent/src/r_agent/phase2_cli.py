@@ -212,6 +212,7 @@ class Phase2Settings:
     self_memory_mode: str
     self_memory_schema_v4_enabled: bool
     group_memory_enabled: bool
+    identity_schema_v2_enabled: bool
     backup_dir: Path
     backup_interval_minutes: int
     backup_retention: int
@@ -326,6 +327,7 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         self_memory_mode=self_memory_mode,
         self_memory_schema_v4_enabled=self_memory_schema_v4_enabled,
         group_memory_enabled=group_memory_enabled,
+        identity_schema_v2_enabled=_boolean("R_AGENT_IDENTITY_SCHEMA_V2_ENABLED", False),
         global_max_per_minute=bounded_int("R_AGENT_REPLY_GLOBAL_MAX_PER_MINUTE", "6", 1, 60),
         non_owner_hourly_limit=bounded_int("R_AGENT_REPLY_NON_OWNER_HOURLY_LIMIT", "20", 1, 500),
         non_owner_daily_limit=bounded_int("R_AGENT_REPLY_NON_OWNER_DAILY_LIMIT", "80", 1, 2000),
@@ -679,6 +681,10 @@ async def listen() -> None:
         raise ConfigError("ordinary Persona V2 requires the ordinary official C2C gate")
     if persona_v2_gate.group_enabled and not official_config.group_enabled:
         raise ConfigError("group Persona V2 requires the official group gate")
+    if (
+        official_config.ordinary_private_enabled or official_config.group_enabled
+    ) and not phase.identity_schema_v2_enabled:
+        raise ConfigError("ordinary official audiences require identity schema v2")
     embeddings = _embedding_client(enabled=phase.embedding_enabled, phase=phase)
     safety = _safety_policy(phase)
     client = _model_client(
@@ -707,6 +713,7 @@ async def listen() -> None:
             owner_identities=(
                 (("qq_official", official_owner_openid),) if official_owner_openid else ()
             ),
+            account_scoped_official_enabled=phase.identity_schema_v2_enabled,
         ),
         journal=Journal(settings.data_dir / "journal.sqlite"),
     )

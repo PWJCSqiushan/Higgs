@@ -278,7 +278,11 @@ async def test_persona_v2_gate_does_not_change_onebot_owner_path(tmp_path: Path)
 async def test_persona_v2_applies_to_separately_enabled_ordinary_and_group_surfaces(
     tmp_path: Path,
 ) -> None:
-    identities = IdentityStore(tmp_path / "identity.sqlite", owner_qq=OWNER_QQ)
+    identities = IdentityStore(
+        tmp_path / "identity.sqlite",
+        owner_qq=OWNER_QQ,
+        account_scoped_official_enabled=True,
+    )
     identities.initialize()
     history = ConversationStore(tmp_path / "conversation.sqlite")
     history.initialize()
@@ -348,6 +352,7 @@ async def test_allowlisted_ordinary_official_user_reaches_reply_but_not_owner_co
         tmp_path / "identity.sqlite",
         owner_qq=OWNER_QQ,
         owner_identities=(("qq_official", owner_openid),),
+        account_scoped_official_enabled=True,
     )
     service = IngestService(
         policy=IngressPolicy(

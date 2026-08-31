@@ -44,6 +44,7 @@ class IdentityStore:
         *,
         owner_qq: str | None,
         owner_identities: Iterable[tuple[str, str]] = (),
+        account_scoped_official_enabled: bool = False,
     ) -> None:
         self.path = path
         self.owner_qq = owner_qq
@@ -52,6 +53,7 @@ class IdentityStore:
             for channel, external_id in owner_identities
             if channel.strip() and external_id.strip()
         )
+        self.account_scoped_official_enabled = account_scoped_official_enabled
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -77,44 +79,45 @@ class IdentityStore:
                 )
                 """
             )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS account_external_identities (
-                    channel TEXT NOT NULL,
-                    account_id TEXT NOT NULL,
-                    external_id TEXT NOT NULL,
-                    principal_id TEXT NOT NULL REFERENCES principals(principal_id),
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY(channel, account_id, external_id)
+            if self.account_scoped_official_enabled:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS account_external_identities (
+                        channel TEXT NOT NULL,
+                        account_id TEXT NOT NULL,
+                        external_id TEXT NOT NULL,
+                        principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY(channel, account_id, external_id)
+                    )
+                    """
                 )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS configured_identity_accounts (
-                    channel TEXT NOT NULL,
-                    external_id TEXT NOT NULL,
-                    account_id TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY(channel, external_id)
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS configured_identity_accounts (
+                        channel TEXT NOT NULL,
+                        external_id TEXT NOT NULL,
+                        account_id TEXT NOT NULL,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY(channel, external_id)
+                    )
+                    """
                 )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS identity_schema_meta (
-                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-                    version INTEGER NOT NULL CHECK(version >= 1)
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS identity_schema_meta (
+                        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                        version INTEGER NOT NULL CHECK(version >= 1)
+                    )
+                    """
                 )
-                """
-            )
-            conn.execute(
-                """
-                INSERT INTO identity_schema_meta(singleton, version)
-                VALUES (1, 2)
-                ON CONFLICT(singleton) DO UPDATE SET version = excluded.version
-                """
-            )
+                conn.execute(
+                    """
+                    INSERT INTO identity_schema_meta(singleton, version)
+                    VALUES (1, 2)
+                    ON CONFLICT(singleton) DO UPDATE SET version = excluded.version
+                    """
+                )
             # Deployment configuration is the sole authority for owner role.
             # Rotation/removal must demote a previously configured owner.
             conn.execute(
@@ -205,6 +208,8 @@ class IdentityStore:
         normalized_id = external_id.strip()
         if not normalized_channel or not normalized_account or not normalized_id:
             raise ValueError("channel, account id, and external id are required")
+        if not self.account_scoped_official_enabled:
+            raise IdentityBindingError("account-scoped official identity schema is disabled")
         if normalized_channel != "qq_official":
             return self.resolve(normalized_channel, normalized_id)
 
@@ -293,7 +298,10 @@ class IdentityStore:
             return principal
 
     def resolve_event(self, event: InboundEvent) -> Principal:
-        if event.channel.strip().casefold() == "qq_official":
+        if (
+            event.channel.strip().casefold() == "qq_official"
+            and self.account_scoped_official_enabled
+        ):
             key = PrincipalKey.from_event(event)
             return self.resolve_account(key.channel, key.account_id, key.external_identity)
         return self.resolve(event.channel, event.sender_id)
@@ -343,6 +351,8 @@ class IdentityStore:
         *,
         account_id: str | None = None,
     ) -> str | None:
+        if account_id is not None and not self.account_scoped_official_enabled:
+            raise IdentityBindingError("account-scoped official identity schema is disabled")
         with sqlite3.connect(self.path) as conn:
             if account_id is not None:
                 row = conn.execute(
@@ -371,6 +381,8 @@ class IdentityStore:
         *,
         account_id: str | None = None,
     ) -> bool:
+        if account_id is not None and not self.account_scoped_official_enabled:
+            raise IdentityBindingError("account-scoped official identity schema is disabled")
         with sqlite3.connect(self.path) as conn:
             if account_id is not None:
                 row = conn.execute(
@@ -418,15 +430,21 @@ class IdentityStore:
                 "DELETE FROM external_identities WHERE channel = ? AND external_id = ?",
                 (channel, external_id),
             )
-            remaining = conn.execute(
-                """
-                SELECT 1 FROM external_identities WHERE principal_id = ?
-                UNION ALL
-                SELECT 1 FROM account_external_identities WHERE principal_id = ?
-                LIMIT 1
-                """,
-                (principal_id, principal_id),
-            ).fetchone()
+            if self.account_scoped_official_enabled:
+                remaining = conn.execute(
+                    """
+                    SELECT 1 FROM external_identities WHERE principal_id = ?
+                    UNION ALL
+                    SELECT 1 FROM account_external_identities WHERE principal_id = ?
+                    LIMIT 1
+                    """,
+                    (principal_id, principal_id),
+                ).fetchone()
+            else:
+                remaining = conn.execute(
+                    "SELECT 1 FROM external_identities WHERE principal_id = ? LIMIT 1",
+                    (principal_id,),
+                ).fetchone()
             if remaining is None:
                 conn.execute(
                     "DELETE FROM principals WHERE principal_id = ?",
