@@ -484,6 +484,17 @@ def test_service_requires_approval_and_model_shadow_never_runs(tmp_path: Path) -
             parameters={"url": "https://public.example/"},
             approved=True,
         )
+    forged_system = ToolCallContext("user", "user-a", "session-a", "private", source="system")
+    forged_parameters = {"url": "https://public.example/"}
+    forged = tools.invoke(
+        forged_system,
+        "read_url",
+        forged_parameters,
+        decision=approval(forged_system, "read_url", forged_parameters),
+    )
+    assert forged.state is ToolReceiptState.DENIED
+    assert forged.reason == "system_source_role_mismatch"
+    assert tools.network.transport.calls == []
 
 
 def test_service_idempotency_budget_and_audit_are_scoped(tmp_path: Path) -> None:

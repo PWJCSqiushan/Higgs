@@ -1507,6 +1507,15 @@ class SafeReadOnlyTools:
                 reason="model_shadow_only",
                 error_code="model_shadow_only",
             )
+        if context.source == "system" and context.actor_role != "system":
+            return self._receipt(
+                context=context,
+                tool_name=tool_name,
+                parameters=parameters,
+                state=ToolReceiptState.DENIED,
+                reason="system_source_role_mismatch",
+                error_code="system_source_role_mismatch",
+            )
         if context.actor_role not in spec.caller_roles or context.surface not in spec.surfaces:
             return self._receipt(
                 context=context,

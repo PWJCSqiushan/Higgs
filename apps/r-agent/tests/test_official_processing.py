@@ -139,6 +139,42 @@ def test_durable_event_redacts_attachment_path_and_replay_uses_private_handle_sc
         _event_from_json(json.dumps(legacy))
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("kind", 7),
+        ("file_name", "bad\nname.txt"),
+        ("attachment_id", ""),
+        ("media_type", ["text/plain"]),
+        ("declared_size_bytes", True),
+        ("declared_size_bytes", 20 * 1024 * 1024),
+    ),
+)
+def test_durable_attachment_metadata_types_fail_closed(field: str, value: object) -> None:
+    payload = json.loads(
+        json.dumps(
+            {
+                "channel": "qq_official",
+                "account_id": "bot-openid",
+                "sender_id": "owner-openid",
+                "message_id": "malformed-attachment",
+                "occurred_at_ms": 1_000,
+                "conversation_kind": "private",
+                "conversation_id": "qq_official:private:bot-openid:owner-openid",
+                "group_id": None,
+                "text": "read",
+                "mentioned": False,
+                "reply_message_id": None,
+                "replied_to_account": False,
+                "attachments": [{"kind": "document", field: value}],
+            },
+            ensure_ascii=False,
+        )
+    )
+    with pytest.raises(OfficialProcessingError):
+        _event_from_json(json.dumps(payload, ensure_ascii=False))
+
+
 @pytest.mark.asyncio
 async def test_post_sent_observer_failure_cannot_turn_delivery_into_retry() -> None:
     inbound = event("sent-observer-failure", "输入")

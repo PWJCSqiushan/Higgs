@@ -632,3 +632,13 @@
   并行实现两块：安全 `web_search/read_url/document_read`；普通白名单用户本人提醒与计划。
   两块都必须默认关闭、作用域绑定当前 Bot/principal/session，并经独立审计与全量门禁后才
   能进入阶段 PR；任何真实网络工具、普通用户任务或主动投递启用仍须分别确认。
+
+## 57. 2026-08-31 阶段 4 安全工具与个人任务完成离线集成
+
+- 阶段分支 `codex/higgs-safe-tools-personal-tasks-20260831` 仍以 main `517bb23a8a58aec70b7751740a86e2dae1d7da49` 为基线；本节点只完成离线源码和测试，尚未创建或合并阶段 PR。
+- `web_search`、`read_url` 与 `document_read` 已建立默认关闭的执行边界：角色/surface/data scope、规范参数审批哈希、actor/session 输入输出预算、幂等冲突和 hash-only 审计均失败关闭。网络逐跳校验 scheme/userinfo/端口、两次 DNS、公网 IP、重定向、内容类型、超时和响应大小；默认 transport 不联网。
+- 文档读取只接受当前事件中的 opaque attachment handle，并同时绑定 Bot、sender、principal、session 与事件。隔离区路径只保存在进程内 binding，不进入 `InboundEvent` 或 durable queue；旧式 path/URL 字段在重放时拒绝。失败和超过 24 小时的隔离文件只移入 recycle，不直接删除。
+- 普通用户提醒和今日计划只允许已获准的官方 C2C `user` principal。所有短 ID 操作同时校验 principal、当前 Bot、channel、surface 和 target；群、OneBot 普通用户、错误 Bot 及他人任务均拒绝。owner 旧接口继续兼容。
+- `DeliveryTarget(channel, bot_account, target_id, surface)` 成为个人任务持久目标。普通任务 mode 与普通 proactive 为独立开关；owner proactive 和 ordinary proactive 在 Agent 与 Sidecar 两端分别校验，普通主动目标还必须属于当前 Bot 的冻结私聊名单。任何一边未开都不发送，提醒不会向群或跨通道回退。
+- 独立审计修复后的完整回归为 Python `590 passed, 7 skipped`、Node `59 passed, 9 skipped`；Ruff、格式、Node 语法和 release gate 通过。本机没有 Bash，Shell `bash -n` 与 Windows 跳过项由 Ubuntu PR CI 收口，不能把本节点写成 PR/CI 或生产验收。
+- 生产没有改变：未部署代码、配置真实搜索 provider、开放网络、迁移数据库、开启普通任务/主动投递、捕获用户、发送消息或重建容器；NapCat 未参与。下一步是收束独立审计、最终门禁、阶段 PR/CI，任何生产动作仍需单独确认。

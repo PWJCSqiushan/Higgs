@@ -28,6 +28,31 @@ class AttachmentRef:
     media_type: str | None = None
     declared_size_bytes: int | None = None
 
+    def __post_init__(self) -> None:
+        limits = {
+            "kind": 64,
+            "file_name": 512,
+            "attachment_id": 256,
+            "media_type": 128,
+        }
+        for name, maximum in limits.items():
+            value = getattr(self, name)
+            if value is None and name != "kind":
+                continue
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value) > maximum
+                or any(ord(char) < 32 or ord(char) == 127 for char in value)
+            ):
+                raise ValueError(f"attachment {name} is invalid")
+        if self.declared_size_bytes is not None and (
+            isinstance(self.declared_size_bytes, bool)
+            or not isinstance(self.declared_size_bytes, int)
+            or not 0 <= self.declared_size_bytes <= 16 * 1024 * 1024
+        ):
+            raise ValueError("attachment declared size is invalid")
+
 
 @dataclass(frozen=True, slots=True)
 class InboundEvent:
