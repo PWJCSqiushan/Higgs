@@ -27,6 +27,7 @@ test("configuration is disabled by default and validates enabled secrets", () =>
   assert.equal(defaults.enabled, false);
   assert.equal(defaults.captureOnly, true);
   assert.equal(defaults.proactiveEnabled, false);
+  assert.equal(defaults.ordinaryProactiveEnabled, false);
   assert.equal(defaults.ordinaryPrivateEnabled, false);
   assert.equal(defaults.groupEnabled, false);
   assert.deepEqual(defaults.allowedPrivateOpenIds, []);
@@ -59,6 +60,7 @@ test("ordinary policy is explicit, bot-scoped, and owner remains enabled by defa
     HIGGS_OFFICIAL_QQ_OWNER_OPENID: "owner-openid",
     HIGGS_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS: "member-openid,owner-openid,member-openid",
     HIGGS_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED: "true",
+    HIGGS_OFFICIAL_QQ_ORDINARY_PROACTIVE_ENABLED: "true",
     HIGGS_OFFICIAL_QQ_GROUP_ENABLED: "true",
     HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS: "group-openid",
     QQBOT_APP_ID: "123456789",
@@ -69,6 +71,7 @@ test("ordinary policy is explicit, bot-scoped, and owner remains enabled by defa
     HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT: "1".repeat(64),
   });
   assert.equal(config.ordinaryPrivateEnabled, true);
+  assert.equal(config.ordinaryProactiveEnabled, true);
   assert.equal(config.groupEnabled, true);
   assert.equal(config.privateAllowlistVersion, 1);
   assert.equal(config.privateAllowlistFingerprint, "0".repeat(64));
@@ -102,6 +105,19 @@ test("ordinary policy is explicit, bot-scoped, and owner remains enabled by defa
         QQBOT_APP_SECRET: "0123456789abcdef",
       }),
     /group allowlist metadata required/,
+  );
+
+  assert.throws(
+    () =>
+      loadConfig({
+        HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED: "true",
+        HIGGS_OFFICIAL_QQ_CAPTURE_ONLY: "false",
+        HIGGS_OFFICIAL_QQ_OWNER_OPENID: "owner-openid",
+        HIGGS_OFFICIAL_QQ_ORDINARY_PROACTIVE_ENABLED: "true",
+        QQBOT_APP_ID: "123456789",
+        QQBOT_APP_SECRET: "0123456789abcdef",
+      }),
+    /ordinary proactive sends require enabled ordinary private full mode/,
   );
 
   assert.throws(

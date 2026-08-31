@@ -102,6 +102,7 @@ class OfficialQQConfig:
     reply_enabled: bool = False
     proactive_enabled: bool = False
     ordinary_private_enabled: bool = False
+    ordinary_proactive_enabled: bool = False
     group_enabled: bool = False
     private_rate_per_minute: int = 30
     group_rate_per_minute: int = 60
@@ -136,7 +137,7 @@ class OfficialQQConfig:
         object.__setattr__(self, "owner_openid", owner_openid)
         object.__setattr__(self, "allowed_private_openids", frozenset(private_openids))
         object.__setattr__(self, "allowed_group_openids", frozenset(group_openids))
-        for name in ("ordinary_private_enabled", "group_enabled"):
+        for name in ("ordinary_private_enabled", "ordinary_proactive_enabled", "group_enabled"):
             if not isinstance(getattr(self, name), bool):
                 raise ConfigError(f"{name} must be a boolean")
         if not self.enabled and (self.ordinary_private_enabled or self.group_enabled):
@@ -170,6 +171,12 @@ class OfficialQQConfig:
             raise ConfigError("official QQ replies require the enabled durable sidecar transport")
         if self.proactive_enabled and not self.reply_enabled:
             raise ConfigError("official QQ proactive sends require passive replies to be enabled")
+        if self.ordinary_proactive_enabled and (
+            not self.reply_enabled or not self.ordinary_private_enabled
+        ):
+            raise ConfigError(
+                "ordinary official proactive sends require passive replies and ordinary C2C"
+            )
         if self.enabled and self.transport == "sidecar" and self.owner_openid is None:
             raise ConfigError("enabled official QQ requires an explicit owner OpenID")
         if self.transport == "sidecar" and (
@@ -229,6 +236,7 @@ class OfficialQQConfig:
             f"reply_enabled={self.reply_enabled!r}, "
             f"proactive_enabled={self.proactive_enabled!r}, "
             f"ordinary_private_enabled={self.ordinary_private_enabled!r}, "
+            f"ordinary_proactive_enabled={self.ordinary_proactive_enabled!r}, "
             f"group_enabled={self.group_enabled!r})"
         )
 
@@ -269,6 +277,11 @@ class OfficialQQConfig:
             os.environ.get("R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED"),
             default=False,
             name="R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED",
+        )
+        ordinary_proactive_enabled = _bool_value(
+            os.environ.get("R_AGENT_OFFICIAL_QQ_ORDINARY_PROACTIVE_ENABLED"),
+            default=False,
+            name="R_AGENT_OFFICIAL_QQ_ORDINARY_PROACTIVE_ENABLED",
         )
         group_enabled = _bool_value(
             os.environ.get("R_AGENT_OFFICIAL_QQ_GROUP_ENABLED"),
@@ -347,6 +360,7 @@ class OfficialQQConfig:
             reply_enabled=reply_enabled,
             proactive_enabled=proactive_enabled,
             ordinary_private_enabled=ordinary_private_enabled,
+            ordinary_proactive_enabled=ordinary_proactive_enabled,
             group_enabled=group_enabled,
             private_rate_per_minute=_bounded_int(
                 os.environ.get("R_AGENT_OFFICIAL_QQ_PRIVATE_RATE_PER_MINUTE"),

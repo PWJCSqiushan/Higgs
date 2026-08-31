@@ -87,6 +87,7 @@ export class OfficialQQClient {
     enabled = false,
     captureOnly = true,
     proactiveEnabled = false,
+    ordinaryProactiveEnabled = false,
     BotClass = QQBot,
     now = () => Date.now(),
     watchdogIntervalMs = 1000,
@@ -126,6 +127,7 @@ export class OfficialQQClient {
     this.enabled = enabled;
     this.captureOnly = captureOnly;
     this.proactiveEnabled = proactiveEnabled;
+    this.ordinaryProactiveEnabled = ordinaryProactiveEnabled;
     this.BotClass = BotClass;
     this.now = now;
     this.watchdogIntervalMs = watchdogIntervalMs;
@@ -697,13 +699,20 @@ export class OfficialQQClient {
     }
     let newlyClaimed;
     if (request.delivery_mode === "proactive") {
-      if (!this.proactiveEnabled) {
+      const ordinaryTarget = request.target_id !== this.ownerOpenId;
+      if (
+        (!ordinaryTarget && !this.proactiveEnabled) ||
+        (ordinaryTarget && !this.ordinaryProactiveEnabled)
+      ) {
         throw new ProtocolError("proactive_disabled", 403);
       }
       if (
         request.kind !== "c2c" ||
-        request.target_id !== this.ownerOpenId ||
-        request.reply_message_id !== null
+        request.reply_message_id !== null ||
+        (request.target_id !== this.ownerOpenId &&
+          (!this.ordinaryProactiveEnabled ||
+            !this.ordinaryPrivateEnabled ||
+            !this.allowedPrivateOpenIds.has(request.target_id)))
       ) {
         throw new ProtocolError("invalid_proactive_target", 403);
       }

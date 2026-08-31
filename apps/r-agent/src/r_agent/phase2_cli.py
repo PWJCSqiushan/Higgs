@@ -98,7 +98,14 @@ from r_agent.safety import OutboundSafetyPolicy, SafetyError
 from r_agent.server_status import ServerStatusCommand, ServerStatusReader
 from r_agent.skills import SkillApprovalStore, default_skill_registry
 from r_agent.tool_governance import ToolGovernance
-from r_agent.transport import DeliveryReceipt, DeliveryState, OutboundTarget, TransportUnavailable
+from r_agent.transport import (
+    DeliveryReceipt,
+    DeliveryState,
+    DeliveryTarget,
+    DeliveryTargetError,
+    OutboundTarget,
+    TransportUnavailable,
+)
 from r_agent.transport_state import TransportStateStore
 from r_agent.vector_memory import MemoryVectorStore
 
@@ -244,6 +251,10 @@ class Phase2Settings:
     daily_plan_mode: str
     daily_plan_drafts_per_day: int
     daily_plan_map_optimizations_per_day: int
+    ordinary_task_mode: str = "off"
+    ordinary_task_drafts_per_day: int = 10
+    ordinary_task_reminders_per_day: int = 20
+    ordinary_task_active_reminders: int = 10
 
 
 def _phase2_settings(settings: Settings) -> Phase2Settings:
@@ -322,6 +333,11 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         raise ConfigError("R_AGENT_DAILY_PLAN_MODE must be off, shadow, or live")
     if daily_plan_mode == "live" and mode != "live":
         raise ConfigError("live daily plans require R_AGENT_REPLY_MODE=live")
+    ordinary_task_mode = _value("R_AGENT_OFFICIAL_QQ_ORDINARY_TASK_MODE", "off").casefold()
+    if ordinary_task_mode not in {"off", "shadow", "live"}:
+        raise ConfigError("R_AGENT_OFFICIAL_QQ_ORDINARY_TASK_MODE must be off, shadow, or live")
+    if ordinary_task_mode == "live" and mode != "live":
+        raise ConfigError("live ordinary tasks require R_AGENT_REPLY_MODE=live")
     self_memory_mode = _value("R_AGENT_SELF_MEMORY_MODE", "off").casefold()
     if self_memory_mode not in {"off", "shadow", "autonomous-low-risk"}:
         raise ConfigError("R_AGENT_SELF_MEMORY_MODE must be off, shadow, or autonomous-low-risk")
@@ -396,6 +412,16 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         daily_plan_drafts_per_day=bounded_int("R_AGENT_DAILY_PLAN_DRAFTS_PER_DAY", "10", 1, 50),
         daily_plan_map_optimizations_per_day=bounded_int(
             "R_AGENT_DAILY_PLAN_MAP_OPTIMIZATIONS_PER_DAY", "3", 0, 20
+        ),
+        ordinary_task_mode=ordinary_task_mode,
+        ordinary_task_drafts_per_day=bounded_int(
+            "R_AGENT_OFFICIAL_QQ_ORDINARY_TASK_DRAFTS_PER_DAY", "10", 1, 50
+        ),
+        ordinary_task_reminders_per_day=bounded_int(
+            "R_AGENT_OFFICIAL_QQ_ORDINARY_TASK_REMINDERS_PER_DAY", "20", 1, 100
+        ),
+        ordinary_task_active_reminders=bounded_int(
+            "R_AGENT_OFFICIAL_QQ_ORDINARY_TASK_ACTIVE_REMINDERS", "10", 1, 100
         ),
     )
 
@@ -643,22 +669,27 @@ async def process_reply(
 def _onebot_reminder_target(occurrence: DueOccurrence) -> OutboundTarget | None:
     """Build a NapCat target only from the explicit persisted delivery binding."""
 
-    if occurrence.delivery_channel.casefold() != "qq":
+    try:
+        binding = DeliveryTarget(
+            occurrence.delivery_channel,
+            occurrence.delivery_account_id,
+            occurrence.delivery_target_id,
+            occurrence.delivery_surface,
+        )
+    except DeliveryTargetError:
         return None
-    if occurrence.delivery_surface == "group":
+    if binding.channel != "qq":
+        return None
+    if binding.surface == "group":
         kind = ConversationKind.GROUP
-    elif occurrence.delivery_surface == "private":
+    elif binding.surface == "private":
         kind = ConversationKind.PRIVATE
     else:
-        return None
-    account_id = occurrence.delivery_account_id.strip()
-    target_id = occurrence.delivery_target_id.strip()
-    if not account_id or not target_id or ":" in account_id or ":" in target_id:
         return None
     return OutboundTarget(
         channel="qq",
         conversation_kind=kind,
-        conversation_id=f"qq:{kind.value}:{account_id}:{target_id}",
+        conversation_id=binding.conversation_id,
     )
 
 
@@ -667,24 +698,41 @@ def _official_reminder_target(
     *,
     owner_openid: str | None,
     account_id: str | None,
+    owner_proactive_enabled: bool = False,
+    allowed_private_openids: frozenset[str] | None = None,
+    ordinary_proactive_enabled: bool = False,
 ) -> OutboundTarget | None:
-    """Build only the bound owner-C2C official target for proactive delivery."""
+    """Build a bound official C2C target for owner or ordinary delivery."""
 
+    try:
+        binding = DeliveryTarget(
+            occurrence.delivery_channel,
+            occurrence.delivery_account_id,
+            occurrence.delivery_target_id,
+            occurrence.delivery_surface,
+        )
+    except DeliveryTargetError:
+        return None
     if (
-        occurrence.delivery_channel.casefold() != "qq_official"
-        or occurrence.delivery_surface != "private"
-        or not owner_openid
+        binding.channel != "qq_official"
+        or binding.surface != "private"
         or not account_id
-        or occurrence.delivery_account_id != account_id
-        or occurrence.delivery_target_id != owner_openid
-        or ":" in account_id
-        or ":" in owner_openid
+        or binding.bot_account != account_id
+    ):
+        return None
+    if binding.target_id == owner_openid:
+        if not owner_proactive_enabled:
+            return None
+    elif (
+        not ordinary_proactive_enabled
+        or allowed_private_openids is None
+        or binding.target_id not in allowed_private_openids
     ):
         return None
     return OutboundTarget(
         channel="qq_official",
         conversation_kind=ConversationKind.PRIVATE,
-        conversation_id=f"qq_official:private:{account_id}:{owner_openid}",
+        conversation_id=binding.conversation_id,
     )
 
 
@@ -735,6 +783,10 @@ async def listen() -> None:
         raise ConfigError("ordinary Persona V2 requires the ordinary official C2C gate")
     if persona_v2_gate.group_enabled and not official_config.group_enabled:
         raise ConfigError("group Persona V2 requires the official group gate")
+    if phase.ordinary_task_mode != "off" and not official_config.ordinary_private_enabled:
+        raise ConfigError(
+            "ordinary task modes require R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED=true"
+        )
     if (
         official_config.ordinary_private_enabled or official_config.group_enabled
     ) and not phase.identity_schema_v2_enabled:
@@ -1015,6 +1067,11 @@ async def listen() -> None:
             mode=phase.daily_plan_mode,
             drafts_per_day=phase.daily_plan_drafts_per_day,
             map_optimizations_per_day=phase.daily_plan_map_optimizations_per_day,
+            ordinary_mode=phase.ordinary_task_mode,
+            ordinary_proactive_enabled=official_config.ordinary_proactive_enabled,
+            ordinary_drafts_per_day=phase.ordinary_task_drafts_per_day,
+            ordinary_reminders_per_day=phase.ordinary_task_reminders_per_day,
+            ordinary_active_reminders=phase.ordinary_task_active_reminders,
         ),
         model_client=client,
         amap=AmapRouteClient(amap_key) if amap_key else None,
@@ -1030,6 +1087,10 @@ async def listen() -> None:
         reminders=reminders,
         daily_plans=daily_plans,
         official_proactive_enabled=official_config.proactive_enabled,
+        ordinary_task_mode=phase.ordinary_task_mode,
+        ordinary_proactive_enabled=official_config.ordinary_proactive_enabled,
+        ordinary_reminders_per_day=phase.ordinary_task_reminders_per_day,
+        ordinary_active_reminders=phase.ordinary_task_active_reminders,
         persona_bundle=persona_bundle,
         persona_v2_gate=persona_v2_gate,
         official_owner_id=official_owner_openid,
@@ -1623,7 +1684,9 @@ async def listen() -> None:
             official_reminder_status = None
             if online.snapshot().qq_online:
                 delivery_channels.add("qq")
-            if official_config.proactive_enabled and official_adapter is not None:
+            if (
+                official_config.proactive_enabled or official_config.ordinary_proactive_enabled
+            ) and official_adapter is not None:
                 try:
                     candidate_status = await official_adapter.status()
                 except Exception:
@@ -1662,6 +1725,9 @@ async def listen() -> None:
                             if official_reminder_status is not None
                             else None
                         ),
+                        owner_proactive_enabled=official_config.proactive_enabled,
+                        allowed_private_openids=official_private_openids,
+                        ordinary_proactive_enabled=official_config.ordinary_proactive_enabled,
                     )
                     delivery_adapter = official_adapter
                 else:
@@ -1680,10 +1746,15 @@ async def listen() -> None:
                     )
                     continue
                 target_conversation = target.conversation_id
+                ordinary_target = (
+                    occurrence.delivery_channel == "qq_official"
+                    and occurrence.delivery_surface == "private"
+                    and occurrence.delivery_target_id != official_owner_openid
+                )
                 budget = await asyncio.to_thread(
                     risk_ledger.reserve_send,
                     event_type="reminder",
-                    actor_class="owner",
+                    actor_class="non_owner" if ordinary_target else "owner",
                     account_id=occurrence.delivery_account_id,
                     conversation_id=target_conversation,
                 )

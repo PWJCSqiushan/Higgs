@@ -855,9 +855,19 @@ test("proactive send is separately gated, owner-C2C only, and omits msgId", asyn
     ),
     /proactive_disabled/,
   );
+  await assert.rejects(
+    disabled.send(
+      sendRequest(disabled, {
+        delivery_mode: "proactive",
+        target_id: safe,
+        reply_message_id: null,
+      }),
+    ),
+    /proactive_disabled/,
+  );
   await disabled.stop();
 
-  const client = newClient({ proactiveEnabled: true });
+  const client = newClient({ proactiveEnabled: true, ordinaryProactiveEnabled: true });
   await client.start();
   const bot = FakeBot.instances[0];
   readyForSend(bot);
@@ -873,10 +883,24 @@ test("proactive send is separately gated, owner-C2C only, and omits msgId", asyn
   assert.equal(bot.sent.length, 1);
   assert.deepEqual(bot.sent[0].target, { scope: "c2c", targetId: senderSafe });
   await assert.rejects(
-    client.send({ ...request, idempotency_key: "other-key", target_id: safe }),
+    client.send({ ...request, idempotency_key: "other-key", target_id: "C999_unknown" }),
     /invalid_proactive_target/,
   );
   await client.stop();
+
+  const ordinary = newClient({ ordinaryProactiveEnabled: true });
+  await ordinary.start();
+  const ordinaryBot = FakeBot.instances[0];
+  readyForSend(ordinaryBot);
+  const ordinaryRequest = sendRequest(ordinary, {
+    delivery_mode: "proactive",
+    target_id: safe,
+    reply_message_id: null,
+  });
+  const ordinaryReceipt = await ordinary.send(ordinaryRequest);
+  assert.equal(ordinaryReceipt.state, "sent");
+  assert.equal(ordinaryBot.sent.length, 1);
+  await ordinary.stop();
 });
 
 test(
