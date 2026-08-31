@@ -643,3 +643,10 @@
 - 独立审计修复后的完整回归为 Python `590 passed, 7 skipped`、Node `59 passed, 9 skipped`；Ruff、格式、Node 语法和 release gate 通过。本机没有 Bash，Shell `bash -n` 与 Windows 跳过项由 Ubuntu PR CI 收口，不能把本节点写成 PR/CI 或生产验收。
 - 生产没有改变：未部署代码、配置真实搜索 provider、开放网络、迁移数据库、开启普通任务/主动投递、捕获用户、发送消息或重建容器；NapCat 未参与。下一步是收束独立审计、最终门禁、阶段 PR/CI，任何生产动作仍需单独确认。
 - 阶段 PR #69 已创建。首轮 push run `33382686895` 与 pull_request run `33382728996` 的 Python/Sidecar 两项任务全部成功，Ubuntu 已收口 Windows 跳过项、Shell、POSIX/UDS、镜像和 Compose。本次追加 CI 证据后仍须等待新一轮两套 CI，再合并；生产边界不变。
+
+## 58. 2026-08-31 PR #69 合并，Stage 4 进入主线
+
+- 追加 CI 证据后的 push run `33382859370` 与 pull_request run `33382862796` 再次全绿；PR #69 合并为 main `4e13e2ec0014fe25fd6f322391a7455e9bd5f402`，合并后 main run `33382985494` 成功。
+- Ubuntu 已执行 Python 零跳过、Shell 语法、秘密/发布包、Node POSIX/UDS/进程替换、镜像和 Compose；未以 Windows 跳过项代替 Linux 验收。
+- 合并只更新 GitHub 主线。安全工具仍没有真实 provider 或业务路由，普通任务 mode/proactive、普通 C2C、群和其他阶段开关仍关闭；没有部署、迁移、捕获、发送消息、重建容器或改动 NapCat。
+- 下一阶段可继续实现多模态/附件 ingress 闭环、私有知识库与管理指标；若要先让普通用户或个人任务进入生产，必须分别完成代码部署、名单/identity 前置和独立开关确认。

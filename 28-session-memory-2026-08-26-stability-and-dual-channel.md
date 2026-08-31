@@ -611,3 +611,9 @@
 - 集成审计发现并修复两项阻断：attachment path 原本可能随事件持久化；普通 proactive 原本仍被 owner-only 目标函数拦截。进一步补上 owner proactive 关闭时不能借 ordinary proactive 通道投递的回归。
 - 独立终审修复后的完整合并测试为 Python `590 passed, 7 skipped`、Node `59 passed, 9 skipped`，Ruff、格式、Node 语法和 release gate 通过。本机无 Bash，Shell 语法与 Windows 跳过项必须由 Ubuntu PR CI 收口；本节点不代表代码已部署或功能已对用户开放。
 - PR #69 首轮 push run `33382686895` 与 pull_request run `33382728996` 均全绿；Ubuntu 已实际执行 Python 零跳过、Shell、Node POSIX/UDS/进程替换、发布包、镜像与 Compose。追加本证据后仍需新一轮 CI 复验再合并，生产开关与容器继续不变。
+
+## 节点 64：Stage 4 合并主线，生产继续关闭
+
+- PR #69 追加证据后的 push/pull_request runs `33382859370`、`33382862796` 再次全绿，合并为 main `4e13e2ec0014fe25fd6f322391a7455e9bd5f402`；合并后 main run `33382985494` 成功。
+- Ubuntu 已收口 Windows 的七个 Python 与九个 Node 跳过项，并通过 Shell、秘密/发布包、POSIX/UDS、镜像与 Compose。Stage 4 的安全工具边界和普通用户本人任务现已进入主线。
+- 主线能力不等于生产启用：真实搜索 provider、工具路由、附件 ingress、普通任务 mode/proactive、普通 C2C 与群均保持未部署或关闭。没有数据库迁移、受众扩大、消息发送、容器重建或 NapCat 改动。
