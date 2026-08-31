@@ -16,6 +16,7 @@ FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 NONCE = re.compile(r"[0-9a-f]{64}\Z")
 SCHEMA_VERSION = 2
 MAX_ALLOWLIST_ENTRIES = 128
+MAX_EPOCH_HISTORY = 64
 
 
 def _fail(message: str) -> None:
@@ -184,6 +185,17 @@ def _read_v2_capture(path: Path, expected_count: int) -> dict[str, object]:
         or not NONCE.fullmatch(value["nonce"])
     ):
         _fail("capture state is invalid")
+    window_started = value.get("window_started_at_ms")
+    window_deadline = value.get("window_deadline_at_ms")
+    if (
+        isinstance(window_started, bool)
+        or not isinstance(window_started, int)
+        or window_started < 0
+        or isinstance(window_deadline, bool)
+        or not isinstance(window_deadline, int)
+        or window_deadline <= window_started
+    ):
+        _fail("capture window is invalid")
     max_candidates = value.get("max_candidates")
     if (
         isinstance(max_candidates, bool)
@@ -213,6 +225,30 @@ def _read_v2_capture(path: Path, expected_count: int) -> dict[str, object]:
             _fail("capture allowlist metadata is invalid")
     if value.get("frozen_allowlist_version") is None:
         _fail("capture state is not frozen v2")
+    history = value.get("history")
+    history_keys = {
+        "version",
+        "scope",
+        "status",
+        "epoch_id",
+        "nonce",
+        "app_id",
+        "bot_id",
+        "window_started_at_ms",
+        "window_deadline_at_ms",
+        "max_candidates",
+        "candidate_count",
+        "baseline_allowlist_version",
+        "baseline_allowlist_fingerprint",
+        "frozen_allowlist_version",
+        "frozen_allowlist_fingerprint",
+    }
+    if (
+        not isinstance(history, list)
+        or len(history) > MAX_EPOCH_HISTORY
+        or any(not isinstance(entry, dict) or set(entry) != history_keys for entry in history)
+    ):
+        _fail("capture history is invalid")
     return value
 
 
