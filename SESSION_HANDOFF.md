@@ -524,7 +524,7 @@
 - 激活支持先普通 C2C 后单群或相反顺序。已有受众的 Agent/Sidecar/Persona 三重门必须一致，
   identity schema 必须已启用；所选受众重复激活、名单 provenance 漂移、单 Gateway、健康、
   transport 新鲜度或 active batches 任一不满足都会失败并恢复私有配置与 identity 备份。
-- 本地完整验收为 Python `481 passed, 5 skipped`、Node `59 passed, 9 skipped`；Ruff 格式与
+- 本地完整验收为 Python `482 passed, 5 skipped`、Node `59 passed, 9 skipped`；Ruff 格式与
   检查、Node 语法、Shell `bash -n`、release gate、秘密扫描、Shell LF 与 diff 检查均通过。
   Windows 跳过项等待 PR Ubuntu CI 零跳过收口。
 - 本节点没有连接生产、运行捕获或冻结、迁移数据库、开启普通用户/群、发送消息、重建容器
@@ -532,4 +532,6 @@
   获得确认，不能把代码合并视为上线。
 - 上线脚本的复核进一步补齐 Linux `100644` wrapper 的显式 `exec sh`、校验前只读预检、
   不完整 identity 备份回收、回滚健康等待、三服务单实例、容器实际开关与重建后新鲜回执
-  校验，以及单测试群精确数量门；这些改动仍只存在于本阶段分支。
+  校验，以及单测试群精确数量门。最终版本还与捕获/冻结共享四把锁，先停 Sidecar、排空
+  durable batch，再停 Agent 并从宿主备份 identity；allowlist Bot 必须与私有 session 身份
+  一致。这些改动仍只存在于本阶段分支。

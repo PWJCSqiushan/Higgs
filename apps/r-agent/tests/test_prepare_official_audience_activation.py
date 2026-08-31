@@ -398,3 +398,27 @@ def test_first_group_activation_requires_exactly_one_group(tmp_path: Path) -> No
             other_allowlist_path=None,
             backup_dir=backup,
         )
+
+
+def test_prepare_rejects_allowlist_for_another_authenticated_bot(tmp_path: Path) -> None:
+    agent, sidecar, allowlist, backup = _fixture(tmp_path, "private")
+    session = tmp_path / "session.json"
+    _write_private(
+        session,
+        json.dumps(
+            {"version": 1, "session": None, "bot_id": "other-bot", "updated_at_ms": 1},
+            separators=(",", ":"),
+        )
+        + "\n",
+    )
+
+    with pytest.raises(ACTIVATION.ActivationError, match="authenticated session"):
+        ACTIVATION.prepare(
+            surface="private",
+            agent_env=agent,
+            sidecar_env=sidecar,
+            allowlist_path=allowlist,
+            other_allowlist_path=None,
+            backup_dir=backup,
+            session_state_path=session,
+        )

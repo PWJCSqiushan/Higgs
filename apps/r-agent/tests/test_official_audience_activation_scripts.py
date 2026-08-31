@@ -14,7 +14,14 @@ def test_shared_audience_activation_backs_up_identity_and_never_rebuilds_napcat(
     assert "identity.sqlite" in script
     assert "prepare_official_audience_activation.py" in script
     assert "--check-only" in script
+    assert "--session-state" in script
     assert "activation_started_ms" in script
+    assert ".official-private-capture.lock" in script
+    assert ".official-private-freeze.lock" in script
+    assert ".official-group-capture.lock" in script
+    assert ".official-group-freeze.lock" in script
+    assert "sidecar intake did not quiesce" in script
+    assert "wait_for_verified_transport" in script
     assert "validate_official_channels.py" in script
     assert "--force-recreate official-qq-sidecar" in script
     assert "--force-recreate agent" in script

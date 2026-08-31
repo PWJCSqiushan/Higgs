@@ -173,6 +173,18 @@ def _read_allowlist(path: Path, scope: str) -> dict[str, object]:
     return value
 
 
+def _read_session_bot_id(path: Path) -> str:
+    _safe_file(path)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ActivationError("official session state is unreadable") from exc
+    bot_id = value.get("bot_id") if isinstance(value, dict) else None
+    if not isinstance(bot_id, str) or not SAFE_ID.fullmatch(bot_id) or "*" in bot_id:
+        raise ActivationError("official session Bot identity is unavailable")
+    return bot_id
+
+
 def _metadata(values: dict[str, str], prefix: str) -> tuple[int, str]:
     version = values.get(f"{prefix}_VERSION", "").strip()
     fingerprint = values.get(f"{prefix}_FINGERPRINT", "").strip()
@@ -217,14 +229,11 @@ def _atomic_write(path: Path, content: str, failed_dir: Path) -> None:
 
 
 def _restore(path: Path, backup: Path, failed_dir: Path) -> None:
-    temporary = path.with_name(f".{path.name}.audience-rollback-{os.getpid()}")
     try:
-        shutil.copy2(backup, temporary)
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            os.replace(temporary, failed_dir / temporary.name)
+        content = backup.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ActivationError("private backup is unreadable") from exc
+    _atomic_write(path, content, failed_dir)
 
 
 def prepare(
@@ -235,6 +244,7 @@ def prepare(
     allowlist_path: Path,
     other_allowlist_path: Path | None,
     backup_dir: Path,
+    session_state_path: Path | None = None,
     check_only: bool = False,
 ) -> None:
     if surface not in {"private", "group"}:
@@ -279,11 +289,16 @@ def prepare(
     if audience_state[surface][0]:
         raise ActivationError("selected audience is already active")
 
+    current_bot_id = (
+        _read_session_bot_id(session_state_path) if session_state_path is not None else None
+    )
     other_surface = "group" if surface == "private" else "private"
+    other_bot_id: str | None = None
     if audience_state[other_surface][0]:
         if other_allowlist_path is None:
             raise ActivationError("active audience allowlist is unavailable")
         other_allowlist = _read_allowlist(other_allowlist_path, other_surface)
+        other_bot_id = str(other_allowlist["bot_id"])
         if sidecar.get("QQBOT_APP_ID", "").strip() != other_allowlist["app_id"]:
             raise ActivationError("active audience App binding differs")
         if other_surface == "private":
@@ -308,6 +323,10 @@ def prepare(
 
     if sidecar.get("QQBOT_APP_ID", "").strip() != allowlist["app_id"]:
         raise ActivationError("allowlist App binding differs")
+    if current_bot_id is not None and allowlist["bot_id"] != current_bot_id:
+        raise ActivationError("allowlist Bot binding differs from the authenticated session")
+    if other_bot_id is not None and allowlist["bot_id"] != other_bot_id:
+        raise ActivationError("official audience Bot bindings differ")
     if surface == "private":
         agent_ids_key = "R_AGENT_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS"
         sidecar_ids_key = "HIGGS_OFFICIAL_QQ_ALLOWED_PRIVATE_OPENIDS"
@@ -368,6 +387,7 @@ def main() -> int:
     parser.add_argument("--sidecar-env", required=True)
     parser.add_argument("--allowlist", required=True)
     parser.add_argument("--other-allowlist")
+    parser.add_argument("--session-state", required=True)
     parser.add_argument("--backup-dir", required=True)
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
@@ -379,6 +399,7 @@ def main() -> int:
             allowlist_path=Path(args.allowlist),
             other_allowlist_path=(Path(args.other_allowlist) if args.other_allowlist else None),
             backup_dir=Path(args.backup_dir),
+            session_state_path=Path(args.session_state),
             check_only=args.check_only,
         )
     except (ActivationError, OSError, UnicodeError, ValueError):
