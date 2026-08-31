@@ -27,11 +27,14 @@ from r_agent.safe_tools import (
 )
 from r_agent.tool_governance import (
     ToolBudget,
+    ToolDecision,
     ToolGovernance,
     ToolReceiptState,
     ToolRequest,
     ToolRequestSource,
     ToolSpec,
+    normalize_parameters,
+    parameter_approval_hash,
 )
 
 PUBLIC = "8.8.8.8"
@@ -94,6 +97,26 @@ def inbound(*attachments: AttachmentRef) -> InboundEvent:
         text="read this",
         mentioned=False,
         attachments=attachments,
+    )
+
+
+def approval(context: ToolCallContext, tool_name: str, parameters: dict) -> ToolDecision:
+    normalized = normalize_parameters(parameters)
+    return ToolDecision(
+        request_id="decision-for-test",
+        tool_name=tool_name,
+        allowed=True,
+        reason="explicit_approval",
+        parameter_sha256=parameter_approval_hash(
+            tool_name,
+            {
+                "parameters": normalized,
+                "session_id": context.session_id,
+                "data_scope": context.data_scope,
+            },
+        ),
+        decided_at_ms=1,
+        approved_by=context.principal_id,
     )
 
 
@@ -231,12 +254,17 @@ def test_document_read_requires_current_event_attachment_and_isolated_path(tmp_p
         kind="document",
         file_name="note.txt",
         attachment_id="opaque-handle-0001",
-        relative_path="note.txt",
         declared_size_bytes=len("hello\n我的偏好是夜景".encode()),
     )
     event = inbound(reference)
     handles = AttachmentHandleStore()
-    handles.bind(event, reference, session_id="session-a", principal_id="principal-a")
+    handles.bind(
+        event,
+        reference,
+        relative_path="note.txt",
+        session_id="session-a",
+        principal_id="principal-a",
+    )
     tools = SafeReadOnlyTools(document_root=root, attachment_handles=handles, enabled=True)
     result = tools.document_read(
         event,
@@ -253,19 +281,13 @@ def test_document_read_requires_current_event_attachment_and_isolated_path(tmp_p
         kind="document",
         file_name="note.txt",
         attachment_id="opaque-handle-0002",
-        relative_path="../note.txt",
     )
     traversal_event = inbound(traversal_reference)
-    handles.bind(
-        traversal_event,
-        traversal_reference,
-        session_id="session-a",
-        principal_id="principal-a",
-    )
     with pytest.raises(DocumentSecurityError):
-        tools.document_read(
+        handles.bind(
             traversal_event,
-            attachment_id=traversal_reference.attachment_id,
+            traversal_reference,
+            relative_path="../note.txt",
             session_id="session-a",
             principal_id="principal-a",
         )
@@ -279,11 +301,16 @@ def test_document_handle_binds_event_bot_session_and_principal(tmp_path: Path) -
         kind="document",
         file_name="note.txt",
         attachment_id="opaque-handle-123456",
-        relative_path="note.txt",
     )
     event = inbound(reference)
     handles = AttachmentHandleStore()
-    handles.bind(event, reference, session_id="session-a", principal_id="principal-a")
+    handles.bind(
+        event,
+        reference,
+        relative_path="note.txt",
+        session_id="session-a",
+        principal_id="principal-a",
+    )
     tools = SafeReadOnlyTools(
         document_root=root,
         attachment_handles=handles,
@@ -321,11 +348,16 @@ def test_document_read_rejects_symlink_and_unsupported_format(tmp_path: Path) ->
         kind="document",
         file_name="link.txt",
         attachment_id="opaque-link-handle",
-        relative_path="link.txt",
     )
     link_event = inbound(link_reference)
     handles = AttachmentHandleStore()
-    handles.bind(link_event, link_reference, session_id="session-a", principal_id="principal-a")
+    handles.bind(
+        link_event,
+        link_reference,
+        relative_path="link.txt",
+        session_id="session-a",
+        principal_id="principal-a",
+    )
     tools = SafeReadOnlyTools(document_root=root, attachment_handles=handles, enabled=True)
     with pytest.raises(DocumentSecurityError):
         tools.document_read(
@@ -339,10 +371,15 @@ def test_document_read_rejects_symlink_and_unsupported_format(tmp_path: Path) ->
         kind="document",
         file_name="binary.pdf",
         attachment_id="opaque-pdf-handle",
-        relative_path="binary.pdf",
     )
     pdf_event = inbound(pdf_reference)
-    handles.bind(pdf_event, pdf_reference, session_id="session-a", principal_id="principal-a")
+    handles.bind(
+        pdf_event,
+        pdf_reference,
+        relative_path="binary.pdf",
+        session_id="session-a",
+        principal_id="principal-a",
+    )
     with pytest.raises(DocumentSecurityError):
         tools.document_read(
             pdf_event,
@@ -379,11 +416,16 @@ def test_document_read_rejects_macros_and_archive_bombs(
         kind="document",
         file_name="file.docx",
         attachment_id="opaque-docx-handle",
-        relative_path="file.docx",
     )
     event = inbound(reference)
     handles = AttachmentHandleStore()
-    handles.bind(event, reference, session_id="session-a", principal_id="principal-a")
+    handles.bind(
+        event,
+        reference,
+        relative_path="file.docx",
+        session_id="session-a",
+        principal_id="principal-a",
+    )
     tools = SafeReadOnlyTools(document_root=root, attachment_handles=handles, enabled=True)
     with pytest.raises((DocumentSecurityError, ResponseTooLargeError)):
         tools.document_read(
@@ -418,7 +460,13 @@ def test_service_requires_approval_and_model_shadow_never_runs(tmp_path: Path) -
     network, _, _ = client([HttpResponse(200, {"content-type": "text/plain"}, b"should not run")])
     tools = SafeReadOnlyTools(network=network, enabled=True)
     shadow = ToolCallContext("user", "user-a", "session-a", "private", source="model_shadow")
-    receipt = tools.invoke(shadow, "read_url", {"url": "https://public.example/"}, approved=True)
+    shadow_parameters = {"url": "https://public.example/"}
+    receipt = tools.invoke(
+        shadow,
+        "read_url",
+        shadow_parameters,
+        decision=approval(shadow, "read_url", shadow_parameters),
+    )
     assert receipt.state is ToolReceiptState.DENIED
     assert receipt.reason == "model_shadow_only"
     assert tools.network.transport.calls == []
@@ -428,7 +476,14 @@ def test_service_requires_approval_and_model_shadow_never_runs(tmp_path: Path) -
         {"url": "https://public.example/"},
     )
     assert denied.state is ToolReceiptState.DENIED
-    assert denied.reason == "default_deny"
+    assert denied.reason == "approval_missing_or_denied"
+    with pytest.raises(TypeError):
+        tools.invoke(
+            context=ToolCallContext("user", "user-a", "session-a", "private"),
+            tool_name="read_url",
+            parameters={"url": "https://public.example/"},
+            approved=True,
+        )
 
 
 def test_service_idempotency_budget_and_audit_are_scoped(tmp_path: Path) -> None:
@@ -443,27 +498,29 @@ def test_service_idempotency_budget_and_audit_are_scoped(tmp_path: Path) -> None
         audit=MetadataAuditTrail(tmp_path / "audit.sqlite"),
     )
     context = ToolCallContext("user", "user-a", "session-a", "private")
+    first_parameters = {"url": "https://public.example/"}
     first = tools.invoke(
         context,
         "read_url",
-        {"url": "https://public.example/"},
-        approved=True,
+        first_parameters,
+        decision=approval(context, "read_url", first_parameters),
         idempotency_key="fixed",
     )
     duplicate = tools.invoke(
         context,
         "read_url",
-        {"url": "https://public.example/"},
-        approved=True,
+        first_parameters,
+        decision=approval(context, "read_url", first_parameters),
         idempotency_key="fixed",
     )
     assert first.state is ToolReceiptState.SUCCEEDED
     assert duplicate.state is ToolReceiptState.DUPLICATE
+    conflict_parameters = {"url": "https://other.example/"}
     conflict = tools.invoke(
         context,
         "read_url",
-        {"url": "https://other.example/"},
-        approved=True,
+        conflict_parameters,
+        decision=approval(context, "read_url", conflict_parameters),
         idempotency_key="fixed",
     )
     assert conflict.state is ToolReceiptState.DENIED
@@ -481,7 +538,11 @@ def test_service_rejects_data_scope_and_extra_parameters() -> None:
         context,
         "read_url",
         {"url": "https://public.example/", "extra": "no"},
-        approved=True,
+        decision=approval(
+            context,
+            "read_url",
+            {"url": "https://public.example/", "extra": "no"},
+        ),
     )
     assert receipt.state is ToolReceiptState.DENIED
     assert receipt.reason == "data_scope_not_allowed"
@@ -491,7 +552,11 @@ def test_service_rejects_data_scope_and_extra_parameters() -> None:
         conversation,
         "read_url",
         {"url": "https://public.example/", "extra": "no"},
-        approved=True,
+        decision=approval(
+            conversation,
+            "read_url",
+            {"url": "https://public.example/", "extra": "no"},
+        ),
     )
     assert invalid.state is ToolReceiptState.FAILED
     assert invalid.reason == "invalid_parameters"

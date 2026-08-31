@@ -48,6 +48,7 @@ from xml.etree import ElementTree
 from r_agent.events import AttachmentRef, InboundEvent
 from r_agent.tool_governance import (
     ToolBudget,
+    ToolDecision,
     ToolExecutionResult,
     ToolReceipt,
     ToolReceiptState,
@@ -961,6 +962,7 @@ class AttachmentHandleStore:
         event: InboundEvent,
         attachment: AttachmentRef,
         *,
+        relative_path: str,
         session_id: str,
         principal_id: str,
     ) -> None:
@@ -969,9 +971,20 @@ class AttachmentHandleStore:
         if attachment not in event.attachments or attachment.attachment_id is None:
             raise DocumentSecurityError("attachment is not part of the current event")
         handle = self._opaque(attachment.attachment_id, label="attachment handle")
-        relative_path = attachment.relative_path
-        if relative_path is None:
-            raise DocumentSecurityError("attachment has no isolated path")
+        relative_path = _clean_text(
+            relative_path,
+            label="attachment relative path",
+            maximum=512,
+        )
+        if (
+            "\\" in relative_path
+            or Path(relative_path).is_absolute()
+            or PurePath(relative_path).anchor
+        ):
+            raise DocumentSecurityError("attachment path must be relative")
+        path_parts = PurePath(relative_path).parts
+        if not path_parts or any(part in {"", ".", ".."} for part in path_parts):
+            raise DocumentSecurityError("attachment path contains traversal")
         session = _clean_text(session_id, label="attachment session", maximum=256)
         principal = _clean_text(principal_id, label="attachment principal", maximum=256)
         expires = int(self._clock_ms()) + self.ttl_seconds * 1000
@@ -1363,8 +1376,6 @@ class SafeReadOnlyTools:
             "file",
         }:
             raise DocumentSecurityError("attachment is not a document")
-        if attachment.relative_path is None:
-            raise DocumentSecurityError("attachment has no isolated local path")
         if session_id is None or principal_id is None:
             raise DocumentSecurityError("attachment caller scope is required")
         verified_path = self.attachment_handles.verify(
@@ -1373,9 +1384,7 @@ class SafeReadOnlyTools:
             session_id=session_id,
             principal_id=principal_id,
         )
-        if verified_path != attachment.relative_path:
-            raise DocumentSecurityError("attachment handle path mismatch")
-        path, content = _open_attachment(self.document_root, attachment.relative_path)
+        path, content = _open_attachment(self.document_root, verified_path)
         if attachment.declared_size_bytes is not None and (
             isinstance(attachment.declared_size_bytes, bool)
             or attachment.declared_size_bytes != len(content)
@@ -1457,11 +1466,17 @@ class SafeReadOnlyTools:
         tool_name: str,
         parameters: Mapping[str, Any],
         *,
-        approved: bool = False,
+        decision: ToolDecision | None = None,
         idempotency_key: str | None = None,
         event: InboundEvent | None = None,
     ) -> ToolReceipt:
-        """Execute one explicitly approved call with caller/session isolation."""
+        """Execute one governance-approved call with caller/session isolation.
+
+        ``decision`` must be produced by the deterministic approval path.  A
+        bare boolean is intentionally not accepted: the service verifies that
+        the decision binds the exact tool, normalized parameters, session and
+        data scope before it opens the handler gate.
+        """
 
         try:
             spec = next(item for item in self.specs(enabled=self.enabled) if item.name == tool_name)
@@ -1514,16 +1529,6 @@ class SafeReadOnlyTools:
                 error_code="data_scope_not_allowed",
                 idempotency_key=idempotency_key,
             )
-        if not approved:
-            return self._receipt(
-                context=context,
-                tool_name=tool_name,
-                parameters=parameters,
-                state=ToolReceiptState.DENIED,
-                reason="default_deny",
-                error_code="default_deny",
-                idempotency_key=idempotency_key,
-            )
         try:
             normalized = normalize_parameters(parameters)
             if not _schema_matches(normalized, spec.input_schema):
@@ -1548,6 +1553,40 @@ class SafeReadOnlyTools:
                 "data_scope": context.data_scope,
             },
         )
+        if (
+            not isinstance(decision, ToolDecision)
+            or not decision.allowed
+            or decision.reason != "explicit_approval"
+        ):
+            return self._receipt(
+                context=context,
+                tool_name=tool_name,
+                parameters=normalized,
+                state=ToolReceiptState.DENIED,
+                reason="approval_missing_or_denied",
+                error_code="approval_required",
+                idempotency_key=idempotency_key,
+            )
+        if decision.tool_name != tool_name or decision.parameter_sha256 != parameter_sha:
+            return self._receipt(
+                context=context,
+                tool_name=tool_name,
+                parameters=normalized,
+                state=ToolReceiptState.DENIED,
+                reason="approval_mismatch",
+                error_code="approval_mismatch",
+                idempotency_key=idempotency_key,
+            )
+        if decision.approved_by != context.principal_id:
+            return self._receipt(
+                context=context,
+                tool_name=tool_name,
+                parameters=normalized,
+                state=ToolReceiptState.DENIED,
+                reason="approval_principal_mismatch",
+                error_code="approval_principal_mismatch",
+                idempotency_key=idempotency_key,
+            )
         if idempotency_key:
             try:
                 idem = _clean_text(
