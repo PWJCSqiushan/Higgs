@@ -18,6 +18,8 @@ def test_official_qq_defaults_to_disabled(monkeypatch: pytest.MonkeyPatch) -> No
         "R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS",
         "R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION",
         "R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT",
+        "R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION",
+        "R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT",
         "R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED",
         "R_AGENT_OFFICIAL_QQ_GROUP_ENABLED",
         "R_AGENT_OFFICIAL_QQ_PRIVATE_RATE_PER_MINUTE",
@@ -99,6 +101,27 @@ def test_ordinary_private_requires_versioned_allowlist_metadata(
     monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT", "not-a-hash")
     with pytest.raises(ConfigError, match="lowercase SHA-256"):
         OfficialQQConfig.from_env()
+
+
+def test_group_channel_requires_versioned_allowlist_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ENABLED", "true")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_TRANSPORT", "sidecar")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_OWNER_OPENID", "owner-openid")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_GROUP_ENABLED", "true")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS", "group-openid")
+    monkeypatch.delenv("R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION", raising=False)
+    monkeypatch.delenv("R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT", raising=False)
+
+    with pytest.raises(ConfigError, match="group channel requires versioned"):
+        OfficialQQConfig.from_env()
+
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION", "2")
+    monkeypatch.setenv("R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT", "b" * 64)
+    config = OfficialQQConfig.from_env()
+    assert config.active_group_allowlist_version == 2
+    assert config.active_group_allowlist_fingerprint == "b" * 64
 
 
 @pytest.mark.parametrize(

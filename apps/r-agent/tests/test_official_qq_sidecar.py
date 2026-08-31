@@ -64,6 +64,8 @@ def sidecar_config() -> OfficialQQConfig:
         reply_enabled=True,
         private_allowlist_version=1,
         private_allowlist_fingerprint="a" * 64,
+        group_allowlist_version=2,
+        group_allowlist_fingerprint="b" * 64,
     )
 
 
@@ -82,6 +84,8 @@ def status_payload(*, generation: str = "generation-1") -> dict[str, object]:
         "reason": "ready",
         "private_allowlist_version": 1,
         "private_allowlist_fingerprint": "a" * 64,
+        "group_allowlist_version": 2,
+        "group_allowlist_fingerprint": "b" * 64,
     }
 
 
@@ -92,6 +96,8 @@ def hello_payload(*, generation: str = "generation-1", cursor: int = 0) -> dict[
         "event_cursor": cursor,
         "private_allowlist_version": 1,
         "private_allowlist_fingerprint": "a" * 64,
+        "group_allowlist_version": 2,
+        "group_allowlist_fingerprint": "b" * 64,
     }
 
 
@@ -143,6 +149,25 @@ async def test_start_rejects_private_allowlist_version_or_fingerprint_drift() ->
     drifted = hello_payload()
     drifted["private_allowlist_fingerprint"] = "b" * 64
     client = FakeSidecarClient([(200, drifted)])
+    adapter = OfficialQQSidecarAdapter(
+        sidecar_config(),
+        event_handler=_discard,
+        client=client,
+    )
+
+    with pytest.raises(TransportUnavailable, match="protocol"):
+        await adapter.start()
+
+    status = await adapter.status()
+    assert status.reason == "protocol_error"
+    assert status.authenticated is False
+
+
+@pytest.mark.asyncio
+async def test_start_rejects_group_allowlist_version_or_fingerprint_drift() -> None:
+    drifted = status_payload()
+    drifted["group_allowlist_version"] = 3
+    client = FakeSidecarClient([(200, hello_payload()), (200, drifted)])
     adapter = OfficialQQSidecarAdapter(
         sidecar_config(),
         event_handler=_discard,
@@ -271,9 +296,13 @@ async def test_owner_event_is_kept_when_new_ordinary_and_group_gates_are_off() -
     owner_only_hello = hello_payload()
     owner_only_hello["private_allowlist_version"] = None
     owner_only_hello["private_allowlist_fingerprint"] = None
+    owner_only_hello["group_allowlist_version"] = None
+    owner_only_hello["group_allowlist_fingerprint"] = None
     owner_only_status = status_payload()
     owner_only_status["private_allowlist_version"] = None
     owner_only_status["private_allowlist_fingerprint"] = None
+    owner_only_status["group_allowlist_version"] = None
+    owner_only_status["group_allowlist_fingerprint"] = None
     client = FakeSidecarClient(
         [
             (200, owner_only_hello),

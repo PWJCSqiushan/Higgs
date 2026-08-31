@@ -126,6 +126,8 @@ class SidecarConfig(Protocol):
     proactive_enabled: bool
     active_private_allowlist_version: int | None
     active_private_allowlist_fingerprint: str | None
+    active_group_allowlist_version: int | None
+    active_group_allowlist_fingerprint: str | None
 
 
 class HttpxSidecarClient:
@@ -266,14 +268,19 @@ class OfficialQQSidecarAdapter:
             raise SidecarProtocolViolation("sidecar protocol version mismatch")
         return _safe_id(payload.get("generation"))
 
-    def _validate_private_allowlist_metadata(self, payload: Mapping[str, Any]) -> None:
-        version = payload.get("private_allowlist_version")
-        fingerprint = payload.get("private_allowlist_fingerprint")
-        expected_version = getattr(self.config, "active_private_allowlist_version", None)
-        expected_fingerprint = getattr(self.config, "active_private_allowlist_fingerprint", None)
+    def _validate_allowlist_metadata(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        scope: str,
+        expected_version: int | None,
+        expected_fingerprint: str | None,
+    ) -> None:
+        version = payload.get(f"{scope}_allowlist_version")
+        fingerprint = payload.get(f"{scope}_allowlist_fingerprint")
         if expected_version is None:
             if version is not None or fingerprint is not None:
-                raise SidecarProtocolViolation("inactive private allowlist metadata is exposed")
+                raise SidecarProtocolViolation(f"inactive {scope} allowlist metadata is exposed")
             return
         if (
             isinstance(version, bool)
@@ -283,9 +290,23 @@ class OfficialQQSidecarAdapter:
             or len(fingerprint) != 64
             or any(char not in "0123456789abcdef" for char in fingerprint)
         ):
-            raise SidecarProtocolViolation("private allowlist metadata is invalid")
+            raise SidecarProtocolViolation(f"{scope} allowlist metadata is invalid")
         if version != expected_version or fingerprint != expected_fingerprint:
-            raise SidecarProtocolViolation("private allowlist metadata does not match")
+            raise SidecarProtocolViolation(f"{scope} allowlist metadata does not match")
+
+    def _validate_allowlist_metadata_pair(self, payload: Mapping[str, Any]) -> None:
+        self._validate_allowlist_metadata(
+            payload,
+            scope="private",
+            expected_version=getattr(self.config, "active_private_allowlist_version", None),
+            expected_fingerprint=getattr(self.config, "active_private_allowlist_fingerprint", None),
+        )
+        self._validate_allowlist_metadata(
+            payload,
+            scope="group",
+            expected_version=getattr(self.config, "active_group_allowlist_version", None),
+            expected_fingerprint=getattr(self.config, "active_group_allowlist_fingerprint", None),
+        )
 
     async def _hello(self) -> tuple[str, int]:
         payload = await self._request("GET", "/v1/hello")
@@ -295,9 +316,11 @@ class OfficialQQSidecarAdapter:
                 "event_cursor",
                 "private_allowlist_version",
                 "private_allowlist_fingerprint",
+                "group_allowlist_version",
+                "group_allowlist_fingerprint",
             },
         )
-        self._validate_private_allowlist_metadata(payload)
+        self._validate_allowlist_metadata_pair(payload)
         cursor = payload.get("event_cursor")
         if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
             raise SidecarProtocolViolation("sidecar event cursor is invalid")
@@ -319,9 +342,11 @@ class OfficialQQSidecarAdapter:
                 "reason",
                 "private_allowlist_version",
                 "private_allowlist_fingerprint",
+                "group_allowlist_version",
+                "group_allowlist_fingerprint",
             },
         )
-        self._validate_private_allowlist_metadata(payload)
+        self._validate_allowlist_metadata_pair(payload)
         for key in ("configured", "gateway_connected", "authenticated", "capture_only"):
             if not isinstance(payload.get(key), bool):
                 raise SidecarProtocolViolation("sidecar status boolean is invalid")

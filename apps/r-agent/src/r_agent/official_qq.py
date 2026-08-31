@@ -111,6 +111,8 @@ class OfficialQQConfig:
     group_circuit_cooldown_seconds: int = 300
     private_allowlist_version: int | None = None
     private_allowlist_fingerprint: str | None = None
+    group_allowlist_version: int | None = None
+    group_allowlist_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         owner_openid = (
@@ -145,6 +147,10 @@ class OfficialQQConfig:
             )
         if self.ordinary_private_enabled and self.private_allowlist_version is None:
             raise ConfigError("ordinary private channel requires versioned allowlist metadata")
+        if (self.group_allowlist_version is None) != (self.group_allowlist_fingerprint is None):
+            raise ConfigError("group allowlist version and fingerprint must be configured together")
+        if self.group_enabled and self.group_allowlist_version is None:
+            raise ConfigError("group channel requires versioned allowlist metadata")
         for name, minimum, maximum in (
             ("private_rate_per_minute", 1, 120),
             ("group_rate_per_minute", 1, 240),
@@ -200,6 +206,14 @@ class OfficialQQConfig:
     @property
     def active_private_allowlist_fingerprint(self) -> str | None:
         return self.private_allowlist_fingerprint if self.ordinary_private_enabled else None
+
+    @property
+    def active_group_allowlist_version(self) -> int | None:
+        return self.group_allowlist_version if self.group_enabled else None
+
+    @property
+    def active_group_allowlist_fingerprint(self) -> str | None:
+        return self.group_allowlist_fingerprint if self.group_enabled else None
 
     def __repr__(self) -> str:
         return (
@@ -276,6 +290,14 @@ class OfficialQQConfig:
         private_allowlist_fingerprint = _optional_allowlist_fingerprint(
             os.environ.get("R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT"),
             name="R_AGENT_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT",
+        )
+        group_allowlist_version = _optional_allowlist_version(
+            os.environ.get("R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION"),
+            name="R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION",
+        )
+        group_allowlist_fingerprint = _optional_allowlist_fingerprint(
+            os.environ.get("R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT"),
+            name="R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT",
         )
         if app_id is not None and (
             not app_id.isascii() or not app_id.isdigit() or not 5 <= len(app_id) <= 32
@@ -370,6 +392,8 @@ class OfficialQQConfig:
             ),
             private_allowlist_version=private_allowlist_version,
             private_allowlist_fingerprint=private_allowlist_fingerprint,
+            group_allowlist_version=group_allowlist_version,
+            group_allowlist_fingerprint=group_allowlist_fingerprint,
         )
 
 
