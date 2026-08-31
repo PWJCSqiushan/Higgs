@@ -18,6 +18,15 @@ const maxCandidates = Number(
   process.env.HIGGS_OFFICIAL_QQ_GROUP_CAPTURE_MAX_CANDIDATES ??
     String(DEFAULT_GROUP_MAX_CANDIDATES),
 );
+const baselineAllowlistVersionRaw = String(
+  process.env.HIGGS_OFFICIAL_QQ_GROUP_CAPTURE_BASELINE_VERSION ?? "",
+).trim();
+const baselineAllowlistFingerprint = String(
+  process.env.HIGGS_OFFICIAL_QQ_GROUP_CAPTURE_BASELINE_FINGERPRINT ?? "",
+).trim();
+const baselineAllowlistVersion = baselineAllowlistVersionRaw
+  ? Number(baselineAllowlistVersionRaw)
+  : null;
 if (
   !/^\d{5,32}$/u.test(appId) ||
   appSecret.length < 16 ||
@@ -32,6 +41,14 @@ if (!Number.isSafeInteger(requestedSeconds) || requestedSeconds < 10 || requeste
 if (!Number.isSafeInteger(maxCandidates) || maxCandidates < 1 || maxCandidates > 128) {
   throw new Error("group_capture_invalid_limit");
 }
+if (
+  (baselineAllowlistVersion === null) !== (baselineAllowlistFingerprint.length === 0) ||
+  (baselineAllowlistVersion !== null &&
+    (!Number.isSafeInteger(baselineAllowlistVersion) || baselineAllowlistVersion < 1 ||
+      !/^[0-9a-f]{64}$/u.test(baselineAllowlistFingerprint)))
+) {
+  throw new Error("group_capture_invalid_baseline");
+}
 
 const windowStartedAtMs = Date.now();
 const windowDeadlineAtMs = windowStartedAtMs + requestedSeconds * 1000;
@@ -40,6 +57,10 @@ const store = new GroupCaptureStore(capturePath, {
   windowStartedAtMs,
   windowDeadlineAtMs,
   maxCandidates,
+  baselineAllowlistVersion,
+  baselineAllowlistFingerprint: baselineAllowlistVersion === null
+    ? null
+    : baselineAllowlistFingerprint,
 });
 let opened = false;
 let client = null;

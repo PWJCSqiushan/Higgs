@@ -140,6 +140,18 @@ test("repeated group epochs merge incrementally and retain rollback metadata", (
   );
 });
 
+test("capture CLI forwards the v2 baseline for a repeatable epoch", () => {
+  const cli = readFileSync(
+    new URL("../src/capture-test-groups.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(cli, /HIGGS_OFFICIAL_QQ_GROUP_CAPTURE_BASELINE_VERSION/u);
+  assert.match(cli, /HIGGS_OFFICIAL_QQ_GROUP_CAPTURE_BASELINE_FINGERPRINT/u);
+  assert.match(cli, /group_capture_invalid_baseline/u);
+  assert.match(cli, /baselineAllowlistVersion,/u);
+  assert.match(cli, /baselineAllowlistFingerprint: baselineAllowlistVersion === null/u);
+});
+
 test("group epochs are idempotent and reject wrong Bot, App, nonce, and baselines", () => {
   const paths = capturePaths("higgs-group-capture-policy-");
   const captureStore = store(paths);

@@ -87,25 +87,31 @@ def test_official_stability_observer_is_anonymous_and_read_only() -> None:
     assert "QQBOT_APP_SECRET" not in text
 
 
-def test_official_test_group_binding_is_owner_only_bounded_and_non_activating() -> None:
+def test_official_test_group_capture_is_versioned_bounded_and_non_activating() -> None:
     text = (ROOT / "deploy/existing-server/run_official_node_group_bind.sh").read_text(
         encoding="utf-8"
     )
-    assert "ONLY_OWNER_WILL_BIND_ONE_TEST_GROUP" in text
-    assert "STABILITY_72H_ACCEPTED" in text
-    assert "绑定测试群" in text
+    assert "CAPTURE_OFFICIAL_TEST_GROUP" in text
+    assert "group-capture.json" in text
+    assert "allowed-group-openids.json" in text
+    assert "legacy group.openid requires explicit import" in text
+    assert "HIGGS_OFFICIAL_QQ_GROUP_CAPTURE_BASELINE_VERSION" in text
+    assert "HIGGS_OFFICIAL_QQ_GROUP_CAPTURE_BASELINE_FINGERPRINT" in text
     assert "private owner binding is absent" in text
-    assert "first test-group slot is not empty" in text
+    assert "audience, Persona, and identity gates must be disabled" in text
     assert "another official Gateway is active" in text
     assert "official_processing_batches WHERE state!='complete'" in text
     assert "compose stop -t 20 official-qq-sidecar" in text
     assert "compose up -d --no-deps official-qq-sidecar" in text
-    assert "production allowlist remains unchanged" in text
+    assert "production_group_gate=unchanged" in text
     assert "agent_started=" in text
     assert "agent_restarts=" in text
-    assert "group.openid" in text
-    assert "/srv/trash/higgs-official-group-bind-failed-" in text
+    assert "napcat_started=" in text
+    assert "/srv/trash/higgs-official-group-capture-before-" in text
+    assert "group-capture.failed.json" in text
     assert "NapCat" not in text
+    assert "R_AGENT_OFFICIAL_QQ_ENABLED" not in text
+    assert "HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED" not in text
     assert 'echo "$group' not in text
     assert 'cat "$group_file"' not in text
     assert "docker logs" not in text
@@ -113,7 +119,42 @@ def test_official_test_group_binding_is_owner_only_bounded_and_non_activating() 
     assert ".unlink(" not in text
 
 
-def test_official_test_group_activation_is_atomic_and_reversible() -> None:
+def test_official_test_group_freeze_moves_baseline_and_syncs_metadata() -> None:
+    text = (ROOT / "deploy/existing-server/freeze_official_group.sh").read_text(
+        encoding="utf-8"
+    )
+    helper = (ROOT / "deploy/existing-server/freeze_official_group.py").read_text(
+        encoding="utf-8"
+    )
+    assert "FREEZE_OFFICIAL_TEST_GROUP" in text
+    assert "group-capture.json" in text
+    assert "allowed-group-openids.json" in text
+    assert "group.openid requires explicit import" in text
+    assert "/srv/trash/higgs-official-group-freeze-" in text
+    assert "mv \"$allowlist_file\" \"$previous_allowlist_file\"" in text
+    assert "group-capture.failed.json" in text
+    assert "allowed-group-openids.failed.json" in text
+    assert "PREVIOUS_ALLOWLIST_FILE" in text
+    assert "R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION" in helper
+    assert "R_AGENT_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT" in helper
+    assert "HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_VERSION" in helper
+    assert "HIGGS_OFFICIAL_QQ_GROUP_ALLOWLIST_FINGERPRINT" in helper
+    assert "audience, Persona, and identity gates must be disabled" in text
+    assert "owner transport" in text
+    assert "official_processing_batches WHERE state!='complete'" in text
+    assert "audience_gates=unchanged" in text
+    assert "rollback" in helper
+    assert 'print(len(openids))' in helper
+    assert "R_AGENT_OFFICIAL_QQ_ENABLED" not in text
+    assert "HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED" not in text
+    assert 'echo "$group' not in text
+    assert 'cat "$group_file"' not in text
+    assert "docker logs" not in text
+    assert "\nrm " not in text
+    assert ".unlink(" not in text
+
+
+def test_group_activation_remains_deferred_until_follow_up_slice() -> None:
     text = (ROOT / "deploy/existing-server/activate_official_test_group.sh").read_text(
         encoding="utf-8"
     )
@@ -121,16 +162,7 @@ def test_official_test_group_activation_is_atomic_and_reversible() -> None:
     assert "STABILITY_72H_ACCEPTED" in text
     assert "R_AGENT_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS" in text
     assert "HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS" in text
-    assert "restore_private_configuration" in text
-    assert "rollback_required=true" in text
-    assert "/srv/trash/higgs-official-test-group-activation-" in text
-    assert "official_processing_batches WHERE state!='complete'" in text
-    assert "--force-recreate official-qq-sidecar" in text
-    assert "--force-recreate agent" in text
-    assert "R_AGENT_OFFICIAL_QQ_REPLY_ENABLED=true" in text
     assert "only group-at events are accepted" in text
-    assert 'echo "$group' not in text
-    assert 'cat "$group_file"' not in text
     assert "docker logs" not in text
     assert "\nrm " not in text
     assert ".unlink(" not in text
