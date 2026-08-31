@@ -13,6 +13,7 @@ class IngressDecision(StrEnum):
     DISABLED = "disabled"
     SELF_MESSAGE = "self_message"
     OWNER_UNCONFIGURED = "owner_unconfigured"
+    ACCOUNT_NOT_ALLOWED = "account_not_allowed"
     PRIVATE_NOT_ALLOWED = "private_not_allowed"
     GROUP_NOT_ALLOWED = "group_not_allowed"
 

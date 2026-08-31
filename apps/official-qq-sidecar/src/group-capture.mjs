@@ -16,7 +16,6 @@ import {
   ALLOWLIST_FINGERPRINT_PATTERN,
   ALLOWLIST_SCHEMA_VERSION,
   MAX_ALLOWLIST_ENTRIES,
-  computeAllowlistFingerprint,
   createAllowlistVersion,
   createCaptureEpoch,
   isSafeInteger,
@@ -25,10 +24,24 @@ import {
   validateCaptureEpoch,
 } from "./allowlist.mjs";
 
-const VERSION = ALLOWLIST_SCHEMA_VERSION;
+/**
+ * Versioned capture for GROUP_AT_MESSAGE_CREATE audiences.
+ *
+ * The old binder writes `group.openid`, which is intentionally not read by
+ * this module. A v1 file, a create-once binding, or a malformed v2 envelope
+ * therefore cannot silently become a production allowlist.
+ */
+export const GROUP_CAPTURE_FILE_NAME = "group-capture.json";
+export const GROUP_ALLOWLIST_FILE_NAME = "allowed-group-openids.json";
+export const DEFAULT_GROUP_MAX_CANDIDATES = 1;
+
 const MAX_FILE_BYTES = 256 * 1024;
 const MAX_EPOCH_HISTORY = 64;
 const LEGACY_VERSION = 1;
+
+function invalidState(reason = "invalid_group_capture_state") {
+  throw new Error(reason);
+}
 
 function exactKeys(value, keys) {
   return (
@@ -40,14 +53,29 @@ function exactKeys(value, keys) {
   );
 }
 
-function privateFile(path, expectedName) {
-  if (!isAbsolute(path) || basename(path) !== expectedName) {
-    throw new Error("invalid_private_capture_path");
+function assertNoLegacyBinding(path) {
+  const legacyPath = resolve(dirname(path), "group.openid");
+  try {
+    lstatSync(legacyPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
   }
-  return resolve(path);
+  // The v1 binder's create-once output has no App/Bot/version binding. It is
+  // never implicitly imported or merged into the v2 audience.
+  invalidState("group_bind_legacy_requires_explicit_import");
 }
 
-function validatePrivateDirectory(path) {
+function groupFile(path, expectedName) {
+  if (!isAbsolute(path) || basename(path) !== expectedName) {
+    invalidState("invalid_group_capture_path");
+  }
+  const target = resolve(path);
+  assertNoLegacyBinding(target);
+  return target;
+}
+
+function validateGroupDirectory(path) {
   const stat = lstatSync(dirname(path));
   const expectedUid = typeof process.getuid === "function" ? process.getuid() : null;
   if (
@@ -56,13 +84,13 @@ function validatePrivateDirectory(path) {
     (expectedUid !== null && stat.uid !== expectedUid) ||
     (process.platform !== "win32" && (stat.mode & 0o777) !== 0o700)
   ) {
-    throw new Error("unsafe_private_capture_directory");
+    invalidState("unsafe_group_capture_directory");
   }
 }
 
 function validateHistory(value) {
   if (!Array.isArray(value) || value.length > MAX_EPOCH_HISTORY) {
-    throw new Error("invalid_private_capture_state");
+    invalidState();
   }
   const seen = new Set();
   return value.map((entry) => {
@@ -83,50 +111,60 @@ function validateHistory(value) {
       "frozen_allowlist_version",
       "frozen_allowlist_fingerprint",
     ]);
-    if (!exactKeys(entry, keys) || entry.version !== VERSION || entry.scope !== "private") {
-      throw new Error("invalid_private_capture_state");
+    if (!exactKeys(entry, keys) || entry.version !== ALLOWLIST_SCHEMA_VERSION || entry.scope !== "group") {
+      invalidState();
     }
-    // History deliberately contains metadata and counts only, not message
-    // text or candidate identities. It is retained to prevent epoch overwrite.
-    const normalized = validateCaptureEpoch({
-      version: entry.version,
-      scope: entry.scope,
-      status: entry.status,
-      epoch_id: entry.epoch_id,
-      nonce: entry.nonce,
-      app_id: entry.app_id,
-      bot_id: entry.bot_id,
-      window_started_at_ms: entry.window_started_at_ms,
-      window_deadline_at_ms: entry.window_deadline_at_ms,
-      max_candidates: entry.max_candidates,
-      candidates: [],
-      baseline_allowlist_version: entry.baseline_allowlist_version,
-      baseline_allowlist_fingerprint: entry.baseline_allowlist_fingerprint,
-      frozen_allowlist_version: entry.frozen_allowlist_version,
-      frozen_allowlist_fingerprint: entry.frozen_allowlist_fingerprint,
-      history: [],
-    });
-    if (!isSafeInteger(entry.candidate_count) || entry.candidate_count > entry.max_candidates) {
-      throw new Error("invalid_private_capture_state");
+    const normalized = validateCaptureEpoch(
+      {
+        version: entry.version,
+        scope: entry.scope,
+        status: entry.status,
+        epoch_id: entry.epoch_id,
+        nonce: entry.nonce,
+        app_id: entry.app_id,
+        bot_id: entry.bot_id,
+        window_started_at_ms: entry.window_started_at_ms,
+        window_deadline_at_ms: entry.window_deadline_at_ms,
+        max_candidates: entry.max_candidates,
+        candidates: [],
+        baseline_allowlist_version: entry.baseline_allowlist_version,
+        baseline_allowlist_fingerprint: entry.baseline_allowlist_fingerprint,
+        frozen_allowlist_version: entry.frozen_allowlist_version,
+        frozen_allowlist_fingerprint: entry.frozen_allowlist_fingerprint,
+        history: [],
+      },
+      "group",
+    );
+    if (
+      !isSafeInteger(entry.candidate_count) ||
+      entry.candidate_count > entry.max_candidates
+    ) {
+      invalidState();
     }
-    if (seen.has(normalized.epoch_id)) throw new Error("invalid_private_capture_state");
+    if (seen.has(normalized.epoch_id)) invalidState();
     seen.add(normalized.epoch_id);
+    // History deliberately contains metadata and counts only, never group
+    // identities or message content.
     return { ...entry, bot_id: normalized.bot_id };
   });
 }
 
 function validateState(value) {
   if (value?.version === LEGACY_VERSION) {
-    throw new Error("private_capture_legacy_state_requires_import");
+    invalidState("group_capture_legacy_state_requires_import");
   }
-  const normalized = validateCaptureEpoch(value, "private");
-  const history = validateHistory(value.history);
-  return { ...normalized, history };
+  let normalized;
+  try {
+    normalized = validateCaptureEpoch(value, "group");
+  } catch {
+    invalidState();
+  }
+  return { ...normalized, history: validateHistory(value.history) };
 }
 
-function writePrivateFile(path, value, expectedName) {
-  const target = privateFile(path, expectedName);
-  validatePrivateDirectory(target);
+function writeGroupFile(path, value, expectedName) {
+  const target = groupFile(path, expectedName);
+  validateGroupDirectory(target);
   const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
   const descriptor = openSync(temporary, "wx", 0o600);
   try {
@@ -138,7 +176,7 @@ function writePrivateFile(path, value, expectedName) {
       (process.platform !== "win32" && (stat.mode & 0o777) !== 0o600) ||
       stat.size > MAX_FILE_BYTES
     ) {
-      throw new Error("unsafe_private_capture_file");
+      invalidState("unsafe_group_capture_file");
     }
   } finally {
     closeSync(descriptor);
@@ -154,9 +192,9 @@ function writePrivateFile(path, value, expectedName) {
   }
 }
 
-function readRawPrivateFile(path, expectedName) {
-  const target = privateFile(path, expectedName);
-  validatePrivateDirectory(target);
+function readRawGroupFile(path, expectedName) {
+  const target = groupFile(path, expectedName);
+  validateGroupDirectory(target);
   let stat;
   try {
     stat = lstatSync(target);
@@ -172,17 +210,17 @@ function readRawPrivateFile(path, expectedName) {
     (expectedUid !== null && stat.uid !== expectedUid) ||
     (process.platform !== "win32" && (stat.mode & 0o777) !== 0o600)
   ) {
-    throw new Error("unsafe_private_capture_file");
+    invalidState("unsafe_group_capture_file");
   }
   try {
     return JSON.parse(readFileSync(target, "utf8"));
   } catch {
-    throw new Error("invalid_private_capture_state");
+    invalidState();
   }
 }
 
-function readPrivateFile(path, expectedName) {
-  const value = readRawPrivateFile(path, expectedName);
+function readGroupFile(path, expectedName) {
+  const value = readRawGroupFile(path, expectedName);
   return value === null ? null : validateState(value);
 }
 
@@ -206,42 +244,47 @@ function epochHistoryEntry(value) {
   };
 }
 
-function readExistingAllowlist(path) {
-  const raw = readRawPrivateFile(path, "allowed-private-openids.json");
+function readExistingGroupAllowlist(path) {
+  const raw = readRawGroupFile(path, GROUP_ALLOWLIST_FILE_NAME);
   if (raw === null) return null;
   if (raw?.version === LEGACY_VERSION) {
-    throw new Error("private_allowlist_legacy_requires_explicit_import");
+    invalidState("group_allowlist_legacy_requires_explicit_import");
   }
-  return validateAllowlist(raw, "private");
+  try {
+    return validateAllowlist(raw, "group");
+  } catch {
+    invalidState("invalid_group_allowlist");
+  }
 }
 
-export class PrivateUserCaptureStore {
+/** A repeatable, account-bound capture window for one or more groups. */
+export class GroupCaptureStore {
   constructor(
     path,
     {
       appId,
       windowStartedAtMs,
       windowDeadlineAtMs,
-      maxCandidates = MAX_ALLOWLIST_ENTRIES,
+      maxCandidates = DEFAULT_GROUP_MAX_CANDIDATES,
       baselineAllowlistVersion = null,
       baselineAllowlistFingerprint = null,
       now = () => Date.now(),
     },
   ) {
-    this.path = privateFile(path, "private-users-capture.json");
+    this.path = groupFile(path, GROUP_CAPTURE_FILE_NAME);
     this.appId = String(appId ?? "");
     if (!/^\d{5,32}$/u.test(this.appId)) {
-      throw new Error("invalid_private_capture_app_id");
+      invalidState("invalid_group_capture_app_id");
     }
     if (
       !isSafeInteger(windowStartedAtMs) ||
       !isSafeInteger(windowDeadlineAtMs) ||
       windowDeadlineAtMs <= windowStartedAtMs
     ) {
-      throw new Error("invalid_private_capture_window");
+      invalidState("invalid_group_capture_window");
     }
     if (!isSafeInteger(maxCandidates, 1) || maxCandidates > MAX_ALLOWLIST_ENTRIES) {
-      throw new Error("invalid_private_capture_limit");
+      invalidState("invalid_group_capture_limit");
     }
     if (
       (baselineAllowlistVersion !== null && !isSafeInteger(baselineAllowlistVersion, 1)) ||
@@ -250,7 +293,7 @@ export class PrivateUserCaptureStore {
           !ALLOWLIST_FINGERPRINT_PATTERN.test(baselineAllowlistFingerprint))) ||
       (baselineAllowlistVersion === null) !== (baselineAllowlistFingerprint === null)
     ) {
-      throw new Error("invalid_private_capture_baseline");
+      invalidState("invalid_group_capture_baseline");
     }
     this.windowStartedAtMs = windowStartedAtMs;
     this.windowDeadlineAtMs = windowDeadlineAtMs;
@@ -261,32 +304,31 @@ export class PrivateUserCaptureStore {
   }
 
   _read() {
-    const value = readPrivateFile(this.path, "private-users-capture.json");
-    if (value === null) throw new Error("private_capture_not_started");
+    const value = readGroupFile(this.path, GROUP_CAPTURE_FILE_NAME);
+    if (value === null) invalidState("group_capture_not_started");
     if (
       value.app_id !== this.appId ||
       value.window_started_at_ms !== this.windowStartedAtMs ||
       value.window_deadline_at_ms !== this.windowDeadlineAtMs
     ) {
-      throw new Error("private_capture_window_mismatch");
+      invalidState("group_capture_window_mismatch");
     }
     return value;
   }
 
   open() {
-    const existing = readPrivateFile(this.path, "private-users-capture.json");
+    const existing = readGroupFile(this.path, GROUP_CAPTURE_FILE_NAME);
     if (existing !== null) {
       const now = this.now();
       if (
         (existing.status === "open" || existing.status === "closed") &&
         now <= existing.window_deadline_at_ms
       ) {
-        throw new Error("private_capture_already_started");
+        invalidState("group_capture_already_started");
       }
-      // A completed epoch is retained in the manifest history. The new epoch
-      // is never written over it without retaining its opaque metadata.
       const history = [...existing.history, epochHistoryEntry(existing)].slice(-MAX_EPOCH_HISTORY);
       const next = createCaptureEpoch({
+        scope: "group",
         appId: this.appId,
         windowStartedAtMs: this.windowStartedAtMs,
         windowDeadlineAtMs: this.windowDeadlineAtMs,
@@ -295,10 +337,11 @@ export class PrivateUserCaptureStore {
         baselineAllowlistFingerprint: this.baselineAllowlistFingerprint,
         history,
       });
-      writePrivateFile(this.path, next, "private-users-capture.json");
+      writeGroupFile(this.path, next, GROUP_CAPTURE_FILE_NAME);
       return next.epoch_id;
     }
     const next = createCaptureEpoch({
+      scope: "group",
       appId: this.appId,
       windowStartedAtMs: this.windowStartedAtMs,
       windowDeadlineAtMs: this.windowDeadlineAtMs,
@@ -306,48 +349,41 @@ export class PrivateUserCaptureStore {
       baselineAllowlistVersion: this.baselineAllowlistVersion,
       baselineAllowlistFingerprint: this.baselineAllowlistFingerprint,
     });
-    writePrivateFile(this.path, next, "private-users-capture.json");
+    writeGroupFile(this.path, next, GROUP_CAPTURE_FILE_NAME);
     return next.epoch_id;
   }
 
-  recordCandidate(openId, botId, now = this.now()) {
-    if (!isSafePolicyId(openId) || !isSafePolicyId(botId) || !isSafeInteger(now)) {
-      throw new Error("invalid_private_capture_candidate");
+  recordCandidate(groupOpenId, botId, now = this.now()) {
+    if (!isSafePolicyId(groupOpenId) || !isSafePolicyId(botId) || !isSafeInteger(now)) {
+      invalidState("invalid_group_capture_candidate");
     }
     const value = this._read();
     if (value.status !== "open") return false;
-    if (now < value.window_started_at_ms) {
-      return false;
-    }
-    if (now > value.window_deadline_at_ms) return false;
+    if (now < value.window_started_at_ms || now > value.window_deadline_at_ms) return false;
     if (value.bot_id !== null && value.bot_id !== botId) {
-      throw new Error("private_capture_bot_mismatch");
+      invalidState("group_capture_bot_mismatch");
     }
     if (value.bot_id === null) value.bot_id = botId;
-    if (!value.candidates.includes(openId)) {
+    if (!value.candidates.includes(groupOpenId)) {
       if (value.candidates.length >= value.max_candidates) {
-        throw new Error("private_capture_limit");
+        invalidState("group_capture_limit");
       }
-      value.candidates = [...value.candidates, openId].sort();
+      value.candidates = [...value.candidates, groupOpenId].sort();
     }
-    writePrivateFile(this.path, value, "private-users-capture.json");
+    writeGroupFile(this.path, value, GROUP_CAPTURE_FILE_NAME);
     return true;
   }
 
-  close(now = this.now()) {
-    if (!isSafeInteger(now)) throw new Error("invalid_private_capture_time");
+  close() {
     const value = this._read();
-    if (value.status === "frozen") throw new Error("private_capture_already_frozen");
+    if (value.status === "frozen") invalidState("group_capture_already_frozen");
     if (value.status === "expired") return;
     value.status = "closed";
-    writePrivateFile(this.path, value, "private-users-capture.json");
+    writeGroupFile(this.path, value, GROUP_CAPTURE_FILE_NAME);
   }
 
   freeze(expectedCount, allowlistPath, now = this.now()) {
-    if (!isSafeInteger(expectedCount) || expectedCount > MAX_ALLOWLIST_ENTRIES) {
-      throw new Error("invalid_private_capture_count");
-    }
-    freezePrivateAllowlist(this.path, expectedCount, allowlistPath, now);
+    freezeGroupAllowlist(this.path, expectedCount, allowlistPath, now);
   }
 
   summary() {
@@ -362,73 +398,75 @@ export class PrivateUserCaptureStore {
       baseline_allowlist_version: value.baseline_allowlist_version,
       baseline_allowlist_fingerprint: value.baseline_allowlist_fingerprint,
       window_active:
-        value.status === "open" && now >= value.window_started_at_ms && now <= value.window_deadline_at_ms,
+        value.status === "open" &&
+        now >= value.window_started_at_ms &&
+        now <= value.window_deadline_at_ms,
     });
   }
 }
 
-export function freezePrivateAllowlist(
+export function freezeGroupAllowlist(
   capturePath,
   expectedCount,
   allowlistPath,
   now = Date.now(),
-  previousAllowlistPath = allowlistPath,
 ) {
   if (!isSafeInteger(expectedCount) || expectedCount > MAX_ALLOWLIST_ENTRIES) {
-    throw new Error("invalid_private_capture_count");
+    invalidState("invalid_group_capture_count");
   }
-  if (!isSafeInteger(now)) throw new Error("invalid_private_capture_time");
-  const capture = readPrivateFile(capturePath, "private-users-capture.json");
+  if (!isSafeInteger(now)) invalidState("invalid_group_capture_time");
+  const capture = readGroupFile(capturePath, GROUP_CAPTURE_FILE_NAME);
   if (capture === null || capture.status !== "closed") {
-    throw new Error("private_capture_must_be_closed");
+    invalidState("group_capture_must_be_closed");
   }
-  if (!isSafePolicyId(capture.bot_id)) throw new Error("private_capture_bot_unbound");
+  if (!isSafePolicyId(capture.bot_id)) invalidState("group_capture_bot_unbound");
   if (expectedCount !== capture.candidates.length) {
-    throw new Error("private_capture_count_mismatch");
+    invalidState("group_capture_count_mismatch");
   }
-  const target = privateFile(allowlistPath, "allowed-private-openids.json");
-  const previous = readExistingAllowlist(previousAllowlistPath);
+  const target = groupFile(allowlistPath, GROUP_ALLOWLIST_FILE_NAME);
+  const previous = readExistingGroupAllowlist(target);
   if (
     previous &&
     (capture.baseline_allowlist_version !== previous.allowlist_version ||
       capture.baseline_allowlist_fingerprint !== previous.fingerprint)
   ) {
-    throw new Error("private_capture_baseline_mismatch");
+    invalidState("group_capture_baseline_mismatch");
   }
   if (
     !previous &&
-    (capture.baseline_allowlist_version !== null || capture.baseline_allowlist_fingerprint !== null)
+    (capture.baseline_allowlist_version !== null ||
+      capture.baseline_allowlist_fingerprint !== null)
   ) {
-    throw new Error("private_capture_baseline_missing");
+    invalidState("group_capture_baseline_missing");
   }
   const next = createAllowlistVersion({
-    scope: "private",
+    scope: "group",
     capture,
     previous,
     frozenAtMs: now,
   });
-  writePrivateFile(target, next, "allowed-private-openids.json");
+  writeGroupFile(target, next, GROUP_ALLOWLIST_FILE_NAME);
   capture.status = "frozen";
   capture.frozen_allowlist_version = next.allowlist_version;
   capture.frozen_allowlist_fingerprint = next.fingerprint;
-  writePrivateFile(capturePath, capture, "private-users-capture.json");
+  writeGroupFile(capturePath, capture, GROUP_CAPTURE_FILE_NAME);
 }
 
-export function readFrozenPrivateAllowlist(path) {
-  const value = readRawPrivateFile(path, "allowed-private-openids.json");
-  if (value === null) throw new Error("private_allowlist_missing");
+export function readFrozenGroupAllowlist(path) {
+  const value = readRawGroupFile(path, GROUP_ALLOWLIST_FILE_NAME);
+  if (value === null) invalidState("group_allowlist_missing");
   if (value?.version === LEGACY_VERSION) {
-    throw new Error("private_allowlist_legacy_requires_explicit_import");
+    invalidState("group_allowlist_legacy_requires_explicit_import");
   }
-  return Object.freeze(validateAllowlist(value, "private"));
+  try {
+    return Object.freeze(validateAllowlist(value, "group"));
+  } catch {
+    invalidState("invalid_group_allowlist");
+  }
 }
 
-export function allowlistFingerprintForConfig({ appId, botId, allowlistVersion, openids }) {
-  return computeAllowlistFingerprint({
-    scope: "private",
-    appId,
-    botId,
-    allowlistVersion,
-    openids,
-  });
+export function readGroupCapture(path) {
+  const value = readGroupFile(path, GROUP_CAPTURE_FILE_NAME);
+  if (value === null) invalidState("group_capture_missing");
+  return Object.freeze(value);
 }

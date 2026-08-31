@@ -19,9 +19,12 @@ SHA-256；任意内容、版本、文件列表或链接异常都会使加载失�
 
 ## 灰度开关
 
-`R_AGENT_PERSONA_V2_ENABLED` 默认为 `false`。`PersonaV2Gate` 只有在开关打开、通道为
-`qq_official`、会话为 `private`、主体角色为 `owner` 且发送者与已绑定主人 ID 完全相等
-时才允许调用 V2。群聊、普通用户、OneBot/NapCat 和未知主体都保持关闭。
+`R_AGENT_PERSONA_V2_ENABLED` 默认为 `false`，控制已绑定主人官方私聊及 bundle 总门。
+普通官方 C2C 与官方群分别由
+`R_AGENT_PERSONA_V2_ORDINARY_PRIVATE_ENABLED`、`R_AGENT_PERSONA_V2_GROUP_ENABLED`
+控制，两者也默认 `false`，且不能脱离总门单独开启。运行时还必须先通过对应官方通道、
+Bot 账户和白名单门；Persona 开关本身不授予访问权限。OneBot/NapCat 和未知主体始终不
+进入 V2。
 
 ## 输出守卫
 

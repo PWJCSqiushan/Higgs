@@ -346,9 +346,8 @@ class PersonaBrain:
             if self.identities is None:
                 raise RuntimeError("context builder requires identity store")
             principal = await asyncio.to_thread(
-                self.identities.resolve,
-                event.channel,
-                event.sender_id,
+                self.identities.resolve_event,
+                event,
             )
             official_channel = event.channel.casefold() == "qq_official"
             clean = event.text.strip()

@@ -254,44 +254,47 @@ and Agent, and rolls back both gates together if the single Gateway, verified
 transport, reminder schema, or zero-active-batch checks fail. NapCat is checked
 before and after and must not be restarted as part of this change.
 
-## One-shot official test-group binding
+## Versioned official test-group capture and freeze
 
-Do not run either group helper until the fixed 72-hour observation has been
-accepted. The binding step briefly replaces the live official Gateway with one
-bounded capture-only Gateway, while leaving Agent and NapCat untouched:
+Group onboarding is a bounded, repeatable `CaptureEpoch` followed by a
+versioned `AllowlistVersion`. It does not require a fixed 72-hour observation.
+The capture helper briefly stops only the official sidecar, runs one
+capture-only Gateway, and restores the owner transport before it exits; Agent
+and NapCat must retain their identity, start time, and restart count:
 
 ```bash
 sh run_official_node_group_bind.sh \
-  ONLY_OWNER_WILL_BIND_ONE_TEST_GROUP \
-  STABILITY_72H_ACCEPTED \
+  CAPTURE_OFFICIAL_TEST_GROUP \
   higgs-official-qq:<40-character-commit>
 ```
 
-The helper requires a healthy single-Gateway stack, reply=true, no active
-durable batch, an empty first group slot, and an existing private owner binding.
-During its bounded window the owner must send `@Higgs 绑定测试群` in exactly one
-test group. Pre-READY events, C2C, non-owner group members, other text, and
-malformed group-at events cannot bind. The candidate OpenID is written as a
-private create-once `0600` file and is never printed. The original sidecar is
-restored and must return to verified transport before the helper exits; the
-production group allowlist remains unchanged.
+The private state directory contains `group-capture.json` and
+`allowed-group-openids.json`, both v2 envelopes with App/Bot binding, nonce,
+deadline, monotonic version, previous-version/fingerprint, canonical sorted
+identities, and a recomputable SHA-256 fingerprint. The default limit is one
+group per epoch. Existing v2 allowlists are used as the explicit baseline on
+the next epoch; a legacy `group.openid` or v1 file fails closed and is never
+silently imported. No identity or message content is printed.
 
-After separately reviewing the candidate and explicitly approving production
-gray release, activate it with:
+After reviewing the closed capture, freeze the next immutable version while
+all ordinary/group, Persona, and identity gates remain disabled:
 
 ```bash
-sh activate_official_test_group.sh \
-  ACTIVATE_ONE_BOUND_TEST_GROUP \
-  STABILITY_72H_ACCEPTED
+sh freeze_official_group.sh \
+  FREEZE_OFFICIAL_TEST_GROUP \
+  1 \
+  higgs-official-qq:<40-character-commit>
 ```
 
-Activation backs up both private environment files to `/srv/trash`, updates the
-Agent and sidecar allowlists atomically, and recreates only official sidecar and
-Agent. It rolls both files and services back if the single Gateway, container
-health, verified transport, reply gate, runtime allowlists, or zero-active-batch
-checks fail. NapCat identity, start time, and restart count must remain unchanged.
-Only `GROUP_AT_MESSAGE_CREATE` is accepted, so ordinary group messages never
-enter the business, memory, or reply pipeline.
+The freeze wrapper moves the previous allowlist to a timestamped
+`/srv/trash/higgs-official-group-freeze-*` archive before staging it as the
+Node baseline. Any failed freeze restores that allowlist, capture, and private
+environment files from the archive; successful freeze synchronizes only the
+group IDs, version, and fingerprint in Agent and sidecar configuration. The
+owner official transport may remain enabled and running. Production group
+activation is a separate follow-up slice and is intentionally not performed
+by these wrappers. Only `GROUP_AT_MESSAGE_CREATE` is accepted for future
+group activation, so ordinary non-mention messages never enter the pipeline.
 
 Run these from `/srv/apps/higgs/current/deploy/existing-server`:
 

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  mkdirSync,
   mkdtempSync,
+  renameSync,
+  writeFileSync,
   readFileSync,
   statSync,
 } from "node:fs";
@@ -14,6 +17,7 @@ import {
   freezePrivateAllowlist,
   readFrozenPrivateAllowlist,
 } from "../src/private-capture.mjs";
+import { computeAllowlistFingerprint } from "../src/allowlist.mjs";
 
 const appId = "123456789";
 const botId = "bot-openid";
@@ -97,4 +101,191 @@ test("capture refuses wildcard identities and cannot be started twice", () => {
     /invalid_private_capture_candidate/,
   );
   assert.throws(() => captureStore.open(), /already_started/);
+});
+
+test("repeated epochs merge from an explicit baseline and retain an opaque history", () => {
+  const paths = capturePaths("higgs-private-capture-epochs-");
+  const first = new PrivateUserCaptureStore(paths.capture, {
+    appId,
+    windowStartedAtMs: 1_000,
+    windowDeadlineAtMs: 2_000,
+    now: () => 1_500,
+  });
+  const firstEpoch = first.open();
+  assert.match(firstEpoch, /^[0-9a-f-]{36}$/u);
+  first.recordCandidate(firstUser, botId, 1_100);
+  first.close(1_400);
+  freezePrivateAllowlist(paths.capture, 1, paths.allowlist, 1_500);
+  const firstAllowlist = readFrozenPrivateAllowlist(paths.allowlist);
+  assert.equal(firstAllowlist.allowlist_version, 1);
+  assert.equal(firstAllowlist.previous_version, null);
+  assert.match(firstAllowlist.fingerprint, /^[0-9a-f]{64}$/u);
+
+  const second = new PrivateUserCaptureStore(paths.capture, {
+    appId,
+    windowStartedAtMs: 3_000,
+    windowDeadlineAtMs: 4_000,
+    baselineAllowlistVersion: firstAllowlist.allowlist_version,
+    baselineAllowlistFingerprint: firstAllowlist.fingerprint,
+    now: () => 3_500,
+  });
+  const secondEpoch = second.open();
+  assert.notEqual(secondEpoch, firstEpoch);
+  assert.equal(second.summary().baseline_allowlist_version, 1);
+  const captureState = JSON.parse(readFileSync(paths.capture, "utf8"));
+  assert.equal(captureState.history.length, 1);
+  assert.equal(captureState.history[0].epoch_id, firstEpoch);
+  assert.equal(Object.hasOwn(captureState.history[0], "candidates"), false);
+  second.recordCandidate(secondUser, botId, 3_100);
+  second.close(3_400);
+  freezePrivateAllowlist(paths.capture, 1, paths.allowlist, 3_500);
+  const merged = readFrozenPrivateAllowlist(paths.allowlist);
+  assert.equal(merged.allowlist_version, 2);
+  assert.equal(merged.previous_version, 1);
+  assert.equal(merged.previous_fingerprint, firstAllowlist.fingerprint);
+  assert.deepEqual(merged.openids, [firstUser, secondUser]);
+  assert.equal(
+    merged.fingerprint,
+    computeAllowlistFingerprint({
+      scope: "private",
+      appId,
+      botId,
+      allowlistVersion: 2,
+      openids: [firstUser, secondUser],
+    }),
+  );
+});
+
+test("freeze can use a moved v2 baseline while installing into a new target", () => {
+  const paths = capturePaths("higgs-private-capture-moved-baseline-");
+  const first = store(paths);
+  first.open();
+  first.recordCandidate(firstUser, botId, 1_100);
+  first.close(1_400);
+  freezePrivateAllowlist(paths.capture, 1, paths.allowlist, 1_500);
+  const baseline = readFrozenPrivateAllowlist(paths.allowlist);
+  const baselineDirectory = join(paths.directory, "baseline");
+  const baselinePath = join(baselineDirectory, "allowed-private-openids.json");
+  // A deployment freeze moves the old target into /srv/trash before the
+  // replacement is generated. Keep that exact shape in this regression.
+  chmodSync(paths.directory, 0o700);
+  mkdirSync(baselineDirectory, { mode: 0o700 });
+  renameSync(paths.allowlist, baselinePath);
+
+  const second = new PrivateUserCaptureStore(paths.capture, {
+    appId,
+    windowStartedAtMs: 3_000,
+    windowDeadlineAtMs: 4_000,
+    baselineAllowlistVersion: baseline.allowlist_version,
+    baselineAllowlistFingerprint: baseline.fingerprint,
+    now: () => 3_500,
+  });
+  second.open();
+  second.recordCandidate(secondUser, botId, 3_100);
+  second.close(3_400);
+  freezePrivateAllowlist(paths.capture, 1, paths.allowlist, 3_500, baselinePath);
+  const merged = readFrozenPrivateAllowlist(paths.allowlist);
+  assert.equal(merged.allowlist_version, 2);
+  assert.equal(merged.previous_fingerprint, baseline.fingerprint);
+  assert.deepEqual(merged.openids, [firstUser, secondUser]);
+});
+
+test("baseline drift, cross-Bot capture, and tampered fingerprints fail closed", () => {
+  const paths = capturePaths("higgs-private-capture-baseline-");
+  const first = store(paths);
+  first.open();
+  first.recordCandidate(firstUser, botId, 1_100);
+  first.close(1_400);
+  freezePrivateAllowlist(paths.capture, 1, paths.allowlist, 1_500);
+  const baseline = readFrozenPrivateAllowlist(paths.allowlist);
+
+  const drifted = new PrivateUserCaptureStore(paths.capture, {
+    appId,
+    windowStartedAtMs: 3_000,
+    windowDeadlineAtMs: 4_000,
+    baselineAllowlistVersion: baseline.allowlist_version,
+    baselineAllowlistFingerprint: "0".repeat(64),
+    now: () => 3_500,
+  });
+  drifted.open();
+  drifted.recordCandidate(secondUser, botId, 3_100);
+  drifted.close(3_400);
+  assert.throws(
+    () => freezePrivateAllowlist(paths.capture, 1, paths.allowlist, 3_500),
+    /baseline_mismatch/,
+  );
+
+  const botDrift = new PrivateUserCaptureStore(paths.capture, {
+    appId,
+    windowStartedAtMs: 5_000,
+    windowDeadlineAtMs: 6_000,
+    baselineAllowlistVersion: baseline.allowlist_version,
+    baselineAllowlistFingerprint: baseline.fingerprint,
+    now: () => 5_500,
+  });
+  botDrift.open();
+  botDrift.recordCandidate(firstUser, botId, 5_100);
+  assert.throws(() => botDrift.recordCandidate(secondUser, "other-bot", 5_100), /bot_mismatch/);
+
+  const raw = JSON.parse(readFileSync(paths.allowlist, "utf8"));
+  raw.fingerprint = "f".repeat(64);
+  chmodSync(paths.allowlist, 0o600);
+  writeFileSync(paths.allowlist, `${JSON.stringify(raw)}\n`, "utf8");
+  assert.throws(() => readFrozenPrivateAllowlist(paths.allowlist), /invalid_private_capture_state/);
+});
+
+test("legacy v1 state is never auto-activated", () => {
+  const paths = capturePaths("higgs-private-capture-legacy-");
+  writeFileSync(
+    paths.capture,
+    `${JSON.stringify({
+      version: 1,
+      status: "frozen",
+      app_id: appId,
+      bot_id: botId,
+      window_started_at_ms: 1_000,
+      window_deadline_at_ms: 2_000,
+      candidates: [firstUser],
+    })}\n`,
+    "utf8",
+  );
+  chmodSync(paths.capture, 0o600);
+  const captureStore = new PrivateUserCaptureStore(paths.capture, {
+    appId,
+    windowStartedAtMs: 3_000,
+    windowDeadlineAtMs: 4_000,
+  });
+  assert.throws(() => captureStore.open(), /legacy_state_requires_import/);
+  writeFileSync(
+    paths.allowlist,
+    `${JSON.stringify({
+      version: 1,
+      app_id: appId,
+      bot_id: botId,
+      frozen_at_ms: 1_500,
+      openids: [firstUser],
+    })}\n`,
+    "utf8",
+  );
+  chmodSync(paths.allowlist, 0o600);
+  assert.throws(() => readFrozenPrivateAllowlist(paths.allowlist), /legacy_requires_explicit_import/);
+});
+
+test("an epoch expires after its deadline and cannot collect candidates", () => {
+  const paths = capturePaths("higgs-private-capture-expired-");
+  let now = 1_500;
+  const captureStore = new PrivateUserCaptureStore(paths.capture, {
+    appId,
+    windowStartedAtMs: 1_000,
+    windowDeadlineAtMs: 2_000,
+    now: () => now,
+  });
+  captureStore.open();
+  now = 2_001;
+  assert.equal(captureStore.recordCandidate(firstUser, botId), false);
+  assert.equal(captureStore.summary().status, "open");
+  assert.throws(
+    () => freezePrivateAllowlist(paths.capture, 0, paths.allowlist, now),
+    /must_be_closed/,
+  );
 });

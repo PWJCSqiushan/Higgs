@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 
-export const PROTOCOL_VERSION = 1;
+// The sidecar envelope is versioned independently from the QQ SDK.  Version
+// two adds content-free allowlist provenance to hello/status so the Agent can
+// fail closed when its private-user policy drifts.
+export const PROTOCOL_VERSION = 2;
 export const GROUP_AND_C2C_INTENT = 1 << 25;
 export const MAX_BODY_BYTES = 16 * 1024;
 export const MAX_EVENT_QUEUE = 128;

@@ -1,6 +1,16 @@
 #!/bin/sh
 set -eu
 
+if [ "${1:-}" = "ACTIVATE_VERSIONED_TEST_GROUP" ] && \
+  [ "${2:-}" = "PRODUCTION_AUDIENCE_CONFIRMED" ] && [ "$#" -eq 2 ]; then
+  script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+  exec sh "$script_dir/activate_official_audience.sh" \
+    ACTIVATE_VERSIONED_OFFICIAL_AUDIENCE group PRODUCTION_AUDIENCE_CONFIRMED
+fi
+
+echo "group_activate: legacy fixed-stability activation is disabled; use the versioned confirmation" >&2
+exit 2
+
 if [ "${1:-}" != "ACTIVATE_ONE_BOUND_TEST_GROUP" ] || \
   [ "${2:-}" != "STABILITY_72H_ACCEPTED" ] || [ "$#" -ne 2 ]; then
   echo "group_activate: test-group and completed-stability confirmations are required" >&2

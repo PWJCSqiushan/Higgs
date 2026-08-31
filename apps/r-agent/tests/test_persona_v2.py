@@ -98,7 +98,7 @@ def test_legacy_file_remains_compatible(tmp_path: Path) -> None:
     assert "旧版助手" in bundle.render()
 
 
-def test_persona_v2_defaults_off_and_is_owner_official_private_only() -> None:
+def test_persona_v2_defaults_off_and_surface_gates_are_independent() -> None:
     assert parse_persona_v2_enabled(None) is False
     gate = PersonaV2Gate(enabled=True)
     common = {
@@ -113,12 +113,40 @@ def test_persona_v2_defaults_off_and_is_owner_official_private_only() -> None:
     assert not gate.allows(**{**common, "channel": "qq"})
     assert not gate.allows(**{**common, "principal_role": "user"})
     assert not gate.allows(**{**common, "sender_id": "other"})
+    assert not gate.allows(
+        **{
+            **common,
+            "conversation_kind": "group",
+            "principal_role": "user",
+            "sender_id": "member-openid",
+        }
+    )
+
+    expanded = PersonaV2Gate.from_env(
+        {
+            "R_AGENT_PERSONA_V2_ENABLED": "true",
+            "R_AGENT_PERSONA_V2_ORDINARY_PRIVATE_ENABLED": "true",
+            "R_AGENT_PERSONA_V2_GROUP_ENABLED": "true",
+        }
+    )
+    assert expanded.allows(**{**common, "principal_role": "user"})
+    assert expanded.allows(
+        **{
+            **common,
+            "conversation_kind": "group",
+            "principal_role": "user",
+            "sender_id": "member-openid",
+        }
+    )
     assert not PersonaV2Gate.from_env({}).enabled
 
 
 def test_persona_v2_flag_invalid_value_is_fail_closed() -> None:
     with pytest.raises(PersonaBundleError, match="must be a boolean"):
         parse_persona_v2_enabled("maybe")
+
+    with pytest.raises(PersonaBundleError, match="surface gates require"):
+        PersonaV2Gate.from_env({"R_AGENT_PERSONA_V2_GROUP_ENABLED": "true"})
 
 
 def test_guard_detects_identity_and_customer_service_drift() -> None:

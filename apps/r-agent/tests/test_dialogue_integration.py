@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 from r_agent.access import IngressPolicy
@@ -272,3 +273,161 @@ async def test_persona_v2_gate_does_not_change_onebot_owner_path(tmp_path: Path)
     assert len(client.calls) == 1
     assert "legacy persona" in client.calls[0][0]["content"]
     assert "## constitution" not in client.calls[0][0]["content"]
+
+
+async def test_persona_v2_applies_to_separately_enabled_ordinary_and_group_surfaces(
+    tmp_path: Path,
+) -> None:
+    identities = IdentityStore(
+        tmp_path / "identity.sqlite",
+        owner_qq=OWNER_QQ,
+        account_scoped_official_enabled=True,
+    )
+    identities.initialize()
+    history = ConversationStore(tmp_path / "conversation.sqlite")
+    history.initialize()
+    memory = MemoryStore(tmp_path / "memory.sqlite")
+    memory.initialize()
+    recall = RecallLedger(tmp_path / "memory.sqlite")
+    recall.initialize()
+    bundle = load_persona_bundle(env={})
+    client = FakeClient()
+    brain = PersonaBrain(
+        client,  # type: ignore[arg-type]
+        "legacy persona",
+        identities=identities,
+        context_builder=ContextBuilder(
+            history=history,
+            memory=memory,
+            recall=recall,
+            persona="legacy persona",
+            persona_bundle=bundle,
+        ),
+        persona_bundle=bundle,
+        persona_v2_gate=PersonaV2Gate(
+            enabled=True,
+            ordinary_private_enabled=True,
+            group_enabled=True,
+        ),
+        official_owner_id="owner-openid",
+    )
+    private = InboundEvent(
+        channel="qq_official",
+        account_id="bot-id",
+        sender_id="ordinary-openid",
+        message_id="ordinary-1",
+        occurred_at_ms=1_767_225_600_000,
+        conversation_kind=ConversationKind.PRIVATE,
+        conversation_id="qq_official:private:bot-id:ordinary-openid",
+        group_id=None,
+        text="你怎么看今晚的星空?",
+        mentioned=False,
+    )
+    group = InboundEvent(
+        channel="qq_official",
+        account_id="bot-id",
+        sender_id="member-openid",
+        message_id="group-1",
+        occurred_at_ms=1_767_225_600_100,
+        conversation_kind=ConversationKind.GROUP,
+        conversation_id="qq_official:group:bot-id:group-openid",
+        group_id="group-openid",
+        text="@Higgs 你怎么看今晚的星空?",
+        mentioned=True,
+    )
+
+    await brain.draft(private)
+    await brain.draft(group)
+
+    assert len(client.calls) == 2
+    assert all("## constitution" in call[0]["content"] for call in client.calls)
+
+
+async def test_allowlisted_ordinary_official_user_reaches_reply_but_not_owner_commands(
+    tmp_path: Path,
+) -> None:
+    owner_openid = "owner-openid"
+    ordinary_openid = "ordinary-openid"
+    identities = IdentityStore(
+        tmp_path / "identity.sqlite",
+        owner_qq=OWNER_QQ,
+        owner_identities=(("qq_official", owner_openid),),
+        account_scoped_official_enabled=True,
+    )
+    service = IngestService(
+        policy=IngressPolicy(
+            enabled=True,
+            owner_qq=OWNER_QQ,
+            allowed_private_qqs=frozenset(),
+            allowed_groups=frozenset(),
+            owner_ids=frozenset({OWNER_QQ, owner_openid}),
+            additional_private_ids=frozenset({owner_openid, ordinary_openid}),
+        ),
+        identities=identities,
+        journal=Journal(tmp_path / "journal.sqlite"),
+    )
+    service.initialize()
+    history = ConversationStore(tmp_path / "conversation.sqlite")
+    history.initialize()
+    memory = MemoryStore(tmp_path / "memory.sqlite")
+    memory.initialize()
+    recall = RecallLedger(tmp_path / "memory.sqlite")
+    recall.initialize()
+    bundle = load_persona_bundle(env={})
+    client = FakeClient()
+    brain = PersonaBrain(
+        client,  # type: ignore[arg-type]
+        "legacy persona",
+        identities=identities,
+        context_builder=ContextBuilder(
+            history=history,
+            memory=memory,
+            recall=recall,
+            persona="legacy persona",
+            persona_bundle=bundle,
+        ),
+        persona_bundle=bundle,
+        persona_v2_gate=PersonaV2Gate(
+            enabled=True,
+            ordinary_private_enabled=True,
+        ),
+        official_owner_id=owner_openid,
+    )
+    policy = ReplyPolicy(
+        mode="draft",
+        private_users=frozenset({owner_openid, ordinary_openid}),
+        groups=frozenset(),
+        owner_ids=frozenset({OWNER_QQ, owner_openid}),
+        require_mention=True,
+        max_per_minute=10,
+    )
+    inbound = InboundEvent(
+        channel="qq_official",
+        account_id="bot-id",
+        sender_id=ordinary_openid,
+        message_id="ordinary-reply-1",
+        occurred_at_ms=1_767_225_600_000,
+        conversation_kind=ConversationKind.PRIVATE,
+        conversation_id="qq_official:private:bot-id:ordinary-openid",
+        group_id=None,
+        text="今晚适合看星星吗?",
+        mentioned=False,
+    )
+
+    plan = await process_reply(
+        event=inbound,
+        result=service.ingest(inbound),
+        policy=policy,
+        brain=brain,
+        sender=lambda _event, _text: None,  # type: ignore[arg-type]
+    )
+    assert plan.decision is ReplyDecision.DRAFTED
+    assert "## constitution" in client.calls[0][0]["content"]
+
+    command = replace(
+        inbound,
+        message_id="ordinary-command-1",
+        text="/higgs server status",
+    )
+    command_reply = await brain.draft(command)
+    assert command_reply == "该命令仅允许主人使用。"
