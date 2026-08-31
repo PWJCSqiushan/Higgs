@@ -6,7 +6,7 @@ export function isReadyStatus(value, now = Date.now()) {
       typeof value?.bot_id === "string" &&
       /^[!-~]{1,256}$/u.test(value.bot_id));
   return (
-    value?.protocol_version === 1 &&
+    value?.protocol_version === 2 &&
     typeof value?.generation === "string" &&
     value.generation.length > 0 &&
     value?.configured === true &&

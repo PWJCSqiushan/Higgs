@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { SecureDeliveryStore } from "../src/delivery-store.mjs";
 import { OfficialQQClient, PINNED_SDK_VERSION } from "../src/qq-client.mjs";
+import { computeAllowlistFingerprint } from "../src/allowlist.mjs";
 import {
   GROUP_AND_C2C_INTENT,
   PROTOCOL_VERSION,
@@ -15,6 +16,30 @@ import {
 const safe = "A123_safe-value";
 const senderSafe = "B456_sender-value";
 const unixOnly = { skip: process.platform === "win32" };
+
+function frozenPrivateAllowlist(openids = [senderSafe], botId = safe) {
+  const allowlistVersion = 1;
+  return {
+    version: 2,
+    scope: "private",
+    allowlist_version: allowlistVersion,
+    epoch_id: "epoch-id",
+    nonce: "0".repeat(64),
+    app_id: "123456789",
+    bot_id: botId,
+    frozen_at_ms: 1234,
+    previous_version: null,
+    previous_fingerprint: null,
+    fingerprint: computeAllowlistFingerprint({
+      scope: "private",
+      appId: "123456789",
+      botId,
+      allowlistVersion,
+      openids,
+    }),
+    openids,
+  };
+}
 
 function durableStore(prefix) {
   const directory = mkdtempSync(join(tmpdir(), prefix));
@@ -378,11 +403,9 @@ test("ordinary private allowlist is bound to the same Bot account", async () => 
     ordinaryPrivateEnabled: true,
     allowedPrivateOpenIds: [senderSafe],
     requirePrivateAllowlist: true,
-    privateAllowlist: {
-      app_id: "123456789",
-      bot_id: safe,
-      openids: [senderSafe],
-    },
+    privateAllowlist: frozenPrivateAllowlist(),
+    privateAllowlistVersion: 1,
+    privateAllowlistFingerprint: frozenPrivateAllowlist().fingerprint,
   });
   try {
     await client.start();
@@ -397,6 +420,8 @@ test("ordinary private allowlist is bound to the same Bot account", async () => 
       timestamp: "2026-08-28T10:00:00Z",
     });
     assert.equal(client.readEvents(0, 10).length, 1);
+    assert.equal(client.status().private_allowlist_version, 1);
+    assert.match(client.status().private_allowlist_fingerprint, /^[0-9a-f]{64}$/u);
   } finally {
     await client.stop();
   }
@@ -405,11 +430,9 @@ test("ordinary private allowlist is bound to the same Bot account", async () => 
     ordinaryPrivateEnabled: true,
     allowedPrivateOpenIds: [senderSafe],
     requirePrivateAllowlist: true,
-    privateAllowlist: {
-      app_id: "123456789",
-      bot_id: safe,
-      openids: [senderSafe],
-    },
+    privateAllowlist: frozenPrivateAllowlist(),
+    privateAllowlistVersion: 1,
+    privateAllowlistFingerprint: frozenPrivateAllowlist().fingerprint,
   });
   try {
     await mismatched.start();
@@ -424,11 +447,9 @@ test("ordinary private allowlist is bound to the same Bot account", async () => 
     ordinaryPrivateEnabled: true,
     allowedPrivateOpenIds: [senderSafe, "env-only-user"],
     requirePrivateAllowlist: true,
-    privateAllowlist: {
-      app_id: "123456789",
-      bot_id: safe,
-      openids: [senderSafe],
-    },
+    privateAllowlist: frozenPrivateAllowlist(),
+    privateAllowlistVersion: 1,
+    privateAllowlistFingerprint: frozenPrivateAllowlist().fingerprint,
   });
   await assert.rejects(
     drifted.start(),

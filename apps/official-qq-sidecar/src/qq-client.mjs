@@ -2,6 +2,11 @@ import { QQBot } from "@tencent-connect/qqbot-nodejs";
 import { readFileSync } from "node:fs";
 
 import {
+  ALLOWLIST_FINGERPRINT_PATTERN,
+  ALLOWLIST_SCHEMA_VERSION,
+  validateAllowlist,
+} from "./allowlist.mjs";
+import {
   EventQueue,
   ChannelGate,
   GROUP_AND_C2C_INTENT,
@@ -99,6 +104,8 @@ export class OfficialQQClient {
     privateCircuitCooldownSeconds = 300,
     groupCircuitCooldownSeconds = 300,
     privateAllowlist = null,
+    privateAllowlistVersion = null,
+    privateAllowlistFingerprint = null,
     requirePrivateAllowlist = false,
     onPrivateCandidate = null,
     onOwnerCandidate = null,
@@ -127,6 +134,10 @@ export class OfficialQQClient {
     this.ordinaryPrivateEnabled = ordinaryPrivateEnabled;
     this.groupEnabled = groupEnabled;
     this.privateAllowlist = privateAllowlist;
+    this.privateAllowlistVersion = privateAllowlistVersion;
+    this.privateAllowlistFingerprint = privateAllowlistFingerprint;
+    this.verifiedPrivateAllowlistVersion = null;
+    this.verifiedPrivateAllowlistFingerprint = null;
     this.requirePrivateAllowlist = requirePrivateAllowlist;
     this.privateBotBinding = null;
     this.privateGate = new ChannelGate({
@@ -175,12 +186,24 @@ export class OfficialQQClient {
   }
 
   status() {
+    const privateAllowlistVerified =
+      this.ordinaryPrivateEnabled &&
+      Number.isSafeInteger(this.verifiedPrivateAllowlistVersion) &&
+      this.verifiedPrivateAllowlistVersion >= 1 &&
+      typeof this.verifiedPrivateAllowlistFingerprint === "string" &&
+      ALLOWLIST_FINGERPRINT_PATTERN.test(this.verifiedPrivateAllowlistFingerprint);
     return Object.freeze({
       generation: this.generation,
       ...this.state,
       capture_only: this.captureOnly,
       bot_id: this.captureOnly ? null : this.state.bot_id,
       reason: boundedReason(this.state.reason),
+      private_allowlist_version: privateAllowlistVerified
+        ? this.verifiedPrivateAllowlistVersion
+        : null,
+      private_allowlist_fingerprint: privateAllowlistVerified
+        ? this.verifiedPrivateAllowlistFingerprint
+        : null,
     });
   }
 
@@ -292,19 +315,33 @@ export class OfficialQQClient {
     if (!this.state.configured) throw new ProtocolError("sidecar_not_configured", 503);
     if (this.bot) throw new ProtocolError("sidecar_already_started", 409);
     if (this.requirePrivateAllowlist) {
+      let verifiedAllowlist;
+      try {
+        verifiedAllowlist = validateAllowlist(this.privateAllowlist, "private");
+      } catch {
+        throw new ProtocolError("private_allowlist_unavailable", 503);
+      }
       if (
-        !this.privateAllowlist ||
-        this.privateAllowlist.app_id !== this.appId ||
-        !isSafePolicyId(this.privateAllowlist.bot_id) ||
-        !Array.isArray(this.privateAllowlist.openids) ||
-        this.privateAllowlist.openids.some(
-          (value) => !isSafePolicyId(value),
-        )
+        verifiedAllowlist.version !== ALLOWLIST_SCHEMA_VERSION ||
+        verifiedAllowlist.app_id !== this.appId ||
+        !isSafePolicyId(verifiedAllowlist.bot_id) ||
+        !Number.isSafeInteger(this.privateAllowlistVersion) ||
+        this.privateAllowlistVersion < 1 ||
+        typeof this.privateAllowlistFingerprint !== "string" ||
+        !ALLOWLIST_FINGERPRINT_PATTERN.test(this.privateAllowlistFingerprint)
       ) {
         throw new ProtocolError("private_allowlist_unavailable", 503);
       }
+      if (
+        verifiedAllowlist.allowlist_version !== this.privateAllowlistVersion ||
+        verifiedAllowlist.fingerprint !== this.privateAllowlistFingerprint
+      ) {
+        throw new ProtocolError("private_allowlist_metadata_mismatch", 503);
+      }
+      this.verifiedPrivateAllowlistVersion = verifiedAllowlist.allowlist_version;
+      this.verifiedPrivateAllowlistFingerprint = verifiedAllowlist.fingerprint;
       const configuredOpenIds = new Set(this.allowedPrivateOpenIds);
-      const frozenOpenIds = new Set(this.privateAllowlist.openids);
+      const frozenOpenIds = new Set(verifiedAllowlist.openids);
       if (isSafeId(this.ownerOpenId)) configuredOpenIds.add(this.ownerOpenId);
       if (isSafeId(this.ownerOpenId)) frozenOpenIds.add(this.ownerOpenId);
       if (
@@ -313,7 +350,7 @@ export class OfficialQQClient {
       ) {
         throw new ProtocolError("private_allowlist_config_mismatch", 503);
       }
-      this.privateBotBinding = this.privateAllowlist.bot_id;
+      this.privateBotBinding = verifiedAllowlist.bot_id;
       this.allowedPrivateOpenIds = frozenOpenIds;
       if (isSafeId(this.ownerOpenId)) this.allowedPrivateOpenIds.add(this.ownerOpenId);
     }

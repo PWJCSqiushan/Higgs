@@ -81,7 +81,7 @@ test("send requests separate passive replies from owner-C2C proactive sends", ()
     /invalid_proactive_target/,
   );
   assert.throws(
-    () => normalizeSendRequest({ ...request, protocol_version: 2 }),
+    () => normalizeSendRequest({ ...request, protocol_version: PROTOCOL_VERSION - 1 }),
     /protocol_version_mismatch/,
   );
 });

@@ -33,6 +33,28 @@ function boundedNumber(value, fallback, minimum, maximum, name) {
   return parsed;
 }
 
+const ALLOWLIST_FINGERPRINT_PATTERN = /^[0-9a-f]{64}$/u;
+
+function optionalAllowlistVersion(value) {
+  if (value === undefined || value === "") return null;
+  if (!/^\d+$/u.test(String(value))) {
+    throw new Error("invalid private allowlist version configuration");
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error("invalid private allowlist version configuration");
+  }
+  return parsed;
+}
+
+function optionalAllowlistFingerprint(value) {
+  if (value === undefined || value === "") return null;
+  if (!ALLOWLIST_FINGERPRINT_PATTERN.test(String(value))) {
+    throw new Error("invalid private allowlist fingerprint configuration");
+  }
+  return String(value);
+}
+
 function safeIdList(value) {
   return [...new Set(
     String(value ?? "")
@@ -90,6 +112,12 @@ export function loadConfig(env = process.env) {
     throw new Error("invalid private allowlist configuration");
   }
   const privateAllowlistFile = resolve(privateAllowlistValue);
+  const configuredPrivateAllowlistVersion = optionalAllowlistVersion(
+    env.HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION,
+  );
+  const configuredPrivateAllowlistFingerprint = optionalAllowlistFingerprint(
+    env.HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT,
+  );
   if (proactiveEnabled && (!enabled || captureOnly)) {
     throw new Error("proactive sends require enabled full mode");
   }
@@ -120,6 +148,13 @@ export function loadConfig(env = process.env) {
   if (ordinaryPrivateEnabled && !isSafePolicyId(ownerOpenId)) {
     throw new Error("ordinary private channel requires an owner OpenID");
   }
+  if (
+    ordinaryPrivateEnabled &&
+    (configuredPrivateAllowlistVersion === null ||
+      configuredPrivateAllowlistFingerprint === null)
+  ) {
+    throw new Error("private allowlist metadata required");
+  }
   const privatePolicy = new Set(allowedPrivateOpenIds);
   if (isSafePolicyId(ownerOpenId)) privatePolicy.add(ownerOpenId);
   return Object.freeze({
@@ -133,6 +168,12 @@ export function loadConfig(env = process.env) {
     ownerOpenId,
     allowedPrivateOpenIds: Object.freeze([...privatePolicy]),
     privateAllowlistFile,
+    privateAllowlistVersion: ordinaryPrivateEnabled
+      ? configuredPrivateAllowlistVersion
+      : null,
+    privateAllowlistFingerprint: ordinaryPrivateEnabled
+      ? configuredPrivateAllowlistFingerprint
+      : null,
     requirePrivateAllowlist: ordinaryPrivateEnabled,
     allowedGroupOpenIds,
     privateRatePerMinute: boundedNumber(
@@ -261,16 +302,22 @@ export function createHandler(client) {
     try {
       const url = new URL(request.url ?? "/", "http://sidecar.local");
       if (request.method === "GET" && url.pathname === "/v1/hello") {
+        const status = client.status();
         return jsonResponse(response, 200, {
           protocol_version: PROTOCOL_VERSION,
           generation: client.generation,
           event_cursor: client.eventBaseCursor(),
+          private_allowlist_version: status.private_allowlist_version ?? null,
+          private_allowlist_fingerprint: status.private_allowlist_fingerprint ?? null,
         });
       }
       if (request.method === "GET" && url.pathname === "/v1/status") {
+        const status = client.status();
         return jsonResponse(response, 200, {
           protocol_version: PROTOCOL_VERSION,
-          ...client.status(),
+          ...status,
+          private_allowlist_version: status.private_allowlist_version ?? null,
+          private_allowlist_fingerprint: status.private_allowlist_fingerprint ?? null,
         });
       }
       if (request.method === "GET" && url.pathname === "/v1/events") {
@@ -327,13 +374,23 @@ export async function run(env = process.env) {
         onFailure: () => clientReference?._failFatal("delivery_store_error"),
       })
     : null;
+  const privateAllowlist = config.ordinaryPrivateEnabled
+    ? readFrozenPrivateAllowlist(config.privateAllowlistFile)
+    : null;
+  if (
+    config.ordinaryPrivateEnabled &&
+    (privateAllowlist.allowlist_version !== config.privateAllowlistVersion ||
+      privateAllowlist.fingerprint !== config.privateAllowlistFingerprint)
+  ) {
+    throw new ProtocolError("private_allowlist_metadata_mismatch", 503);
+  }
   const client = new OfficialQQClient({
     ...config,
     sessionStore,
     deliveryStore,
-    privateAllowlist: config.ordinaryPrivateEnabled
-      ? readFrozenPrivateAllowlist(config.privateAllowlistFile)
-      : null,
+    privateAllowlist,
+    privateAllowlistVersion: config.privateAllowlistVersion,
+    privateAllowlistFingerprint: config.privateAllowlistFingerprint,
     requirePrivateAllowlist: config.requirePrivateAllowlist,
     onFatal: () => {
       fatalRequested = true;

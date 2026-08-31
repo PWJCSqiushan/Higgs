@@ -9,6 +9,7 @@ import {
   validateSocketInode,
 } from "../src/index.mjs";
 import { isReadyStatus } from "../src/health-status.mjs";
+import { PROTOCOL_VERSION } from "../src/protocol.mjs";
 
 async function withServer(client, callback) {
   const server = createServer(createHandler(client));
@@ -62,10 +63,27 @@ test("ordinary policy is explicit, bot-scoped, and owner remains enabled by defa
     HIGGS_OFFICIAL_QQ_ALLOWED_GROUP_OPENIDS: "group-openid",
     QQBOT_APP_ID: "123456789",
     QQBOT_APP_SECRET: "0123456789abcdef",
+    HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST_VERSION: "1",
+    HIGGS_OFFICIAL_QQ_PRIVATE_ALLOWLIST_FINGERPRINT: "0".repeat(64),
   });
   assert.equal(config.ordinaryPrivateEnabled, true);
   assert.equal(config.groupEnabled, true);
+  assert.equal(config.privateAllowlistVersion, 1);
+  assert.equal(config.privateAllowlistFingerprint, "0".repeat(64));
   assert.deepEqual(new Set(config.allowedPrivateOpenIds), new Set(["owner-openid", "member-openid"]));
+
+  assert.throws(
+    () =>
+      loadConfig({
+        HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED: "true",
+        HIGGS_OFFICIAL_QQ_CAPTURE_ONLY: "false",
+        HIGGS_OFFICIAL_QQ_OWNER_OPENID: "owner-openid",
+        HIGGS_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED: "true",
+        QQBOT_APP_ID: "123456789",
+        QQBOT_APP_SECRET: "0123456789abcdef",
+      }),
+    /private allowlist metadata required/,
+  );
 
   const ownerOnly = loadConfig({
     HIGGS_OFFICIAL_QQ_SIDECAR_ENABLED: "true",
@@ -148,16 +166,22 @@ test("status and events expose only versioned protocol envelopes", async () => {
   };
   await withServer(client, async (base) => {
     const hello = await (await fetch(`${base}/v1/hello`)).json();
-    assert.equal(hello.protocol_version, 1);
+    assert.equal(hello.protocol_version, PROTOCOL_VERSION);
+    assert.equal(hello.private_allowlist_version, null);
+    assert.equal(hello.private_allowlist_fingerprint, null);
     assert.equal(hello.generation, "generation");
     assert.equal(hello.event_cursor, 0);
+    const status = await (await fetch(`${base}/v1/status`)).json();
+    assert.equal(status.protocol_version, PROTOCOL_VERSION);
+    assert.equal(status.private_allowlist_version, null);
+    assert.equal(status.private_allowlist_fingerprint, null);
     const events = await (await fetch(`${base}/v1/events?after=0&limit=1`)).json();
     assert.deepEqual(events.events, []);
     const ack = await fetch(`${base}/v1/events/ack`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        protocol_version: 1,
+        protocol_version: PROTOCOL_VERSION,
         generation: "generation",
         cursor: 0,
       }),
@@ -170,7 +194,7 @@ test("status and events expose only versioned protocol envelopes", async () => {
 
 test("health requires authenticated gateway and a fresh heartbeat ACK", () => {
   const status = {
-    protocol_version: 1,
+    protocol_version: PROTOCOL_VERSION,
     generation: "generation",
     eventBaseCursor: () => 0,
     configured: true,

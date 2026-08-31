@@ -22,7 +22,9 @@ test(
     });
     const hello = await getJson(socketPath, "/v1/hello");
     const status = await getJson(socketPath, "/v1/status");
-    assert.equal(hello.protocol_version, 1);
+    assert.equal(hello.protocol_version, 2);
+    assert.equal(hello.private_allowlist_version, null);
+    assert.equal(hello.private_allowlist_fingerprint, null);
     assert.equal(status.reason, "disabled");
     await runtime.shutdown();
     assert.throws(() => lstatSync(socketPath), (error) => error?.code === "ENOENT");
