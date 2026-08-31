@@ -128,6 +128,38 @@ def test_self_memory_shadow_requires_explicit_schema_gate(
     assert phase.self_memory_schema_v4_enabled is True
 
 
+def test_personal_memory_defaults_off_without_schema_migration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_REPLY_MODE", "draft")
+
+    phase = _phase2_settings(settings(shadow=True))
+
+    assert phase.personal_memory_mode == "off"
+    assert phase.personal_memory_schema_v5_enabled is False
+
+
+def test_personal_memory_modes_require_explicit_schema_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("R_AGENT_REPLY_MODE", "draft")
+    monkeypatch.setenv("R_AGENT_PERSONAL_MEMORY_MODE", "shadow")
+    with pytest.raises(ConfigError, match="schema v5"):
+        _phase2_settings(settings(shadow=True))
+
+    monkeypatch.setenv("R_AGENT_PERSONAL_MEMORY_SCHEMA_V5_ENABLED", "true")
+    phase = _phase2_settings(settings(shadow=True))
+    assert phase.personal_memory_mode == "shadow"
+    assert phase.personal_memory_schema_v5_enabled is True
+
+    monkeypatch.setenv("R_AGENT_PERSONAL_MEMORY_MODE", "active")
+    assert _phase2_settings(settings(shadow=True)).personal_memory_mode == "active"
+
+    monkeypatch.setenv("R_AGENT_PERSONAL_MEMORY_MODE", "automatic")
+    with pytest.raises(ConfigError, match="off, shadow, or active"):
+        _phase2_settings(settings(shadow=True))
+
+
 def test_group_memory_defaults_off_and_requires_explicit_opt_in(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

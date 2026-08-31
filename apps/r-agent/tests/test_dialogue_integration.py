@@ -157,6 +157,64 @@ async def test_context_failure_becomes_model_failed(tmp_path: Path) -> None:
     assert plan.decision is ReplyDecision.MODEL_FAILED
 
 
+async def test_trusted_response_override_skips_model_but_keeps_reply_policy(
+    tmp_path: Path,
+) -> None:
+    identities = IdentityStore(tmp_path / "identity.sqlite", owner_qq=OWNER_QQ)
+    identities.initialize()
+    memory = MemoryStore(tmp_path / "memory.sqlite")
+    memory.initialize()
+    history = ConversationStore(tmp_path / "conversation.sqlite")
+    history.initialize()
+    recall = RecallLedger(tmp_path / "memory.sqlite")
+    recall.initialize()
+    client = FakeClient()
+    brain = PersonaBrain(
+        client,  # type: ignore[arg-type]
+        "test persona",
+        identities=identities,
+        context_builder=ContextBuilder(
+            history=history,
+            memory=memory,
+            recall=recall,
+            persona="test persona",
+            history_outcome="drafted",
+        ),
+    )
+    policy = ReplyPolicy(
+        mode="draft",
+        private_users=frozenset({OWNER_QQ}),
+        groups=frozenset(),
+        require_mention=True,
+        max_per_minute=10,
+    )
+    service = IngestService(
+        policy=IngressPolicy(
+            enabled=True,
+            owner_qq=OWNER_QQ,
+            allowed_private_qqs=frozenset(),
+            allowed_groups=frozenset(),
+        ),
+        identities=identities,
+        journal=Journal(tmp_path / "journal.sqlite"),
+    )
+    service.initialize()
+    item = event("4", "请记住我喜欢摄影")
+
+    plan = await process_reply(
+        event=item,
+        result=service.ingest(item),
+        policy=policy,
+        brain=brain,
+        sender=lambda _event, _text: None,  # type: ignore[arg-type]
+        response_override="记住了。",
+    )
+
+    assert plan.decision is ReplyDecision.DRAFTED
+    assert plan.text == "记住了。"
+    assert client.calls == []
+
+
 async def test_owner_official_persona_v2_repairs_once_and_uses_verified_bundle(
     tmp_path: Path,
 ) -> None:

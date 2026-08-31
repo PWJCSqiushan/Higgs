@@ -535,3 +535,36 @@
   校验，以及单测试群精确数量门。最终版本还与捕获/冻结共享四把锁，先停 Sidecar、排空
   durable batch，再停 Agent 并从宿主备份 identity；allowlist Bot 必须与私有 session 身份
   一致。这些改动仍只存在于本阶段分支。
+
+## 51. 2026-08-31 官方受众 V2 经 PR #66 合并
+
+- 阶段 1 分支经 PR #66 合并为主线 `d210fb52e652715d48a153d1edcc73c03cd6e387`。
+  push 与 pull_request runs 的 Python/official sidecar 四项任务全部成功；合并后 main run
+  `33363558396` 再次全绿，Ubuntu Python 零跳过，并通过 Node POSIX/UDS/进程替换、Shell
+  语法、发布包、秘密边界、镜像和 Compose。
+- 合并只改变 GitHub 主线。生产仍运行既有 owner C2C 与 Persona 2.2；普通用户、群、两类
+  Persona 表面、identity schema v2、群记忆、自我记忆和 proactive 均未开启，未执行捕获、
+  冻结、迁移、部署、重建或消息发送。
+- 阶段 2 已从该合并提交建立独立分支，目标仅为普通用户本人长期记忆的明确记住、自然纠正
+  与自然遗忘，以及相应幂等/隔离测试。生产记忆策略仍保持原状，任何迁移或启用另行确认。
+
+## 52. 2026-08-31 Personal Memory V5 离线闭环
+
+- 阶段 2 在既有 `memory.sqlite` 增加独立 opt-in schema v5；默认初始化仍只到 v3，且 v5
+  不要求 self-memory v4。`R_AGENT_PERSONAL_MEMORY_SCHEMA_V5_ENABLED=false` 与
+  `R_AGENT_PERSONAL_MEMORY_MODE=off` 为发布默认值，代码部署不会隐式迁移或启用。
+- 普通 `user` 的明确“记住”低风险本人事实/偏好可一次激活；自然陈述需置信度不低于
+  `0.94` 且两个不同消息佐证。纠正仅接受明确唯一旧内容并原子建立 `supersedes`；缺旧内容
+  时要求用户澄清，绝不拿唯一但无关的偏好猜测。遗忘只逻辑失效，不物理删除。
+- 事务同时覆盖 intent、hash evidence、memory item、状态和审计；相同来源重放幂等，复用键
+  携带不同请求时失败关闭。作用域绑定当前 principal、channel 与 Bot account；owner/blocked、
+  敏感、身份、权限和提示注入不进入普通用户自动通道。旧项存在 active successor 时不能恢复。
+- 收束审计进一步扩大“忽略规则/无视限制/服从指令”等注入阻断词；同一普通 principal 一旦
+  出现在另一 Bot/account 就拒绝新绑定。restore 使用递归后继检查并在合法恢复时清除过期
+  时间，避免多级替代链分叉或 active 记录不可召回。
+- 官方 durable 准备阶段只读取已经通过入站与学习预算的 observation；active 模式的明确记忆
+  动作会先完成幂等事务，再以简短、真实回复通过原有 policy、限频、安全和 durable 发送链。
+  shadow 不会回复“已记住”，后台 reconcile 只做幂等收束与可选向量写入。
+- 本地完整 Python 为 `515 passed, 5 skipped`；Node 为 `59 passed, 9 skipped`。Ruff、格式、
+  Node 语法、release gate、秘密边界、Shell LF 与 diff 检查通过；Windows 跳过项等待 PR 的
+  Ubuntu 零跳过 CI。生产没有部署、迁移、启用普通用户/群、发送消息、重建或改动 NapCat。

@@ -56,6 +56,21 @@ _AUTO_REVIEW_BLOCKERS = (
     "权限",
     "系统提示",
     "提示词",
+    "忽略所有",
+    "忽略规则",
+    "无视规则",
+    "无视限制",
+    "绕过限制",
+    "不要遵守",
+    "遵循我的指令",
+    "按我的指令",
+    "服从我的指令",
+    "覆盖规则",
+    "跳过安全",
+    "解除限制",
+    "开发者消息",
+    "system prompt",
+    "jailbreak",
 )
 
 
@@ -174,7 +189,12 @@ class MemoryStore:
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
-    def initialize(self, *, self_memory_v4: bool = False) -> None:
+    def initialize(
+        self,
+        *,
+        self_memory_v4: bool = False,
+        personal_memory_v5: bool = False,
+    ) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
@@ -489,6 +509,101 @@ class MemoryStore:
                     """
                     INSERT INTO memory_schema_versions(version, applied_at_ms)
                     VALUES (4, ?)
+                    """,
+                    (int(time.time() * 1000),),
+                )
+            # Personal-memory v5 is deliberately independent from the
+            # self-memory v4 migration above.  In particular, a deployment
+            # may opt into v5 on a v2/v3 database without expanding the
+            # memory_items kind CHECK constraint or creating any self-memory
+            # tables.  The feature flag is owned by the caller; leaving it
+            # false must not create these tables or record version 5.
+            if personal_memory_v5:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS personal_memory_intents (
+                        intent_id TEXT PRIMARY KEY,
+                        idempotency_key TEXT NOT NULL UNIQUE,
+                        request_sha256 TEXT NOT NULL,
+                        observation_id TEXT UNIQUE,
+                        principal_id TEXT NOT NULL,
+                        principal_role TEXT NOT NULL
+                            CHECK(principal_role IN ('owner','user','blocked')),
+                        source_channel TEXT NOT NULL,
+                        source_account_id TEXT NOT NULL,
+                        source_message_id TEXT NOT NULL,
+                        intent TEXT NOT NULL CHECK(intent IN (
+                            'explicit_remember','repeated_observation',
+                            'correction','forget_request'
+                        )),
+                        kind TEXT NOT NULL CHECK(kind IN (
+                            'user_fact','preference','relationship','commitment',
+                            'episode_summary'
+                        )),
+                        semantic_sha256 TEXT NOT NULL,
+                        confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+                        risk TEXT NOT NULL CHECK(risk IN ('low','medium','high')),
+                        sensitive_level TEXT NOT NULL CHECK(
+                            sensitive_level IN ('low','medium','high')
+                        ),
+                        decision TEXT NOT NULL CHECK(decision IN (
+                            'pending','candidate','activated','superseded',
+                            'forgotten','quarantined','rejected','no_match',
+                            'ambiguous','shadow'
+                        )),
+                        reason_code TEXT NOT NULL,
+                        result_item_id TEXT,
+                        created_at_ms INTEGER NOT NULL,
+                        updated_at_ms INTEGER NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS personal_memory_evidence (
+                        evidence_id TEXT PRIMARY KEY,
+                        item_id TEXT NOT NULL,
+                        intent_id TEXT NOT NULL UNIQUE,
+                        source_observation_id TEXT NOT NULL,
+                        principal_id TEXT NOT NULL,
+                        source_channel TEXT NOT NULL,
+                        source_account_id TEXT NOT NULL,
+                        source_message_id TEXT NOT NULL,
+                        evidence_kind TEXT NOT NULL CHECK(
+                            evidence_kind IN (
+                                'explicit_remember','observation','correction','forget_request'
+                            )
+                        ),
+                        content_sha256 TEXT NOT NULL,
+                        confidence REAL NOT NULL CHECK(confidence >= 0 AND confidence <= 1),
+                        created_at_ms INTEGER NOT NULL,
+                        UNIQUE(item_id, source_observation_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_personal_memory_intents_semantic
+                    ON personal_memory_intents(
+                        principal_id, source_channel, source_account_id,
+                        kind, semantic_sha256, created_at_ms DESC
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_personal_memory_evidence_source
+                    ON personal_memory_evidence(
+                        principal_id, source_channel, source_account_id,
+                        item_id, source_message_id
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO memory_schema_versions(version, applied_at_ms)
+                    VALUES (5, ?)
+                    ON CONFLICT(version) DO NOTHING
                     """,
                     (int(time.time() * 1000),),
                 )
@@ -1014,12 +1129,36 @@ class MemoryStore:
                 raise MemoryTransitionError(
                     f"cannot transition memory from {current.value} to {target.value}"
                 )
+            # Restoring a predecessor while its successor is active would
+            # expose two contradictory memories to recall.  Corrections in
+            # the personal-memory service create the successor and invalidate
+            # this row atomically; owner restore must preserve that invariant.
+            if target is MemoryStatus.ACTIVE and current is MemoryStatus.INVALIDATED:
+                successor = conn.execute(
+                    """
+                    WITH RECURSIVE successors(item_id) AS (
+                        SELECT item_id FROM memory_items WHERE supersedes_item_id = ?
+                        UNION
+                        SELECT child.item_id FROM memory_items child
+                        JOIN successors parent ON child.supersedes_item_id = parent.item_id
+                    )
+                    SELECT memory_items.item_id FROM memory_items
+                    JOIN successors ON successors.item_id = memory_items.item_id
+                    WHERE memory_items.status = 'active'
+                    LIMIT 1
+                    """,
+                    (item_id,),
+                ).fetchone()
+                if successor is not None:
+                    raise MemoryTransitionError(
+                        "cannot restore memory while an active successor exists"
+                    )
             invalidated_reason = clean_reason if target is MemoryStatus.INVALIDATED else None
             cursor = conn.execute(
                 """
                 UPDATE memory_items
                 SET status = ?, reviewed_at_ms = ?, reviewed_by = ?,
-                    invalidated_reason = ?
+                    invalidated_reason = ?, valid_to_ms = ?
                 WHERE item_id = ? AND status = ?
                 """,
                 (
@@ -1027,6 +1166,7 @@ class MemoryStore:
                     timestamp,
                     actor.principal_id,
                     invalidated_reason,
+                    None if target is MemoryStatus.ACTIVE else timestamp,
                     item_id,
                     current.value,
                 ),

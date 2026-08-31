@@ -514,3 +514,30 @@
   只读预检通过后才备份和改配置。激活与捕获/冻结共享锁，Sidecar 停止后排空批次，再停
   Agent 并备份 identity；名单 Bot 还要与 session 中已认证身份一致。真实激活仍需主人另行
   确认。
+
+## 节点 57：官方受众 V2 合并并转入普通用户自然记忆
+
+- PR #66 已合并为 main `d210fb52e652715d48a153d1edcc73c03cd6e387`。两套 PR CI 与
+  合并后 main run `33363558396` 全绿；Ubuntu Python 零跳过，Node 的 POSIX、UDS 与进程
+  替换覆盖均实际执行。主线记录不等于生产上线。
+- 生产普通 C2C、群、Persona 表面、identity schema v2、群记忆、自我记忆与 proactive
+  继续关闭；没有部署、捕获、冻结、迁移、重建、发送消息或更改 NapCat。
+- 新阶段从该主线建立 `codex/higgs-natural-memory-v2-20260831`，只实现普通用户本人作用域
+  的明确记住、重复观察、自然纠正与遗忘请求。跨用户、权限、身份、敏感信息和提示注入仍
+  必须隔离，生产迁移和开关继续单独确认。
+
+## 节点 58：普通用户 Personal Memory V5 离线完成
+
+- 新能力仍使用 `memory.sqlite`，schema v5 与 self-memory v4 相互独立且显式 opt-in；发布
+  默认 `schema=false / mode=off`。off 不创建表，shadow 只写内容无关的意图决定，active
+  才可在单事务中激活或失效本人记忆。
+- 明确记住低风险本人事实或偏好可一次生效；普通表达需 `>=0.94` 与两个不同消息。纠正需
+  精确旧内容，建立 successor 并关闭 predecessor；只有“我现在更喜欢……”而没有旧内容时
+  会要求澄清，不以同类唯一项猜测。遗忘不物理删除，owner 仍走原治理命令。
+- identity、channel 与 Bot account 都参与查找和证据边界；跨用户、跨 Bot、blocked、敏感、
+  权限和注入均失败关闭。重复 observation 和 durable 重放不重复写，幂等键冲突拒绝。
+- 最终审计补齐更广的指令注入词、普通 principal 的单 Bot/account 绑定，以及多级 successor
+  的递归恢复门；合法 restore 会清空旧的 `valid_to_ms`，不会形成“active 但不可召回”。
+- 明确动作的确认文字仍经过原 reply policy、风险预算、输出安全与 durable 投递；shadow
+  不伪称已记住。当前本地 Python `515 passed, 5 skipped`，Node `59 passed, 9 skipped`，
+  其余发布门通过；生产未部署、迁移、启用、发消息或重建，下一步为独立 PR 与 Ubuntu CI。
