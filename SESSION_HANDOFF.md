@@ -2,14 +2,15 @@
 
 > 本文件是下一次接手的第一入口。不得写入 QQ/OpenID、服务器地址、凭据、聊天正文、二维码或登录状态内容。
 
-## 0. 当前权威状态（2026-08-31）
+## 0. 当前权威状态（2026-09-01）
 
-- GitHub 当前 `main` 为 `5f6f2a65992e081f7484d8027cc225946fd8d406`；当前功能判断先读
+- GitHub 当前 `main` 为 `35c1fcd3e30e703f29b5c7874c5a840ae17e24a7`；当前功能判断先读
   `docs/29-capability-ledger-2026-08-31.md`，再读本文件末尾最新节点。
-- 生产 Agent 代码为 `6682be3c33c78b1e486286fb224af986419cb922`，Persona Bundle
-  `2.2.0`。官方 owner C2C 被动回复、durable 处理和 Persona 2.2 已验收。
+- 生产 release、Agent 与官方 Sidecar 镜像均为 `35c1fcd3e30e703f29b5c7874c5a840ae17e24a7`，
+  Persona Bundle 为 `2.2.0`。官方 owner C2C 被动回复、durable 处理和 Persona 2.2 保持启用。
 - self-memory schema/mode、群记忆、普通用户 C2C、官方群和 proactive 仍关闭；摄影观点
-  尚未导入。普通用户/群及自我记忆属于“代码已合并但生产关闭”，不能写成已经上线。
+  尚未导入。普通用户/群、自我记忆、Stage 4 工具和普通用户任务现为 `deployed-off`，
+  不能写成已经对用户开放。
 - 官方群业务面只接收 `GROUP_AT_MESSAGE_CREATE`；白名单群成员必须 `@Higgs`，未 `@`
   的普通群消息不进入官方 Bot 管线。
 - 下方“当前权威边界”是 2026-08-29 的历史快照，保留用于追溯，不再代表当前生产版本。

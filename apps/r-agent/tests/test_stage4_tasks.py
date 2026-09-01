@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+import r_agent.daily_plan as daily_plan
 from r_agent.agenda import AgendaError, AgendaStore
 from r_agent.daily_plan import DailyPlanConfig, DailyPlanService
 from r_agent.events import ConversationKind, InboundEvent
 from r_agent.identity import IdentityStore, Principal
 from r_agent.phase2_cli import _official_reminder_target
+from r_agent.planner import SHANGHAI
 from r_agent.reminders import DueOccurrence, ReminderError, ReminderJob, ReminderStore
 from r_agent.skills import SkillApprovalStore, default_skill_registry
 from r_agent.task_scope import ordinary_user_task_target
@@ -361,7 +364,10 @@ async def test_ordinary_plan_has_target_scope_and_shadow_never_schedules(
 @pytest.mark.asyncio
 async def test_ordinary_live_plan_requires_proactive_gate_and_binds_each_reminder(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    fixed_morning = datetime(2026, 8, 9, 9, 0, tzinfo=SHANGHAI)
+    monkeypatch.setattr(daily_plan.time, "time", fixed_morning.timestamp)
     agenda = AgendaStore(tmp_path / "agenda.sqlite")
     agenda.initialize()
     reminders = ReminderStore(tmp_path / "reminders.sqlite")
