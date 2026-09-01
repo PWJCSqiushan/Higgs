@@ -623,3 +623,26 @@
 - 约定窗口于 2026-09-01 01:11:51（Asia/Shanghai）截止。最后三个计划检查点因任务没有附加可用服务器终端而无法运行匿名只读观察脚本；因此没有连续覆盖到截止时间的容器、Gateway、transport、回执、批次和开关证据。
 - 本窗口结论严格记为“证据不完整”，不是稳定性通过，也不是已确认故障。既有部署后健康基线不能替代缺失时段的现场检查，后续新检查也不能倒填本窗口。
 - 观察期间未发送测试消息、重启、重登、改配置或读取/记录敏感状态。截止后已删除 `higgs-72` 自动化，不再继续检查；若仍需 24 小时验收，须在恢复安全只读终端后单独批准新窗口。
+
+## 节点 66：最新主线完成生产部署，新增能力保持关闭
+
+- 主人明确授权正式部署与继续推进。发布基线固定为 GitHub main
+  `35c1fcd3e30e703f29b5c7874c5a840ae17e24a7`；对应 main CI run
+  `33465241346` 成功。本地发布门确认 311 个跟踪文件、336 个归档成员、秘密边界和 Shell LF
+  均通过，发布归档与部署脚本分别做了精确 SHA-256 校验。
+- 部署前匿名门确认三容器健康且零重启、官方 Gateway 单实例、reply=true、transport
+  verified/connected/authenticated/account-match/ok、健康回执新鲜、零 pending/rejected/fatal/
+  reconnect 和 active durable batches。部署脚本先对 agenda/reminders SQLite 做一致性备份，
+  再构建不可变 Agent 与官方 Sidecar 镜像，具备原子切换和自动回滚。
+- 生产 release、Agent 与官方 Sidecar 已精确切换到 `35c1fcd3e30e703f29b5c7874c5a840ae17e24a7`。
+  Agent、Sidecar、NapCat 后验均 healthy；官方 Gateway=1，transport verified 且身份匹配，
+  active batches=0。NapCat 容器未重建，身份与启动基线未改变。
+- owner 官方被动回复与 Persona 2.2 保持开启。identity v2、普通 C2C、官方群、普通/群 Persona、
+  personal memory v5、自我记忆 v4、群记忆、摄影种子、owner/ordinary proactive、普通任务
+  mode 以及 Stage 4 网络工具真实 provider/路由全部保持关闭；本次没有扩大受众、导入观点、
+  发送测试消息或运行记忆迁移。
+- 独立部署后匿名复核再次确认三容器健康、零重启、Gateway 单实例、官方 transport 健康且
+  回执新鲜、零状态转换和零活动批次。该证据是即时部署验收，不倒填节点 65 缺失的历史观察。
+- 下一生产边界按能力账本推进：先 identity v2 与普通 C2C CaptureEpoch，再冻结名单和单独
+  激活；personal memory、单个官方群、self-memory shadow、摄影种子和工具/任务各自保持
+  独立迁移、开关与验收，不因代码已经部署而自动开启。
