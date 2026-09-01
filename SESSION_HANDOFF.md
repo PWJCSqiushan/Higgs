@@ -4,7 +4,8 @@
 
 ## 0. 当前权威状态（2026-09-01）
 
-- GitHub 当前 `main` 为 `35c1fcd3e30e703f29b5c7874c5a840ae17e24a7`；当前功能判断先读
+- GitHub `main` 已包含生产记录 PR #72，合并提交为
+  `0cd89e2fee1869b259d5d84d256e1fb7d2ddc508`；当前功能判断先读
   `docs/29-capability-ledger-2026-08-31.md`，再读本文件末尾最新节点。
 - 生产 release、Agent 与官方 Sidecar 镜像均为 `35c1fcd3e30e703f29b5c7874c5a840ae17e24a7`，
   Persona Bundle 为 `2.2.0`。官方 owner C2C 被动回复、durable 处理和 Persona 2.2 保持启用。

@@ -6,8 +6,9 @@
 
 ## 基线
 
-- GitHub `main`：`35c1fcd3e30e703f29b5c7874c5a840ae17e24a7`；Stage 4、后续文档与
-  观察记录已合并，main CI run `33465241346` 成功。
+- GitHub `main` 已包含生产记录 PR #72，合并提交
+  `0cd89e2fee1869b259d5d84d256e1fb7d2ddc508`；合并后 main CI run
+  `33528978401` 成功。
 - 生产 release、Agent 与官方 Sidecar 镜像：`35c1fcd3e30e703f29b5c7874c5a840ae17e24a7`；
   Persona Bundle `2.2.0`。Stage 4 代码已部署，但新增受众、迁移、工具和任务模式全部关闭。
 - corlinman 研究 pin：`v1.56.5` / `27bdf9c8f7a8f103aff82fde8fc822d8695e0906`，
