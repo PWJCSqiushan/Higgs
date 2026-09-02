@@ -6,9 +6,9 @@
 
 ## 基线
 
-- GitHub `main` 已包含生产记录 PR #73，当前基线
-  `55ff465fa038dc51cff0d83e91c2ad367571077b`。本阶段从该提交建立独立分支；生产功能
-  release 仍是下述 `35c1fcd`，不能把文档合并误记为再次部署。
+- GitHub `main` 已包含 identity v2 独立迁移 PR #74，当前基线
+  `27b4fce99c4ae688a74e357107f669c5af16fc03`；合并后 main CI run `33659389463`
+  成功。生产功能 release 仍是下述 `35c1fcd`，不能把源码合并误记为再次部署。
 - 生产 release、Agent 与官方 Sidecar 镜像：`35c1fcd3e30e703f29b5c7874c5a840ae17e24a7`；
   Persona Bundle `2.2.0`。Stage 4 代码已部署，但新增受众、迁移、工具和任务模式全部关闭。
 - corlinman 研究 pin：`v1.56.5` / `27bdf9c8f7a8f103aff82fde8fc822d8695e0906`，
@@ -35,7 +35,7 @@
 | Memory V2.1 | `implemented` | `active` | observation、候选/隔离/激活/失效、FTS5+向量、召回台账和 owner 治理已实现 |
 | `/higgs server status` | `implemented` | `active` | 仅 owner 私聊显式调用；只读白名单 JSON，无 shell、Docker Socket 或任意路径读取 |
 | 官方 owner 状态、记忆、提醒、计划和低风险变更 | `implemented` | 部分 `active` | 命令已接线；主动投递和 live 计划仍受独立开关约束 |
-| 官方 account-scoped identity v2 | `implemented`（本阶段补齐独立迁移器） | `deployed-off` / 未迁移 | 运行时代码已部署但 gate=false；阶段分支新增 owner principal 保持、当前 Bot 显式绑定、SQLite 一致性备份、Agent-only 重建和自动回滚，尚未部署迁移脚本或执行生产迁移 |
+| 官方 account-scoped identity v2 | `implemented`（PR #74 已合并） | `deployed-off` / 未迁移 | 运行时代码已部署但 gate=false；主线已有 owner principal 保持、当前 Bot 显式绑定、SQLite 一致性备份、Agent-only 重建和自动回滚，生产 release 尚未部署新迁移脚本，也未执行迁移 |
 | 普通用户官方 C2C | `implemented` | `deployed-off` | V2 已随最新主线部署：Bot 绑定的可重复 CaptureEpoch、版本链、双端指纹门和显式 identity schema 门；生产未捕获、冻结、迁移或激活 |
 | 官方群 `@Higgs` 回复 | `implemented` | `deployed-off` | V2 群名单已随最新主线部署并绑定 Bot；只接受 `GROUP_AT_MESSAGE_CREATE`，生产尚未激活测试群 |
 | 群成员 principal 私有记忆 | `implemented` | `deployed-off` | 作用域隔离已有测试；尚无真实 A/B 成员生产验收 |

@@ -686,3 +686,15 @@
   Ubuntu 已收口本机缺失的 Bash 语法、Python 零跳过与 Node POSIX/UDS 测试，并再次通过
   发布包、秘密、镜像和 Compose。追加此证据后的提交仍要重新经过两套 CI，当前尚未合并，
   也没有形成任何生产授权。
+
+## 节点 69：identity v2 迁移链路合并，生产继续保持关闭
+
+- PR #74 追加记录后的 push/pull_request runs `33659271051`、`33659277483` 再次四项
+  全绿，合并为 main `27b4fce99c4ae688a74e357107f669c5af16fc03`；合并后 main run
+  `33659389463` 成功。Ubuntu 实际执行了新增 Shell 语法、Python 零跳过、Node POSIX/UDS、
+  发布包、秘密边界、镜像和 Compose，完成本阶段代码验收。
+- 本次合并不等于部署或迁移。生产 release 仍为 `35c1fcd3e30e703f29b5c7874c5a840ae17e24a7`，
+  identity gate、普通 C2C/群和对应 Persona 继续关闭；没有捕获、冻结、受众扩大、消息发送、
+  Agent/Sidecar/NapCat 重建或服务器配置变化。
+- 后续顺序保持：先部署关闭态代码，再分别确认 identity 迁移、CaptureEpoch、名单冻结、普通
+  C2C 激活和普通 Persona 激活。任何一步都不能以本次 PR 已合并为生产授权。

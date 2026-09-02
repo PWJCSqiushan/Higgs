@@ -686,3 +686,16 @@
   Python/Sidecar 四项任务全部成功；Ubuntu 已执行新增 Shell 语法、Python 零跳过、Node
   POSIX/UDS/进程替换、发布包、秘密边界、镜像与 Compose。本次追加证据后仍需等待新提交
   触发的两套 CI 再合并；生产边界没有变化。
+
+## 61. 2026-09-03 identity v2 独立迁移器合并主线
+
+- PR #74 的证据追加后，push run `33659271051` 与 pull_request run `33659277483` 再次
+  四项全绿；随后合并为 main `27b4fce99c4ae688a74e357107f669c5af16fc03`。
+  合并后 main run `33659389463` 成功，Ubuntu Python 零跳过，并通过新增 identity Shell
+  语法、Node POSIX/UDS/进程替换、发布包、秘密边界、镜像和 Compose。
+- 合并只更新 GitHub 主线。生产功能 release 仍为
+  `35c1fcd3e30e703f29b5c7874c5a840ae17e24a7`；没有部署新脚本、迁移 identity、运行
+  CaptureEpoch、冻结名单、开启普通 C2C/群/Persona、发送消息或重建任何生产容器。
+- 下一步必须先以所有新门关闭的方式部署 main 代码；随后 identity 迁移、测试用户捕获、
+  名单冻结、普通 C2C 激活与普通 Persona 激活仍是五个独立确认动作。NapCat 不参与这些
+  官方能力重建。
