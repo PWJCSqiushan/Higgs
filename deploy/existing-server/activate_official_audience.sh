@@ -120,9 +120,15 @@ docker exec "$agent_id" python -c "import sqlite3,sys; c=sqlite3.connect('file:/
 napcat_started=$(docker inspect --format '{{.State.StartedAt}}' "$napcat_id")
 napcat_restarts=$(docker inspect --format '{{.RestartCount}}' "$napcat_id")
 exec 9>"$config_dir/.official-audience-activation.lock"
+exec 4>"$config_dir/.official-identity-v2.lock"
 chmod 0600 "$config_dir/.official-audience-activation.lock"
 flock -n 9 || {
   echo "audience_activate: another activation is active" >&2
+  exit 3
+}
+chmod 0600 "$config_dir/.official-identity-v2.lock"
+flock -n 4 || {
+  echo "audience_activate: identity migration is active" >&2
   exit 3
 }
 exec 8>"$config_dir/.official-private-capture.lock"

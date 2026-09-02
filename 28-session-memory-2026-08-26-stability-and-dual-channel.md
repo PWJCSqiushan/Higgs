@@ -662,3 +662,23 @@
   再次通过，Ubuntu Python 零跳过，Node、Shell、秘密/发布包、镜像和 Compose 均成功。
 - PR 合并与本记录收口没有再次部署、迁移、扩大受众、发送消息或重建容器。生产功能 release
   仍精确为 `35c1fcd3e30e703f29b5c7874c5a840ae17e24a7`，节点 66 的匿名后验与关闭开关边界继续有效。
+
+## 节点 68：identity v2 独立迁移与普通 C2C 发布边界离线完成
+
+- 阶段从最新 main `55ff465fa038dc51cff0d83e91c2ad367571077b` 建立
+  `codex/higgs-ordinary-c2c-capture-20260903`。审计确认 CaptureEpoch 已能在 owner 官方
+  transport 在线时只短暂停 Sidecar，恢复后验证 Agent/NapCat 未变；冻结只生成版本化名单。
+  实际缺口是旧激活器会把 identity schema 迁移与受众扩大合并在一次动作中。
+- 新迁移器把 identity v2 拆成独立生产边界：所有普通用户、群和对应 Persona 门必须关闭，
+  先完成只读 owner/principal/Bot/session 校验和 SQLite backup，再在 Agent 停止时事务式
+  建表并把既有 owner principal 绑定到当前 Bot。只强制重建 Agent，Sidecar 与 NapCat 作为
+  不可变基线；任何失败恢复环境与 identity 备份并重新验证官方 transport。
+- 受众激活器现在拒绝 identity gate=false 的输入，不再夹带 schema 迁移；Capture/Freeze/
+  Identity/Activation 之间增加互斥，冻结契约更新为“普通受众与 Persona 必须关闭，identity
+  可且应先迁移”。所有输出继续匿名，不打印 QQ/OpenID、Bot 身份、凭据或消息标识。
+- 本地定向回归 `32 passed`；完整 Python `602 passed, 7 skipped`，Node
+  `59 passed, 9 skipped`。Ruff、格式、Node 语法、发布包、秘密边界、LF 与 diff 均通过；
+  本机无可用 Bash/WSL，Ubuntu PR CI 尚未运行，因此 Shell 语法与 Linux 零跳过仍待收口。
+- 本节点未部署代码、迁移生产、运行捕获、冻结名单、开启普通 C2C/群/Persona、发送消息或
+  重建任何生产容器。下一步为独立 PR/CI；生产仍按“部署关闭代码 -> identity 迁移 -> 捕获
+  -> 冻结 -> C2C -> Persona”逐项确认，不能因代码合并自动扩大受众。

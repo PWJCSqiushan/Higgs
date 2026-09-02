@@ -269,6 +269,10 @@ def prepare(
     if not _bool(agent, "R_AGENT_PERSONA_V2_ENABLED"):
         raise ActivationError("global Persona V2 is unavailable")
     identity_schema_v2 = _bool(agent, "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED")
+    if not identity_schema_v2:
+        raise ActivationError(
+            "identity schema v2 must be migrated before audience activation"
+        )
     audience_state = {
         "private": (
             _bool(agent, "R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED"),
@@ -284,8 +288,6 @@ def prepare(
     for state in audience_state.values():
         if len(set(state)) != 1:
             raise ActivationError("audience and Persona gates differ")
-    if any(state[0] for state in audience_state.values()) and not identity_schema_v2:
-        raise ActivationError("active audience requires identity schema v2")
     if audience_state[surface][0]:
         raise ActivationError("selected audience is already active")
 
@@ -366,7 +368,6 @@ def prepare(
     os.chmod(agent_backup, 0o600)
     os.chmod(sidecar_backup, 0o600)
     agent_updates = {
-        "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED": "true",
         agent_channel: "true",
         persona_channel: "true",
     }

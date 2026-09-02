@@ -57,7 +57,7 @@ def _fixture(tmp_path: Path, surface: str) -> tuple[Path, Path, Path, Path]:
         "R_AGENT_OFFICIAL_QQ_REPLY_ENABLED": "true",
         "R_AGENT_OFFICIAL_QQ_OWNER_OPENID": "owner-id",
         "R_AGENT_PERSONA_V2_ENABLED": "true",
-        "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED": "false",
+        "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED": "true",
         "R_AGENT_OFFICIAL_QQ_ORDINARY_PRIVATE_ENABLED": "false",
         "R_AGENT_OFFICIAL_QQ_GROUP_ENABLED": "false",
         "R_AGENT_PERSONA_V2_ORDINARY_PRIVATE_ENABLED": "false",
@@ -253,10 +253,6 @@ def test_prepare_can_activate_the_second_audience_without_closing_the_first(
     _write_private(
         agent,
         agent.read_text(encoding="utf-8")
-        .replace(
-            "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED=false",
-            "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED=true",
-        )
         .replace(f"{agent_first}=false", f"{agent_first}=true")
         .replace(f"{persona_first}=false", f"{persona_first}=true")
         .replace(f"{agent_ids_first}=", f"{agent_ids_first}={first_openids[0]}")
@@ -299,6 +295,27 @@ def test_prepare_rejects_mismatched_existing_audience_gates(tmp_path: Path) -> N
     with pytest.raises(ACTIVATION.ActivationError, match="gates differ"):
         ACTIVATION.prepare(
             surface="group",
+            agent_env=agent,
+            sidecar_env=sidecar,
+            allowlist_path=allowlist,
+            other_allowlist_path=None,
+            backup_dir=backup,
+        )
+
+
+def test_prepare_requires_identity_v2_to_be_migrated_first(tmp_path: Path) -> None:
+    agent, sidecar, allowlist, backup = _fixture(tmp_path, "private")
+    _write_private(
+        agent,
+        agent.read_text(encoding="utf-8").replace(
+            "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED=true",
+            "R_AGENT_IDENTITY_SCHEMA_V2_ENABLED=false",
+        ),
+    )
+
+    with pytest.raises(ACTIVATION.ActivationError, match="must be migrated"):
+        ACTIVATION.prepare(
+            surface="private",
             agent_env=agent,
             sidecar_env=sidecar,
             allowlist_path=allowlist,
