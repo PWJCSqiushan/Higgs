@@ -682,3 +682,7 @@
   Ubuntu CI 收口；当前不能写成 PR/CI 或生产验收。
 - 下一步：提交独立 PR 并等待两套 Ubuntu CI；合并后如需生产推进，先部署脚本且保持所有
   新开关关闭，再分别取得 identity 迁移、CaptureEpoch、名单冻结和受众/Persona 激活确认。
+- 阶段 PR #74 已创建。首轮 push run `33659087861` 与 pull_request run `33659126582` 的
+  Python/Sidecar 四项任务全部成功；Ubuntu 已执行新增 Shell 语法、Python 零跳过、Node
+  POSIX/UDS/进程替换、发布包、秘密边界、镜像与 Compose。本次追加证据后仍需等待新提交
+  触发的两套 CI 再合并；生产边界没有变化。
