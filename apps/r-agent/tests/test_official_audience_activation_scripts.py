@@ -20,6 +20,7 @@ def test_shared_audience_activation_backs_up_identity_and_never_rebuilds_napcat(
     assert ".official-private-freeze.lock" in script
     assert ".official-group-capture.lock" in script
     assert ".official-group-freeze.lock" in script
+    assert ".official-identity-v2.lock" in script
     assert "sidecar intake did not quiesce" in script
     assert "wait_for_verified_transport" in script
     assert "validate_official_channels.py" in script

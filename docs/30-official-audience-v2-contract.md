@@ -66,13 +66,18 @@ Persona 2.2 才应用于该事件。
 
 ## 6. 冻结与激活分离
 
-私聊和群名单都必须先完成捕获，再在所有受众、Persona 与 identity schema 门关闭时冻结。
-冻结只更新双方的名单、版本和规范指纹，不会扩大受众；旧版本和失败产物只移动到
+identity schema v2 必须先通过独立确认完成迁移：迁移保留 owner principal，显式绑定当前
+已认证 Bot，只重建 Agent，并保证 Sidecar、NapCat 以及所有普通受众与 Persona 门不变。
+迁移失败时恢复私有环境和 `identity.sqlite`，不得把身份迁移夹带在受众激活中。
+
+私聊和群名单都必须先完成捕获，再在所有普通受众与对应 Persona 门关闭时冻结；identity
+schema 此时可以且应当已经处于 v2。冻结只更新双方的名单、版本和规范指纹，不会扩大受众；旧版本和失败产物只移动到
 `/srv/trash`，不直接删除。
 
 激活是另一次带精确确认词的动作。共同激活器会在线备份 `identity.sqlite`，保存两份私有
 环境文件，并且只重建 official sidecar 与 Agent；NapCat 的容器、启动时间和重启计数必须
 保持不变。任何健康、单 Gateway、transport、新鲜回执、活动批次或名单契约检查失败都会
 恢复环境和 identity 数据库。先启用的普通 C2C 或群受众可以保持运行，第二次激活只打开
-另一个受众；已启用受众的三重门不一致、identity schema 未迁移或选中受众已开启时均失败
+另一个受众；激活器只接受已经迁移的 identity schema，不再隐式执行 schema 迁移。已启用
+受众的三重门不一致、identity schema 未迁移或选中受众已开启时均失败
 关闭。

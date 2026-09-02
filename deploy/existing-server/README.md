@@ -158,8 +158,24 @@ the official Agent transport. A separate deployment gate is still required.
 
 Ordinary C2C is a separate opt-in gate. A missing or empty allowlist never
 disables the already-bound owner C2C, but it also never acts as a wildcard for
-other users. To capture the QQ Bot platform test users, keep the production
-Agent and sidecar disabled and run the bounded helper from the active release:
+other users. Before capture, migrate only the identity schema while every
+ordinary/group audience and Persona gate remains disabled:
+
+```bash
+sh migrate_official_identity_v2.sh \
+  MIGRATE_OFFICIAL_IDENTITY_V2 \
+  PRODUCTION_IDENTITY_MIGRATION_CONFIRMED
+```
+
+This operation takes a SQLite-consistent identity backup, binds the configured
+owner to the currently authenticated Bot account without changing the existing
+principal, and recreates only the Agent. The official sidecar and NapCat must
+retain their container identity, start time, and restart count. Any failure
+restores both `higgs.env` and `identity.sqlite` from the private recycle archive.
+It never opens ordinary C2C, group, or their Persona gates.
+
+After that migration has been reviewed separately, capture the QQ Bot platform
+test users from the active release:
 
 ```bash
 sh run_official_node_private_capture.sh \
@@ -167,7 +183,9 @@ sh run_official_node_private_capture.sh \
   higgs-official-qq:<40-character-commit>
 ```
 
-The helper accepts C2C events only during its 10--900 second window. It stores
+The helper briefly stops only the production sidecar, runs one capture-only
+Gateway, and restores the owner transport before it exits; Agent and NapCat
+must remain unchanged. It accepts C2C events only during its 10--900 second window. It stores
 only unique, Bot-account-bound OpenIDs in a private `0600` state file; message
 content, message IDs, and platform receipts are never written. It refuses to
 overwrite an existing capture or frozen list and leaves ordinary C2C disabled.
@@ -197,6 +215,12 @@ it can admit ordinary C2C. It also requires the frozen OpenID set to exactly
 match the private environment allowlist (after the owner union); any file/env
 drift or wildcard fails closed. Changing to another Bot therefore cannot reuse
 an old private allowlist.
+
+Audience activation is a later, separately confirmed action. It now refuses to
+migrate identity implicitly: `R_AGENT_IDENTITY_SCHEMA_V2_ENABLED=true` must
+already be present and verified. Activation may then open only the selected
+versioned audience and its Persona gate; its existing identity backup remains a
+rollback snapshot for any principal rows created during the activation window.
 
 ## Anonymous official-channel observation
 
@@ -277,7 +301,8 @@ the next epoch; a legacy `group.openid` or v1 file fails closed and is never
 silently imported. No identity or message content is printed.
 
 After reviewing the closed capture, freeze the next immutable version while
-all ordinary/group, Persona, and identity gates remain disabled:
+all ordinary/group and corresponding Persona gates remain disabled. Identity
+schema v2 may already be enabled by its separately approved migration:
 
 ```bash
 sh freeze_official_group.sh \

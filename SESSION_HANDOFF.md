@@ -659,3 +659,30 @@
 - 因缺少截止前的只读现场证据，本窗口不得标记为“24 小时稳定性通过”，也不得臆测容器、Gateway、transport、回执新鲜度、活动批次或开关在缺失时段的状态。缺少证据本身不等同于发现生产异常。
 - 本次没有发送测试消息、重启容器、重新登录、修改配置或读取/记录任何身份、凭据、正文、平台消息标识、二维码或登录状态。生产未因观察截止而发生变化。
 - `higgs-72` 观察自动化已在截止后删除，避免继续越过既定窗口检查。若需要补做稳定性验收，应重新建立一个明确的新窗口并先恢复安全只读终端上下文，不能把新证据追记为本窗口的连续 24 小时结论。
+
+## 60. 2026-09-03 identity v2 与普通 C2C 上线链路离线收束
+
+- 新阶段从远端 main `55ff465fa038dc51cff0d83e91c2ad367571077b` 建立
+  `codex/higgs-ordinary-c2c-capture-20260903`。本节点只完成离线实现和验证；没有连接或
+  修改生产，没有迁移数据库、捕获/冻结用户、扩大受众、发送消息或重建容器。
+- 新增独立 identity v2 生产迁移入口。它要求精确确认、owner 官方被动回复健康、所有普通
+  C2C/群与对应 Persona 门关闭、零活动 durable batch，并对 `identity.sqlite` 做 SQLite
+  一致性备份。迁移显式把既有 owner principal 绑定到当前已认证 Bot，保留原 principal 与
+  记忆，只重建 Agent；Sidecar 与 NapCat 的容器身份、启动时间和重启计数必须完全不变。
+- 任一 schema、owner 连续性、Bot 绑定、容器健康、单 Gateway、transport 新鲜度、活动批次
+  或配置契约检查失败，都会恢复私有 `higgs.env` 与 identity 数据库；失败产物和备份保留在
+  私有回收目录，不直接删除。迁移脚本与捕获、冻结、受众激活使用互斥锁，避免交叉执行。
+- 受众激活器已改为必须先看到已经迁移的 identity v2，不再在打开普通用户/群/Persona 时
+  隐式迁移身份。既有受众激活 identity 备份仍保留，用于回滚激活窗口内新建的 principal。
+  普通用户捕获继续只短暂停 Sidecar、运行一个有限 Gateway，并恢复 owner transport；Agent
+  和 NapCat 不参与捕获重建，冻结仍只更新版本化名单而不启用受众。
+- 定向回归 `32 passed`；本地完整 Python `602 passed, 7 skipped`，Node
+  `59 passed, 9 skipped`，Ruff、格式、Node 语法、release gate、秘密边界、Shell LF 和
+  diff 检查通过。本机没有可用 Bash/WSL，Shell 语法及 Windows 平台跳过项必须由 PR 的
+  Ubuntu CI 收口；当前不能写成 PR/CI 或生产验收。
+- 下一步：提交独立 PR 并等待两套 Ubuntu CI；合并后如需生产推进，先部署脚本且保持所有
+  新开关关闭，再分别取得 identity 迁移、CaptureEpoch、名单冻结和受众/Persona 激活确认。
+- 阶段 PR #74 已创建。首轮 push run `33659087861` 与 pull_request run `33659126582` 的
+  Python/Sidecar 四项任务全部成功；Ubuntu 已执行新增 Shell 语法、Python 零跳过、Node
+  POSIX/UDS/进程替换、发布包、秘密边界、镜像与 Compose。本次追加证据后仍需等待新提交
+  触发的两套 CI 再合并；生产边界没有变化。
