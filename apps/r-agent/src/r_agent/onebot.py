@@ -13,6 +13,40 @@ class OneBotParseError(ValueError):
 
 
 _MEDIA_TYPES = frozenset({"image", "record", "video", "file"})
+_PLACEHOLDERS = {
+    "image": "[图片]",
+    "record": "[语音]",
+    "video": "[视频]",
+    "file": "[文件]",
+    "face": "[表情]",
+    "mface": "[表情包]",
+    "forward": "[合并转发]",
+    "json": "[卡片消息]",
+    "xml": "[卡片消息]",
+    "poke": "[戳一戳]",
+    "dice": "[骰子]",
+    "rps": "[猜拳]",
+    "markdown": "[富文本]",
+}
+_NAME_LIMIT = 32
+
+
+def clean_display_name(raw: Any) -> str | None:
+    """Return a single-line, bounded display name or ``None``.
+
+    Group cards and nicknames are attacker-controlled; they are rendered as
+    data only, so we merely strip control characters and bound the length.
+    """
+    if not isinstance(raw, str):
+        return None
+    cleaned = "".join(char if char.isprintable() else " " for char in raw)
+    cleaned = " ".join(cleaned.split())
+    for forbidden in ("<", ">", "[", "]"):
+        cleaned = cleaned.replace(forbidden, "")
+    cleaned = cleaned.strip()
+    if not cleaned:
+        return None
+    return cleaned[:_NAME_LIMIT]
 
 
 def _digits(raw: Any, field: str) -> str:
@@ -68,9 +102,18 @@ def parse_message_event(payload: Mapping[str, Any]) -> InboundEvent:
     else:
         raise OneBotParseError("unsupported message_type")
 
+    sender = payload.get("sender")
+    sender_name: str | None = None
+    if isinstance(sender, Mapping):
+        sender_name = clean_display_name(sender.get("card")) or clean_display_name(
+            sender.get("nickname")
+        )
+
     text_parts: list[str] = []
+    display_parts: list[str] = []
     attachments: list[AttachmentRef] = []
     mentioned = False
+    mentioned_ids: list[str] = []
     reply_message_id: str | None = None
     for segment in _segments(payload.get("message")):
         segment_type = segment.get("type")
@@ -81,20 +124,35 @@ def parse_message_event(payload: Mapping[str, Any]) -> InboundEvent:
             text = data.get("text")
             if isinstance(text, str):
                 text_parts.append(text)
+                display_parts.append(text)
         elif segment_type == "at":
-            target = data.get("qq")
-            if str(target) in {account_id, "all"}:
+            target = str(data.get("qq"))
+            if target in {account_id, "all"}:
                 mentioned = True
+            label = clean_display_name(data.get("name"))
+            if target == "all":
+                display_parts.append("@全体成员 ")
+            elif target == account_id:
+                display_parts.append("@Higgs ")
+            else:
+                if target.isascii() and target.isdigit() and len(target) <= 20:
+                    if target not in mentioned_ids and len(mentioned_ids) < 16:
+                        mentioned_ids.append(target)
+                display_parts.append(f"@{label or '某人'} ")
         elif segment_type == "reply" and reply_message_id is None:
             reply_message_id = _digits(data.get("id"), "reply.id")
         elif segment_type in _MEDIA_TYPES:
             name = data.get("file")
             safe_name = name[:255] if isinstance(name, str) else None
             attachments.append(AttachmentRef(kind=segment_type, file_name=safe_name))
+            display_parts.append(_PLACEHOLDERS[segment_type])
+        elif segment_type in _PLACEHOLDERS:
+            display_parts.append(_PLACEHOLDERS[segment_type])
 
     text = "".join(text_parts).strip()
     if len(text) > 16_000:
         text = text[:16_000]
+    display_text = " ".join("".join(display_parts).split()).strip()[:4_000]
     return InboundEvent(
         channel="qq",
         account_id=account_id,
@@ -108,4 +166,7 @@ def parse_message_event(payload: Mapping[str, Any]) -> InboundEvent:
         mentioned=mentioned,
         reply_message_id=reply_message_id,
         attachments=tuple(attachments),
+        sender_name=sender_name,
+        mentioned_ids=tuple(mentioned_ids),
+        display_text=display_text or None,
     )

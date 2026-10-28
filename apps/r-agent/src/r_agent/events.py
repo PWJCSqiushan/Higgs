@@ -55,6 +55,20 @@ class AttachmentRef:
 
 
 @dataclass(frozen=True, slots=True)
+class QuotedMessage:
+    """The message a group member quoted, resolved from the timeline or ``get_msg``.
+
+    ``text`` is untrusted chat content and is only ever rendered as data.
+    """
+
+    message_id: str
+    sender_id: str
+    sender_name: str | None
+    text: str
+    is_self: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class InboundEvent:
     channel: str
     account_id: str
@@ -69,6 +83,17 @@ class InboundEvent:
     reply_message_id: str | None = None
     replied_to_account: bool = False
     attachments: tuple[AttachmentRef, ...] = ()
+    # Higgs 3.0 group understanding (NapCat).  All optional so every existing
+    # adapter and durable queue keeps working unchanged.
+    sender_name: str | None = None
+    mentioned_ids: tuple[str, ...] = ()
+    display_text: str | None = None
+    quoted: QuotedMessage | None = None
+
+    @property
+    def timeline_text(self) -> str:
+        """Human-readable rendering that keeps @mentions and media placeholders."""
+        return self.display_text if self.display_text is not None else self.text
 
     @property
     def source_key(self) -> tuple[str, str, str]:
