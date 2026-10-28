@@ -51,6 +51,11 @@ def speaker_alias(account_id: str, group_id: str, sender_id: str) -> str:
     return digest.hexdigest()[:4]
 
 
+def _is_operator_command(text: str) -> bool:
+    """Owner control commands and their outputs never become shared context."""
+    return text.strip().casefold().startswith("/higgs")
+
+
 def _bounded(text: str, limit: int) -> str:
     single = " ".join(text.split())
     return single if len(single) <= limit else single[: limit - 1] + "…"
@@ -178,6 +183,8 @@ class GroupTimeline:
         """Record one accepted group message, whether or not Higgs will reply."""
         if event.conversation_kind is not ConversationKind.GROUP or not event.group_id:
             return False
+        if _is_operator_command(event.text):
+            return False
         return self._insert(
             TimelineEntry(
                 channel=event.channel,
@@ -204,6 +211,8 @@ class GroupTimeline:
     ) -> bool:
         """Record what Higgs said in reply to ``event`` in the same group."""
         if event.conversation_kind is not ConversationKind.GROUP or not event.group_id:
+            return False
+        if _is_operator_command(event.text):
             return False
         timestamp = int(time.time() * 1000) if now_ms is None else now_ms
         message_id = provider_message_id or f"self:{event.message_id}"

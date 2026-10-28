@@ -144,3 +144,16 @@ def test_render_current_describes_quote() -> None:
     lines = render_current(event, owner_ids=frozenset())
     assert lines[0].startswith("- 发言人：小明#")
     assert "Higgs(你自己)" in lines[1] and "八点" in lines[1]
+
+
+def test_operator_commands_and_their_outputs_are_not_shared(tmp_path: Path) -> None:
+    timeline = _timeline(tmp_path)
+    command = _event("1", "800009", "/higgs memory list active 1", at=0)
+    assert not timeline.record_inbound(command)
+    assert not timeline.record_outbound(
+        command, text="7f3a91c2 | active | 私人偏好", provider_message_id="2", now_ms=BASE
+    )
+    assert (
+        timeline.recent(channel="qq", account_id="900001", group_id="700001", until_ms=BASE + 1)
+        == []
+    )
