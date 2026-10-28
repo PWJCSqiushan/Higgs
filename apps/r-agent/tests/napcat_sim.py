@@ -50,6 +50,7 @@ class FakeNapCat:
         try:
             async for raw in socket:
                 request = json.loads(raw)
+                request["_received_at"] = time.time()
                 self.actions.append(request)
                 await socket.send(json.dumps(self._respond(request), ensure_ascii=False))
         except websockets.ConnectionClosed:
