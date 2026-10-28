@@ -263,7 +263,11 @@ class GroupTimeline:
         return [self._row(row) for row in reversed(rows)]
 
     def others_after(self, event: InboundEvent, *, sender_id: str) -> int:
-        """Count messages from *other* members after ``event`` (for quote decisions)."""
+        """Count messages other members sent after ``event`` arrived (arrival order).
+
+        OneBot timestamps only have second precision, so ordering uses the
+        local insertion sequence instead of ``occurred_at_ms``.
+        """
         if not event.group_id:
             return 0
         with closing(self._connect()) as conn:
@@ -271,19 +275,24 @@ class GroupTimeline:
                 """
                 SELECT COUNT(*) FROM group_timeline
                 WHERE channel = ? AND account_id = ? AND group_id = ?
-                  AND occurred_at_ms >= ? AND message_id != ?
                   AND sender_id != ? AND is_self = 0
+                  AND id > (
+                    SELECT id FROM group_timeline
+                    WHERE channel = ? AND account_id = ? AND group_id = ? AND message_id = ?
+                  )
                 """,
                 (
                     event.channel,
                     event.account_id,
                     event.group_id,
-                    event.occurred_at_ms,
-                    event.message_id,
                     sender_id,
+                    event.channel,
+                    event.account_id,
+                    event.group_id,
+                    event.message_id,
                 ),
             ).fetchone()
-        return int(row[0]) if row else 0
+        return int(row[0]) if row and row[0] is not None else 0
 
     def as_quoted(self, entry: TimelineEntry) -> QuotedMessage:
         return QuotedMessage(

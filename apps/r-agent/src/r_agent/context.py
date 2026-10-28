@@ -147,7 +147,9 @@ class ContextBuilder:
                 channel=event.channel,
                 account_id=event.account_id,
                 group_id=event.group_id,
-                until_ms=event.occurred_at_ms,
+                # OneBot timestamps are whole seconds; include the rest of that
+                # second so Higgs's own just-sent replies are not dropped.
+                until_ms=event.occurred_at_ms + 999,
                 limit=self.timeline_limit,
             )
             timeline_lines = render_timeline(

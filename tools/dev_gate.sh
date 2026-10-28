@@ -7,6 +7,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-/tmp/higgs-venv}"
+export UV_LINK_MODE=copy
+export PYTHONDONTWRITEBYTECODE=1
+export UV_PYTHON="${UV_PYTHON:-3.12}"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/higgs-uv-cache}"
 
 cd "$ROOT"
