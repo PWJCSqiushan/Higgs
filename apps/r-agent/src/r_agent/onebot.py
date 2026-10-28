@@ -135,9 +135,14 @@ def parse_message_event(payload: Mapping[str, Any]) -> InboundEvent:
             elif target == account_id:
                 display_parts.append("@Higgs ")
             else:
-                if target.isascii() and target.isdigit() and len(target) <= 20:
-                    if target not in mentioned_ids and len(mentioned_ids) < 16:
-                        mentioned_ids.append(target)
+                if (
+                    target.isascii()
+                    and target.isdigit()
+                    and len(target) <= 20
+                    and target not in mentioned_ids
+                    and len(mentioned_ids) < 16
+                ):
+                    mentioned_ids.append(target)
                 display_parts.append(f"@{label or '某人'} ")
         elif segment_type == "reply" and reply_message_id is None:
             reply_message_id = _digits(data.get("id"), "reply.id")

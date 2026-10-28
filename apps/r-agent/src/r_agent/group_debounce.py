@@ -46,7 +46,9 @@ class GroupMessageDebouncer:
         reply_ids = [event.reply_message_id for event in events if event.reply_message_id]
         attachments = tuple(attachment for event in events for attachment in event.attachments)[:32]
         display = "\n".join(event.timeline_text for event in events if event.timeline_text).strip()
-        mentioned_ids = tuple(dict.fromkeys(i for event in events for i in event.mentioned_ids))[:16]
+        mentioned_ids = tuple(dict.fromkeys(i for event in events for i in event.mentioned_ids))[
+            :16
+        ]
         quoted = next((event.quoted for event in reversed(events) if event.quoted), None)
         merged = replace(
             latest,
@@ -58,6 +60,7 @@ class GroupMessageDebouncer:
             display_text=display or None,
             mentioned_ids=mentioned_ids,
             quoted=quoted,
+            merged_message_ids=tuple(event.message_id for event in events[:-1])[-32:],
         )
         result = IngestResult(
             decision=IngressDecision.ACCEPT,

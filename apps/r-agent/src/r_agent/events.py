@@ -89,6 +89,8 @@ class InboundEvent:
     mentioned_ids: tuple[str, ...] = ()
     display_text: str | None = None
     quoted: QuotedMessage | None = None
+    # Message IDs of earlier fragments merged into this logical event.
+    merged_message_ids: tuple[str, ...] = ()
 
     @property
     def timeline_text(self) -> str:
