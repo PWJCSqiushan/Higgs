@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -52,6 +53,7 @@ from r_agent.model_memory_candidates import (
     ModelCandidateExtractor,
     ModelCandidateShadowStore,
 )
+from r_agent.multimodal import VisionCaptioner, split_bubbles, strip_breaks
 from r_agent.official_processing import OfficialDurableProcessor, OfficialProcessingStore
 from r_agent.official_qq import (
     OfficialQQAdapter,
@@ -317,6 +319,10 @@ class Phase2Settings:
     proactive_start_hour: int = 10
     proactive_end_hour: int = 23
     typing_status_enabled: bool = True
+    bubbles_enabled: bool = True
+    vision_enabled: bool = False
+    vision_model: str = "glm-4v-flash"
+    vision_daily_limit: int = 100
 
 
 def _phase2_settings(settings: Settings) -> Phase2Settings:
@@ -584,6 +590,10 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         proactive_start_hour=proactive_start,
         proactive_end_hour=proactive_end,
         typing_status_enabled=_boolean("R_AGENT_TYPING_STATUS_ENABLED", True),
+        bubbles_enabled=_boolean("R_AGENT_BUBBLES_ENABLED", True),
+        vision_enabled=_boolean("R_AGENT_VISION_ENABLED", False),
+        vision_model=_value("R_AGENT_VISION_MODEL", "glm-4v-flash")[:128] or "glm-4v-flash",
+        vision_daily_limit=bounded_int("R_AGENT_VISION_DAILY_LIMIT", "100", 1, 2000),
     )
 
 
@@ -1173,6 +1183,7 @@ async def listen() -> None:
         if qzone_service is not None:
             qzone_service.material = inner_life.material
     context_builder = ContextBuilder(
+        bubbles_enabled=phase.bubbles_enabled,
         context_providers=tuple(context_providers),
         history=history,
         memory=memory,
@@ -1353,6 +1364,46 @@ async def listen() -> None:
             max_steps=phase.agent_max_steps,
             user_daily_budget=phase.agent_user_daily_tool_calls,
         )
+
+    async def higgs_overview(_text: str) -> str:
+        """One-screen summary of the Higgs 3.0 capabilities and their switches."""
+        day_ago = int(time.time() * 1000) - 86_400_000
+        lines = ["Higgs 3.0 总览"]
+        if group_timeline is not None:
+            groups_active = await asyncio.to_thread(group_timeline.active_groups, since_ms=day_ago)
+            lines.append(f"群时间线：开（24 小时内活跃群 {len(groups_active)} 个）")
+        else:
+            lines.append("群时间线：关")
+        if agent_loop is not None:
+            names = ", ".join(sorted(agent_loop.registry.tools))
+            recent = await asyncio.to_thread(agent_loop.audit.recent, 5)
+            used = "、".join(f"{tool}:{outcome}" for _at, tool, outcome in recent) or "暂无"
+            lines.append(f"工具：{names}")
+            lines.append(f"最近工具调用：{used}")
+        else:
+            lines.append("工具：关")
+        lines.append(
+            f"QQ 空间：{'模式 ' + phase.qzone_mode if qzone_service is not None else '关'}"
+            f"，刷动态 {'开' if phase.qzone_browse_enabled else '关'}"
+        )
+        if inner_life is not None:
+            mood = await asyncio.to_thread(inner_life.store.mood)
+            lines.append(
+                f"内心：心情 {mood.label if mood else '未记录'}，"
+                f"印象 {await asyncio.to_thread(inner_life.store.impression_count)} 条"
+            )
+        else:
+            lines.append("内心：关")
+        lines.append(
+            f"插话：{'开' if phase.interest_enabled else '关'}（{len(phase.interest_groups)} 个群）"
+            f"，主动开话题：{len(phase.proactive_groups)} 个群"
+        )
+        lines.append(
+            f"多气泡：{'开' if phase.bubbles_enabled else '关'}，"
+            f"看图：{'开 ' + phase.vision_model if phase.vision_enabled else '关'}"
+        )
+        return "\n".join(lines)
+
     brain = PersonaBrain(
         client,
         persona,
@@ -1373,7 +1424,8 @@ async def listen() -> None:
         agent=agent_loop,
         qzone=qzone_service,
         owner_async_commands=(
-            (("/higgs inner", inner_life.handle_command),) if inner_life is not None else ()
+            ("/higgs overview", higgs_overview),
+            *((("/higgs inner", inner_life.handle_command),) if inner_life is not None else ()),
         ),
     )
     passive_learner = (
@@ -1431,12 +1483,40 @@ async def listen() -> None:
                     )
                 except Exception as exc:
                     _log.warning("group_timeline_quote_check_failed type=%s", type(exc).__name__)
-        return await onebot_adapter.send_reply(
+        bubbles = (split_bubbles(text) if phase.bubbles_enabled else [strip_breaks(text)]) or [
+            strip_breaks(text) or text
+        ]
+        receipt = await onebot_adapter.send_reply(
             event,
-            text,
+            bubbles[0],
             quote=quote,
             mention=phase.group_reply_mention,
         )
+        if receipt.state is not DeliveryState.SENT:
+            return receipt
+        for index, bubble in enumerate(bubbles[1:], start=1):
+            await asyncio.sleep(min(2.0, 0.6 + len(bubble) / 80))
+            try:
+                if event.conversation_kind is ConversationKind.GROUP and event.group_id:
+                    await send_onebot_group_message(
+                        settings.onebot_ws_url,
+                        settings.onebot_access_token,
+                        group_id=event.group_id,
+                        text=bubble,
+                        idempotency_key=f"bubble-{event.message_id}-{index}",
+                    )
+                else:
+                    await send_onebot_private_message(
+                        settings.onebot_ws_url,
+                        settings.onebot_access_token,
+                        user_id=event.sender_id,
+                        text=bubble,
+                        idempotency_key=f"bubble-{event.message_id}-{index}",
+                    )
+            except OutboundError as exc:
+                _log.warning("bubble_send_failed type=%s", type(exc).__name__)
+                break
+        return receipt
 
     async def observe_sent_reply(
         event: InboundEvent,
@@ -1452,7 +1532,7 @@ async def listen() -> None:
                 await asyncio.to_thread(
                     group_timeline.record_outbound,
                     event,
-                    text=text,
+                    text=strip_breaks(text),
                     provider_message_id=receipt.provider_message_id,
                 )
             except Exception as exc:
@@ -1816,6 +1896,26 @@ async def listen() -> None:
             ):
                 event = replace(event, interjection=True)
             if (
+                captioner is not None
+                and event.channel == "qq"
+                and event.image_urls
+                and (
+                    event.interjection
+                    or policy.gate(event, result) in {ReplyDecision.SENT, ReplyDecision.DRAFTED}
+                )
+            ):
+                event, captions = await captioner.annotate(event)
+                if captions and group_timeline is not None and event.group_id:
+                    with contextlib.suppress(Exception):
+                        await asyncio.to_thread(
+                            group_timeline.update_text,
+                            channel=event.channel,
+                            account_id=event.account_id,
+                            group_id=event.group_id,
+                            message_id=event.message_id,
+                            text=event.timeline_text,
+                        )
+            if (
                 phase.typing_status_enabled
                 and event.channel == "qq"
                 and event.conversation_kind is ConversationKind.PRIVATE
@@ -1912,6 +2012,18 @@ async def listen() -> None:
             on_sent=observe_sent_reply,
         )
 
+    captioner: VisionCaptioner | None = None
+    if phase.vision_enabled:
+        vision_key = _value("R_AGENT_VISION_API_KEY") or _value("R_AGENT_MODEL_API_KEY")
+        if not vision_key:
+            raise ConfigError("R_AGENT_VISION_ENABLED requires a vision or model API key")
+        captioner = VisionCaptioner(
+            base_url=_value("R_AGENT_VISION_BASE_URL")
+            or _value("R_AGENT_MODEL_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"),
+            model=phase.vision_model,
+            api_key=vision_key,
+            daily_limit=phase.vision_daily_limit,
+        )
     interest_gate: InterestGate | None = None
     if phase.interest_enabled and group_timeline is not None and phase.interest_groups:
         interest_gate = InterestGate(

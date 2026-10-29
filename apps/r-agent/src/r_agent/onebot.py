@@ -114,6 +114,7 @@ def parse_message_event(payload: Mapping[str, Any]) -> InboundEvent:
     attachments: list[AttachmentRef] = []
     mentioned = False
     mentioned_ids: list[str] = []
+    image_urls: list[str] = []
     reply_message_id: str | None = None
     for segment in _segments(payload.get("message")):
         segment_type = segment.get("type")
@@ -151,6 +152,15 @@ def parse_message_event(payload: Mapping[str, Any]) -> InboundEvent:
             safe_name = name[:255] if isinstance(name, str) else None
             attachments.append(AttachmentRef(kind=segment_type, file_name=safe_name))
             display_parts.append(_PLACEHOLDERS[segment_type])
+            url = data.get("url")
+            if (
+                segment_type == "image"
+                and isinstance(url, str)
+                and url.startswith("https://")
+                and len(url) <= 2048
+                and len(image_urls) < 4
+            ):
+                image_urls.append(url)
         elif segment_type in _PLACEHOLDERS:
             display_parts.append(_PLACEHOLDERS[segment_type])
 
@@ -174,4 +184,5 @@ def parse_message_event(payload: Mapping[str, Any]) -> InboundEvent:
         sender_name=sender_name,
         mentioned_ids=tuple(mentioned_ids),
         display_text=display_text or None,
+        image_urls=tuple(image_urls),
     )

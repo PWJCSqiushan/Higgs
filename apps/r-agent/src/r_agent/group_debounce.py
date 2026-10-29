@@ -61,6 +61,7 @@ class GroupMessageDebouncer:
             mentioned_ids=mentioned_ids,
             quoted=quoted,
             merged_message_ids=tuple(event.message_id for event in events[:-1])[-32:],
+            image_urls=tuple(url for event in events for url in event.image_urls)[:4],
         )
         result = IngestResult(
             decision=IngressDecision.ACCEPT,

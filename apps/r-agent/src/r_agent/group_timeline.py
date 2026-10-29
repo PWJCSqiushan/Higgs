@@ -260,6 +260,16 @@ class GroupTimeline:
             )
         )
 
+    def update_text(
+        self, *, channel: str, account_id: str, group_id: str, message_id: str, text: str
+    ) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute(
+                "UPDATE group_timeline SET text = ? WHERE channel = ? AND account_id = ?"
+                " AND group_id = ? AND message_id = ?",
+                (text.strip()[:_TEXT_LIMIT], channel, account_id, group_id, message_id),
+            )
+
     def get(
         self, *, channel: str, account_id: str, group_id: str, message_id: str
     ) -> TimelineEntry | None:
