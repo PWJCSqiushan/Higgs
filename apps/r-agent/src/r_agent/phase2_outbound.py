@@ -259,6 +259,7 @@ async def call_onebot_action(
     action: str,
     params: Mapping[str, object],
     echo: str,
+    max_size: int = 64 * 1024,
 ) -> Mapping[str, object]:
     """Run one bounded action on a separate socket and validate acknowledgement."""
     import websockets
@@ -269,7 +270,7 @@ async def call_onebot_action(
         async with websockets.connect(
             ws_url,
             additional_headers=headers,
-            max_size=64 * 1024,
+            max_size=max_size,
             max_queue=64,
             close_timeout=5,
         ) as socket:
