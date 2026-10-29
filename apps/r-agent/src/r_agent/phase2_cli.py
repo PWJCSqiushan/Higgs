@@ -83,6 +83,7 @@ from r_agent.phase2_outbound import (
     get_onebot_account_status,
     get_onebot_message_sender,
     get_onebot_quoted_message,
+    send_onebot_group_message,
     send_onebot_private_message,
 )
 from r_agent.phase2_reply import (
@@ -125,6 +126,13 @@ from r_agent.transport import (
 from r_agent.transport_state import TransportStateStore
 from r_agent.vector_memory import MemoryVectorStore
 from r_agent.web_providers import SafePageReader, SearxngSearch, ZhipuWebSearch
+from r_agent.willingness import (
+    THUMBS_UP_FACE_ID,
+    InterestGate,
+    ProactiveChatter,
+    is_react,
+    is_skip,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -297,6 +305,18 @@ class Phase2Settings:
     inner_diary_hour: int = 23
     inner_diary_minute: int = 30
     inner_impression_interval_minutes: int = 60
+    interest_enabled: bool = True
+    interest_groups: frozenset[str] = frozenset()
+    interest_frequency: float = 1.0
+    interest_hourly_cap: int = 6
+    interest_daily_cap: int = 30
+    interest_min_gap_seconds: float = 90.0
+    proactive_groups: frozenset[str] = frozenset()
+    proactive_idle_minutes: int = 90
+    proactive_daily_cap: int = 3
+    proactive_start_hour: int = 10
+    proactive_end_hour: int = 23
+    typing_status_enabled: bool = True
 
 
 def _phase2_settings(settings: Settings) -> Phase2Settings:
@@ -421,6 +441,25 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
     qzone_visibility = _value("R_AGENT_QZONE_VISIBILITY", "1")
     if qzone_visibility not in {"1", "4", "64"}:
         raise ConfigError("R_AGENT_QZONE_VISIBILITY must be 1, 4, or 64")
+    interest_raw = _value("R_AGENT_INTEREST_GROUPS")
+    interest_groups = (
+        parse_qq_set(interest_raw, name="R_AGENT_INTEREST_GROUPS") if interest_raw else groups
+    )
+    if not interest_groups.issubset(groups):
+        raise ConfigError("interest groups must be a subset of reply groups")
+    proactive_groups = parse_qq_set(
+        _value("R_AGENT_PROACTIVE_GROUPS"), name="R_AGENT_PROACTIVE_GROUPS"
+    )
+    if not proactive_groups.issubset(groups):
+        raise ConfigError("proactive groups must be a subset of reply groups")
+    proactive_hours = _value("R_AGENT_PROACTIVE_ACTIVE_HOURS", "10-23")
+    try:
+        p_start_text, p_end_text = proactive_hours.split("-", 1)
+        proactive_start, proactive_end = int(p_start_text), int(p_end_text)
+    except ValueError as exc:
+        raise ConfigError("R_AGENT_PROACTIVE_ACTIVE_HOURS must look like 10-23") from exc
+    if not 0 <= proactive_start < proactive_end <= 24:
+        raise ConfigError("R_AGENT_PROACTIVE_ACTIVE_HOURS must look like 10-23")
     diary_time = _value("R_AGENT_INNER_DIARY_TIME", "23:30")
     try:
         diary_hour_text, diary_minute_text = diary_time.split(":", 1)
@@ -531,6 +570,20 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         inner_impression_interval_minutes=bounded_int(
             "R_AGENT_INNER_IMPRESSION_INTERVAL_MINUTES", "60", 10, 1440
         ),
+        interest_enabled=_boolean("R_AGENT_INTEREST_ENABLED", True),
+        interest_groups=interest_groups,
+        interest_frequency=bounded_float("R_AGENT_INTEREST_FREQUENCY", "1.0", 0.0, 3.0),
+        interest_hourly_cap=bounded_int("R_AGENT_INTEREST_HOURLY_CAP", "6", 0, 60),
+        interest_daily_cap=bounded_int("R_AGENT_INTEREST_DAILY_CAP", "30", 0, 300),
+        interest_min_gap_seconds=bounded_float(
+            "R_AGENT_INTEREST_MIN_GAP_SECONDS", "90", 0.0, 3600.0
+        ),
+        proactive_groups=proactive_groups,
+        proactive_idle_minutes=bounded_int("R_AGENT_PROACTIVE_IDLE_MINUTES", "90", 10, 1440),
+        proactive_daily_cap=bounded_int("R_AGENT_PROACTIVE_DAILY_CAP", "3", 0, 20),
+        proactive_start_hour=proactive_start,
+        proactive_end_hour=proactive_end,
+        typing_status_enabled=_boolean("R_AGENT_TYPING_STATUS_ENABLED", True),
     )
 
 
@@ -661,9 +714,13 @@ async def prepare_reply(
             return PreparedReply(ReplyDecision.GLOBAL_RATE_LIMITED)
         reservation_id = budget.reservation_id
     try:
-        text = to_qq_plain_text(
-            response_override if response_override is not None else await brain.draft(event)
-        )
+        raw_text = response_override if response_override is not None else await brain.draft(event)
+        if event.interjection and (is_skip(raw_text) or is_react(raw_text)):
+            if risk_ledger is not None and reservation_id is not None:
+                await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="failed")
+            decision = ReplyDecision.REACTED if is_react(raw_text) else ReplyDecision.SKIPPED
+            return PreparedReply(decision)
+        text = to_qq_plain_text(raw_text)
     except (ModelError, QqTextError):
         if risk_ledger is not None and reservation_id is not None:
             await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="failed")
@@ -1732,9 +1789,45 @@ async def listen() -> None:
                 )
         _log.info("phase2_event decision=%s", plan.decision)
 
+    side_tasks: set[asyncio.Task[None]] = set()
+
+    async def onebot_side_action(action: str, params: Mapping[str, Any]) -> None:
+        try:
+            await call_onebot_action(
+                settings.onebot_ws_url,
+                settings.onebot_access_token,
+                action=action,
+                params=params,
+                echo=f"r-agent:side:{action}:{uuid.uuid4().hex[:10]}",
+            )
+        except Exception as exc:
+            _log.info("onebot_side_action_failed action=%s type=%s", action, type(exc).__name__)
+
     async def handle_event(event: InboundEvent, result: IngestResult) -> None:
         """Finish one OneBot logical message after the quiet-window has closed."""
         try:
+            if (
+                interest_gate is not None
+                and event.channel == "qq"
+                and event.conversation_kind is ConversationKind.GROUP
+                and policy.gate(event, result)
+                in {ReplyDecision.GROUP_TRIGGER_REQUIRED, ReplyDecision.MENTION_REQUIRED}
+                and await asyncio.to_thread(interest_gate.should_interject, event)
+            ):
+                event = replace(event, interjection=True)
+            if (
+                phase.typing_status_enabled
+                and event.channel == "qq"
+                and event.conversation_kind is ConversationKind.PRIVATE
+                and result.stored
+            ):
+                typing_task = asyncio.create_task(
+                    onebot_side_action(
+                        "set_input_status", {"user_id": event.sender_id, "event_type": 1}
+                    )
+                )
+                side_tasks.add(typing_task)
+                typing_task.add_done_callback(side_tasks.discard)
             plan = await process_reply(
                 event=event,
                 result=result,
@@ -1748,6 +1841,11 @@ async def listen() -> None:
                 risk_ledger=risk_ledger,
                 on_sent=observe_sent_reply,
             )
+            if plan.decision is ReplyDecision.REACTED:
+                await onebot_side_action(
+                    "set_msg_emoji_like",
+                    {"message_id": event.message_id, "emoji_id": THUMBS_UP_FACE_ID, "set": True},
+                )
             await finalize_event(event, plan)
         except Exception as exc:
             _log.error("phase2_handler_failed type=%s", type(exc).__name__)
@@ -1814,6 +1912,17 @@ async def listen() -> None:
             on_sent=observe_sent_reply,
         )
 
+    interest_gate: InterestGate | None = None
+    if phase.interest_enabled and group_timeline is not None and phase.interest_groups:
+        interest_gate = InterestGate(
+            timeline=group_timeline,
+            groups=phase.interest_groups,
+            names=frozenset({*phase.natural_trigger_terms, "higgs", "希格斯"}),
+            frequency=phase.interest_frequency,
+            hourly_cap=phase.interest_hourly_cap,
+            daily_cap=phase.interest_daily_cap,
+            min_gap_seconds=phase.interest_min_gap_seconds,
+        )
     debouncer = GroupMessageDebouncer(
         quiet_seconds=phase.group_debounce_seconds,
         private_quiet_seconds=phase.private_debounce_seconds,
@@ -1991,6 +2100,68 @@ async def listen() -> None:
             ).run_forever()
         )
         inner_task.add_done_callback(
+            lambda task: task.exception() if not task.cancelled() else None
+        )
+    proactive_task: asyncio.Task[None] | None = None
+    if (
+        phase.proactive_groups
+        and group_timeline is not None
+        and client is not None
+        and phase.mode == "live"
+        and expected_bot_qq
+    ):
+        bot_qq = expected_bot_qq
+
+        async def proactive_send(group_id: str, text: str) -> str | None:
+            budget = await asyncio.to_thread(
+                risk_ledger.reserve_send,
+                event_type="proactive",
+                actor_class="system",
+                account_id=bot_qq,
+                conversation_id=f"qq:group:{bot_qq}:{group_id}",
+                source_id=None,
+                idempotency_key=f"proactive:{group_id}:{uuid.uuid4().hex[:12]}",
+            )
+            if not budget.allowed or budget.reservation_id is None:
+                raise OutboundError("proactive budget exhausted", delivery_unknown=False)
+            try:
+                provider_id = await send_onebot_group_message(
+                    settings.onebot_ws_url,
+                    settings.onebot_access_token,
+                    group_id=group_id,
+                    text=text,
+                    idempotency_key=f"proactive-{uuid.uuid4().hex[:16]}",
+                )
+            except OutboundError:
+                await asyncio.to_thread(
+                    risk_ledger.finish_send, budget.reservation_id, outcome="failed"
+                )
+                raise
+            await asyncio.to_thread(risk_ledger.finish_send, budget.reservation_id, outcome="sent")
+            return provider_id
+
+        def proactive_context() -> list[str]:
+            if inner_life is None:
+                return []
+            section = inner_life.self_context(None, "")  # type: ignore[arg-type]
+            return list(section[1]) if section else []
+
+        proactive_task = asyncio.create_task(
+            ProactiveChatter(
+                timeline=group_timeline,
+                client=client,
+                persona=persona_bundle.render() if persona_bundle is not None else persona,
+                send_group=proactive_send,
+                account_id=bot_qq,
+                groups=phase.proactive_groups,
+                context=proactive_context,
+                idle_minutes=phase.proactive_idle_minutes,
+                active_start_hour=phase.proactive_start_hour,
+                active_end_hour=phase.proactive_end_hour,
+                daily_cap=phase.proactive_daily_cap,
+            ).run_forever()
+        )
+        proactive_task.add_done_callback(
             lambda task: task.exception() if not task.cancelled() else None
         )
     reconcile_task = asyncio.create_task(reconciler.run_periodically(interval_seconds=900))

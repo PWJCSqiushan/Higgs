@@ -91,6 +91,8 @@ class InboundEvent:
     quoted: QuotedMessage | None = None
     # Message IDs of earlier fragments merged into this logical event.
     merged_message_ids: tuple[str, ...] = ()
+    # Set by the M5 interest gate: Higgs was not addressed but may join in.
+    interjection: bool = False
 
     @property
     def timeline_text(self) -> str:
