@@ -8,9 +8,11 @@ import json
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable
+import uuid
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from r_agent.access import IngressDecision, IngressPolicy
 from r_agent.agenda import AgendaStore
@@ -76,9 +78,11 @@ from r_agent.persona_evolution import (
 )
 from r_agent.phase2_outbound import (
     OutboundError,
+    call_onebot_action,
     get_onebot_account_status,
     get_onebot_message_sender,
     get_onebot_quoted_message,
+    send_onebot_private_message,
 )
 from r_agent.phase2_reply import (
     PersonaBrain,
@@ -95,6 +99,13 @@ from r_agent.principal_memory_intents import (
     submit_personal_memory_observation,
 )
 from r_agent.qq_text import QqTextError, to_qq_plain_text
+from r_agent.qzone import (
+    QzoneSchedule,
+    QzoneScheduler,
+    QzoneService,
+    QzoneStore,
+    register_qzone_tools,
+)
 from r_agent.recall import RecallLedger
 from r_agent.reminders import DueOccurrence, ReminderStore
 from r_agent.risk_ledger import RiskLedger, RiskLimits
@@ -271,6 +282,16 @@ class Phase2Settings:
     web_search_provider: str = "off"
     web_search_endpoint: str = ""
     web_read_enabled: bool = False
+    qzone_enabled: bool = True
+    qzone_mode: str = "confirm"
+    qzone_posts_per_day: int = 1
+    qzone_active_start_hour: int = 9
+    qzone_active_end_hour: int = 23
+    qzone_visibility: int = 1
+    qzone_browse_enabled: bool = False
+    qzone_browse_interval_minutes: int = 180
+    qzone_daily_likes: int = 20
+    qzone_daily_comments: int = 6
 
 
 def _phase2_settings(settings: Settings) -> Phase2Settings:
@@ -381,6 +402,20 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         ("http://", "https://")
     ):
         raise ConfigError("searxng search requires R_AGENT_WEB_SEARCH_ENDPOINT")
+    qzone_mode = _value("R_AGENT_QZONE_MODE", "confirm").casefold()
+    if qzone_mode not in {"off", "confirm", "auto"}:
+        raise ConfigError("R_AGENT_QZONE_MODE must be off, confirm, or auto")
+    qzone_hours = _value("R_AGENT_QZONE_ACTIVE_HOURS", "9-23")
+    try:
+        start_text, end_text = qzone_hours.split("-", 1)
+        qzone_start, qzone_end = int(start_text), int(end_text)
+    except ValueError as exc:
+        raise ConfigError("R_AGENT_QZONE_ACTIVE_HOURS must look like 9-23") from exc
+    if not 0 <= qzone_start < qzone_end <= 24:
+        raise ConfigError("R_AGENT_QZONE_ACTIVE_HOURS must look like 9-23")
+    qzone_visibility = _value("R_AGENT_QZONE_VISIBILITY", "1")
+    if qzone_visibility not in {"1", "4", "64"}:
+        raise ConfigError("R_AGENT_QZONE_VISIBILITY must be 1, 4, or 64")
     group_reply_quote = _value("R_AGENT_GROUP_REPLY_QUOTE", "auto").casefold()
     if group_reply_quote not in {"off", "auto", "always"}:
         raise ConfigError("R_AGENT_GROUP_REPLY_QUOTE must be off, auto, or always")
@@ -465,6 +500,18 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         web_search_provider=web_search_provider,
         web_search_endpoint=web_search_endpoint,
         web_read_enabled=_boolean("R_AGENT_WEB_READ_ENABLED", False),
+        qzone_enabled=_boolean("R_AGENT_QZONE_ENABLED", True),
+        qzone_mode=qzone_mode,
+        qzone_posts_per_day=bounded_int("R_AGENT_QZONE_POSTS_PER_DAY", "1", 1, 5),
+        qzone_active_start_hour=qzone_start,
+        qzone_active_end_hour=qzone_end,
+        qzone_visibility=int(qzone_visibility),
+        qzone_browse_enabled=_boolean("R_AGENT_QZONE_BROWSE_ENABLED", False),
+        qzone_browse_interval_minutes=bounded_int(
+            "R_AGENT_QZONE_BROWSE_INTERVAL_MINUTES", "180", 30, 1440
+        ),
+        qzone_daily_likes=bounded_int("R_AGENT_QZONE_DAILY_LIKES", "20", 0, 100),
+        qzone_daily_comments=bounded_int("R_AGENT_QZONE_DAILY_COMMENTS", "6", 0, 30),
     )
 
 
@@ -981,7 +1028,52 @@ async def listen() -> None:
         )
         group_timeline.initialize()
         await asyncio.to_thread(group_timeline.purge_expired)
+    qzone_service: QzoneService | None = None
+    context_providers: list = []
+    if phase.qzone_enabled:
+        qzone_store = QzoneStore(settings.data_dir / "qzone.sqlite")
+        qzone_store.initialize()
+
+        async def qzone_action(action: str, params: Mapping[str, Any]) -> Mapping[str, Any]:
+            return await call_onebot_action(
+                settings.onebot_ws_url,
+                settings.onebot_access_token,
+                action=action,
+                params=params,
+                echo=f"r-agent:qzone:{action}:{uuid.uuid4().hex[:12]}",
+                max_size=4 * 1024 * 1024,
+            )
+
+        async def qzone_notify_owner(text: str) -> None:
+            if settings.owner_qq is None:
+                return
+            await send_onebot_private_message(
+                settings.onebot_ws_url,
+                settings.onebot_access_token,
+                user_id=settings.owner_qq,
+                text=text[:2000],
+                idempotency_key=f"qzone-{uuid.uuid4().hex[:16]}",
+            )
+
+        qzone_service = QzoneService(
+            store=qzone_store,
+            call_action=qzone_action,
+            client=client,
+            persona=persona_bundle.render() if persona_bundle is not None else persona,
+            safety=safety,
+            notify_owner=qzone_notify_owner,
+            bot_account_id=_value("R_AGENT_EXPECTED_BOT_QQ") or None,
+            visibility=phase.qzone_visibility,
+        )
+        _qzone = qzone_service
+
+        def qzone_context(_event: InboundEvent, _principal_id: str):
+            lines = _qzone.context_lines(3)
+            return ("你最近在 QQ 空间发过的说说（你自己的经历）", lines) if lines else None
+
+        context_providers.append(qzone_context)
     context_builder = ContextBuilder(
+        context_providers=tuple(context_providers),
         history=history,
         memory=memory,
         recall=recall,
@@ -1150,6 +1242,8 @@ async def listen() -> None:
             web_reader=SafePageReader() if phase.web_read_enabled else None,
         )
         register_builtin_tools(tool_registry, tool_deps)
+        if qzone_service is not None:
+            register_qzone_tools(tool_registry, qzone_service)
         agent_audit = ToolAudit(settings.data_dir / "agent_tools.sqlite")
         agent_audit.initialize()
         agent_loop = AgentLoop(
@@ -1177,6 +1271,7 @@ async def listen() -> None:
         persona_v2_gate=persona_v2_gate,
         official_owner_id=official_owner_openid,
         agent=agent_loop,
+        qzone=qzone_service,
     )
     passive_learner = (
         PassiveMemoryLearner(
@@ -1820,6 +1915,25 @@ async def listen() -> None:
     backup_task = asyncio.create_task(backup.run_periodically())
     backup_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
 
+    qzone_task: asyncio.Task[None] | None = None
+    if qzone_service is not None and phase.mode == "live":
+        qzone_scheduler = QzoneScheduler(
+            qzone_service,
+            QzoneSchedule(
+                mode=phase.qzone_mode,
+                posts_per_day=phase.qzone_posts_per_day,
+                active_start_hour=phase.qzone_active_start_hour,
+                active_end_hour=phase.qzone_active_end_hour,
+                browse_enabled=phase.qzone_browse_enabled,
+                browse_interval_minutes=phase.qzone_browse_interval_minutes,
+                daily_likes=phase.qzone_daily_likes,
+                daily_comments=phase.qzone_daily_comments,
+            ),
+        )
+        qzone_task = asyncio.create_task(qzone_scheduler.run_forever())
+        qzone_task.add_done_callback(
+            lambda task: task.exception() if not task.cancelled() else None
+        )
     reconcile_task = asyncio.create_task(reconciler.run_periodically(interval_seconds=900))
     reconcile_task.add_done_callback(
         lambda task: task.exception() if not task.cancelled() else None
