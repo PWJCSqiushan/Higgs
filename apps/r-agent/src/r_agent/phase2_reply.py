@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
+from r_agent.agent_tools import ToolContext
 from r_agent.context import ContextBuilder
 from r_agent.conversation import ConversationError
 from r_agent.daily_plan import DailyPlanService
@@ -150,6 +152,8 @@ class ReplyDecision(StrEnum):
     DRAFTED = "drafted"
     SENT = "sent"
     MODEL_FAILED = "model_failed"
+    SKIPPED = "skipped"
+    REACTED = "reacted"
     SEND_FAILED = "send_failed"
 
 
@@ -228,14 +232,20 @@ class ReplyPolicy:
             owner_reminder = _owner_reminder_message(event, self.owner_ids)
             if event.group_id in self.natural_trigger_groups:
                 natural_triggered = (
-                    event.mentioned
+                    event.interjection
+                    or event.mentioned
                     or event.replied_to_account
                     or any(term in event.text.casefold() for term in self.natural_trigger_terms)
                     or owner_reminder
                 )
                 if not natural_triggered:
                     return ReplyDecision.GROUP_TRIGGER_REQUIRED
-            elif self.require_mention and not event.mentioned and not owner_reminder:
+            elif (
+                self.require_mention
+                and not event.mentioned
+                and not owner_reminder
+                and not event.interjection
+            ):
                 return ReplyDecision.MENTION_REQUIRED
         if owner_command:
             return ReplyDecision.DRAFTED if self.mode == "draft" else ReplyDecision.SENT
@@ -324,6 +334,9 @@ class PersonaBrain:
         persona_bundle: PersonaBundle | None = None,
         persona_v2_gate: PersonaV2Gate | None = None,
         official_owner_id: str | None = None,
+        agent: Any = None,
+        qzone: Any = None,
+        owner_async_commands: tuple[tuple[str, Any], ...] = (),
     ):
         self.client = client
         self.persona = persona
@@ -338,6 +351,12 @@ class PersonaBrain:
         self.persona_bundle = persona_bundle
         self.persona_v2_gate = persona_v2_gate or PersonaV2Gate()
         self.official_owner_id = official_owner_id
+        self.agent = agent
+        self.qzone = qzone
+        commands = list(owner_async_commands)
+        if qzone is not None:
+            commands.append(("/higgs qzone", qzone.handle_command))
+        self.owner_async_commands = tuple(commands)
         self.persona_guard = PersonaGuard(persona_bundle) if persona_bundle is not None else None
 
         if ordinary_task_mode not in {"off", "shadow", "live"}:
@@ -739,6 +758,11 @@ class PersonaBrain:
                         )
                 except ReminderError as exc:
                     return f"\u63d0\u9192\u6ca1\u6709\u521b\u5efa\uff1a{exc}"
+            if not official_channel and principal.role == "owner":
+                lowered = clean.casefold()
+                for prefix, handler in self.owner_async_commands:
+                    if lowered == prefix or lowered.startswith(prefix + " "):
+                        return await handler(clean)
             if not official_channel and self.owner_commands is not None:
                 command_reply = await asyncio.to_thread(
                     self.owner_commands.handle,
@@ -777,10 +801,22 @@ class PersonaBrain:
                 )
             except (ConversationError, MemoryError, RecallError, TypeError) as exc:
                 raise ModelError("safe context construction failed") from exc
-            reply = await self.client.complete_messages(
-                messages=context.messages,
-                max_tokens=(persona_reply_mode.max_tokens if use_persona_v2 else 400),
-            )
+            reply_tokens = persona_reply_mode.max_tokens if use_persona_v2 else 400
+            if self.agent is not None and event.channel.casefold() == "qq":
+                reply = await self.agent.run(
+                    context.messages,
+                    ToolContext(
+                        event=event,
+                        principal_id=principal.principal_id,
+                        principal_role=principal.role,
+                    ),
+                    max_tokens=max(reply_tokens, 600),
+                )
+            else:
+                reply = await self.client.complete_messages(
+                    messages=context.messages,
+                    max_tokens=reply_tokens,
+                )
             if use_persona_v2:
                 return await self._guard_persona_reply(
                     reply,

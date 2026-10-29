@@ -31,6 +31,19 @@ Higgs 是一个面向个人长期使用的、自托管的 QQ 智能体。它不�
 关闭。该代码存在不表示生产受众已经扩大，身份库迁移、白名单激活和真实验收仍是分开的
 显式动作。
 
+## Higgs 3.0（NapCat 主通道）新增能力
+
+| 能力 | 说明 | 文档 |
+| --- | --- | --- |
+| 群聊理解与精准回复 | 群共享时间线、发言人名片与 #标签、引用原文解析、被插话时自动引用回复 | [M1](docs/31-m1-group-understanding.md) |
+| 帮你做事 | function calling 工具循环：时间、记忆查询/记住、提醒、群记录搜索、联网搜索、读网页 | [M2](docs/32-m2-agent-tools.md) |
+| QQ 空间 | 人格化起草说说、主人确认或定时自动发布、刷好友动态点赞评论 | [M3](docs/33-m3-qzone.md) |
+| 自己的思想 | 对群友的印象、心情、每晚日记与反思，注入对话与说说 | [M4](docs/34-m4-inner-life.md) |
+| 像人一样说话 | 没被 @ 时按兴趣插话（可 SKIP/REACT）、冷场时主动开话题、输入状态 | [M5](docs/35-m5-willingness.md) |
+| 多模态 | 看图描述（可选）、多气泡回复、`/higgs overview` 总览 | [M6](docs/36-m6-multimodal.md) |
+
+路线与开发流程见 [Higgs 3.0 路线](docs/30-roadmap-v3-and-dev-workflow.md)。
+
 ## 系统结构
 
 ```mermaid

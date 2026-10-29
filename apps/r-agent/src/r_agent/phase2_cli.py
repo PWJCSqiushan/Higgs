@@ -4,18 +4,23 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import time
-from collections.abc import Awaitable, Callable
+import uuid
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from r_agent.access import IngressDecision, IngressPolicy
 from r_agent.agenda import AgendaStore
+from r_agent.agent_tools import AgentLoop, ToolAudit, ToolRegistry
 from r_agent.amap import AmapRouteClient
 from r_agent.backup import BackupError, BackupManager
+from r_agent.builtin_tools import BuiltinToolDeps, register_builtin_tools
 from r_agent.config import ConfigError, Settings, parse_qq_set
 from r_agent.context import ContextBuilder
 from r_agent.conversation import ConversationStore
@@ -38,6 +43,7 @@ from r_agent.group_timeline import GroupTimeline
 from r_agent.health import HealthReporter
 from r_agent.identity import IdentityStore, Principal
 from r_agent.ingest import IngestResult, IngestService
+from r_agent.inner_life import InnerLife, InnerLifeScheduler, InnerLifeStore
 from r_agent.journal import Journal
 from r_agent.memory import MemoryKind, MemoryStore
 from r_agent.memory_v2 import MemoryObservationStore, MemoryReconciler
@@ -47,6 +53,7 @@ from r_agent.model_memory_candidates import (
     ModelCandidateExtractor,
     ModelCandidateShadowStore,
 )
+from r_agent.multimodal import VisionCaptioner, split_bubbles, strip_breaks
 from r_agent.official_processing import OfficialDurableProcessor, OfficialProcessingStore
 from r_agent.official_qq import (
     OfficialQQAdapter,
@@ -74,9 +81,12 @@ from r_agent.persona_evolution import (
 )
 from r_agent.phase2_outbound import (
     OutboundError,
+    call_onebot_action,
     get_onebot_account_status,
     get_onebot_message_sender,
     get_onebot_quoted_message,
+    send_onebot_group_message,
+    send_onebot_private_message,
 )
 from r_agent.phase2_reply import (
     PersonaBrain,
@@ -93,6 +103,13 @@ from r_agent.principal_memory_intents import (
     submit_personal_memory_observation,
 )
 from r_agent.qq_text import QqTextError, to_qq_plain_text
+from r_agent.qzone import (
+    QzoneSchedule,
+    QzoneScheduler,
+    QzoneService,
+    QzoneStore,
+    register_qzone_tools,
+)
 from r_agent.recall import RecallLedger
 from r_agent.reminders import DueOccurrence, ReminderStore
 from r_agent.risk_ledger import RiskLedger, RiskLimits
@@ -110,6 +127,14 @@ from r_agent.transport import (
 )
 from r_agent.transport_state import TransportStateStore
 from r_agent.vector_memory import MemoryVectorStore
+from r_agent.web_providers import SafePageReader, SearxngSearch, ZhipuWebSearch
+from r_agent.willingness import (
+    THUMBS_UP_FACE_ID,
+    InterestGate,
+    ProactiveChatter,
+    is_react,
+    is_skip,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -262,6 +287,42 @@ class Phase2Settings:
     group_timeline_retention_days: int = 7
     group_reply_quote: str = "auto"
     group_reply_mention: bool = False
+    agent_tools_enabled: bool = True
+    agent_max_steps: int = 4
+    agent_user_daily_tool_calls: int = 30
+    web_search_provider: str = "off"
+    web_search_endpoint: str = ""
+    web_read_enabled: bool = False
+    qzone_enabled: bool = True
+    qzone_mode: str = "confirm"
+    qzone_posts_per_day: int = 1
+    qzone_active_start_hour: int = 9
+    qzone_active_end_hour: int = 23
+    qzone_visibility: int = 1
+    qzone_browse_enabled: bool = False
+    qzone_browse_interval_minutes: int = 180
+    qzone_daily_likes: int = 20
+    qzone_daily_comments: int = 6
+    inner_life_enabled: bool = True
+    inner_diary_hour: int = 23
+    inner_diary_minute: int = 30
+    inner_impression_interval_minutes: int = 60
+    interest_enabled: bool = True
+    interest_groups: frozenset[str] = frozenset()
+    interest_frequency: float = 1.0
+    interest_hourly_cap: int = 6
+    interest_daily_cap: int = 30
+    interest_min_gap_seconds: float = 90.0
+    proactive_groups: frozenset[str] = frozenset()
+    proactive_idle_minutes: int = 90
+    proactive_daily_cap: int = 3
+    proactive_start_hour: int = 10
+    proactive_end_hour: int = 23
+    typing_status_enabled: bool = True
+    bubbles_enabled: bool = True
+    vision_enabled: bool = False
+    vision_model: str = "glm-4v-flash"
+    vision_daily_limit: int = 100
 
 
 def _phase2_settings(settings: Settings) -> Phase2Settings:
@@ -364,6 +425,55 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
     if personal_memory_mode != "off" and not personal_memory_schema_v5_enabled:
         raise ConfigError("personal-memory modes require explicit schema v5 enablement")
     group_memory_enabled = _boolean("R_AGENT_GROUP_MEMORY_ENABLED", False)
+    web_search_provider = _value("R_AGENT_WEB_SEARCH_PROVIDER", "off").casefold()
+    if web_search_provider not in {"off", "zhipu", "searxng"}:
+        raise ConfigError("R_AGENT_WEB_SEARCH_PROVIDER must be off, zhipu, or searxng")
+    web_search_endpoint = _value("R_AGENT_WEB_SEARCH_ENDPOINT")
+    if web_search_provider == "searxng" and not web_search_endpoint.startswith(
+        ("http://", "https://")
+    ):
+        raise ConfigError("searxng search requires R_AGENT_WEB_SEARCH_ENDPOINT")
+    qzone_mode = _value("R_AGENT_QZONE_MODE", "confirm").casefold()
+    if qzone_mode not in {"off", "confirm", "auto"}:
+        raise ConfigError("R_AGENT_QZONE_MODE must be off, confirm, or auto")
+    qzone_hours = _value("R_AGENT_QZONE_ACTIVE_HOURS", "9-23")
+    try:
+        start_text, end_text = qzone_hours.split("-", 1)
+        qzone_start, qzone_end = int(start_text), int(end_text)
+    except ValueError as exc:
+        raise ConfigError("R_AGENT_QZONE_ACTIVE_HOURS must look like 9-23") from exc
+    if not 0 <= qzone_start < qzone_end <= 24:
+        raise ConfigError("R_AGENT_QZONE_ACTIVE_HOURS must look like 9-23")
+    qzone_visibility = _value("R_AGENT_QZONE_VISIBILITY", "1")
+    if qzone_visibility not in {"1", "4", "64"}:
+        raise ConfigError("R_AGENT_QZONE_VISIBILITY must be 1, 4, or 64")
+    interest_raw = _value("R_AGENT_INTEREST_GROUPS")
+    interest_groups = (
+        parse_qq_set(interest_raw, name="R_AGENT_INTEREST_GROUPS") if interest_raw else groups
+    )
+    if not interest_groups.issubset(groups):
+        raise ConfigError("interest groups must be a subset of reply groups")
+    proactive_groups = parse_qq_set(
+        _value("R_AGENT_PROACTIVE_GROUPS"), name="R_AGENT_PROACTIVE_GROUPS"
+    )
+    if not proactive_groups.issubset(groups):
+        raise ConfigError("proactive groups must be a subset of reply groups")
+    proactive_hours = _value("R_AGENT_PROACTIVE_ACTIVE_HOURS", "10-23")
+    try:
+        p_start_text, p_end_text = proactive_hours.split("-", 1)
+        proactive_start, proactive_end = int(p_start_text), int(p_end_text)
+    except ValueError as exc:
+        raise ConfigError("R_AGENT_PROACTIVE_ACTIVE_HOURS must look like 10-23") from exc
+    if not 0 <= proactive_start < proactive_end <= 24:
+        raise ConfigError("R_AGENT_PROACTIVE_ACTIVE_HOURS must look like 10-23")
+    diary_time = _value("R_AGENT_INNER_DIARY_TIME", "23:30")
+    try:
+        diary_hour_text, diary_minute_text = diary_time.split(":", 1)
+        diary_hour, diary_minute = int(diary_hour_text), int(diary_minute_text)
+    except ValueError as exc:
+        raise ConfigError("R_AGENT_INNER_DIARY_TIME must look like 23:30") from exc
+    if not (0 <= diary_hour <= 23 and 0 <= diary_minute <= 59):
+        raise ConfigError("R_AGENT_INNER_DIARY_TIME must look like 23:30")
     group_reply_quote = _value("R_AGENT_GROUP_REPLY_QUOTE", "auto").casefold()
     if group_reply_quote not in {"off", "auto", "always"}:
         raise ConfigError("R_AGENT_GROUP_REPLY_QUOTE must be off, auto, or always")
@@ -440,6 +550,50 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         ),
         group_reply_quote=group_reply_quote,
         group_reply_mention=_boolean("R_AGENT_GROUP_REPLY_MENTION", False),
+        agent_tools_enabled=_boolean("R_AGENT_AGENT_TOOLS_ENABLED", True),
+        agent_max_steps=bounded_int("R_AGENT_AGENT_MAX_STEPS", "4", 1, 8),
+        agent_user_daily_tool_calls=bounded_int(
+            "R_AGENT_AGENT_USER_DAILY_TOOL_CALLS", "30", 0, 1000
+        ),
+        web_search_provider=web_search_provider,
+        web_search_endpoint=web_search_endpoint,
+        web_read_enabled=_boolean("R_AGENT_WEB_READ_ENABLED", False),
+        qzone_enabled=_boolean("R_AGENT_QZONE_ENABLED", True),
+        qzone_mode=qzone_mode,
+        qzone_posts_per_day=bounded_int("R_AGENT_QZONE_POSTS_PER_DAY", "1", 1, 5),
+        qzone_active_start_hour=qzone_start,
+        qzone_active_end_hour=qzone_end,
+        qzone_visibility=int(qzone_visibility),
+        qzone_browse_enabled=_boolean("R_AGENT_QZONE_BROWSE_ENABLED", False),
+        qzone_browse_interval_minutes=bounded_int(
+            "R_AGENT_QZONE_BROWSE_INTERVAL_MINUTES", "180", 30, 1440
+        ),
+        qzone_daily_likes=bounded_int("R_AGENT_QZONE_DAILY_LIKES", "20", 0, 100),
+        qzone_daily_comments=bounded_int("R_AGENT_QZONE_DAILY_COMMENTS", "6", 0, 30),
+        inner_life_enabled=_boolean("R_AGENT_INNER_LIFE_ENABLED", True),
+        inner_diary_hour=diary_hour,
+        inner_diary_minute=diary_minute,
+        inner_impression_interval_minutes=bounded_int(
+            "R_AGENT_INNER_IMPRESSION_INTERVAL_MINUTES", "60", 10, 1440
+        ),
+        interest_enabled=_boolean("R_AGENT_INTEREST_ENABLED", True),
+        interest_groups=interest_groups,
+        interest_frequency=bounded_float("R_AGENT_INTEREST_FREQUENCY", "1.0", 0.0, 3.0),
+        interest_hourly_cap=bounded_int("R_AGENT_INTEREST_HOURLY_CAP", "6", 0, 60),
+        interest_daily_cap=bounded_int("R_AGENT_INTEREST_DAILY_CAP", "30", 0, 300),
+        interest_min_gap_seconds=bounded_float(
+            "R_AGENT_INTEREST_MIN_GAP_SECONDS", "90", 0.0, 3600.0
+        ),
+        proactive_groups=proactive_groups,
+        proactive_idle_minutes=bounded_int("R_AGENT_PROACTIVE_IDLE_MINUTES", "90", 10, 1440),
+        proactive_daily_cap=bounded_int("R_AGENT_PROACTIVE_DAILY_CAP", "3", 0, 20),
+        proactive_start_hour=proactive_start,
+        proactive_end_hour=proactive_end,
+        typing_status_enabled=_boolean("R_AGENT_TYPING_STATUS_ENABLED", True),
+        bubbles_enabled=_boolean("R_AGENT_BUBBLES_ENABLED", True),
+        vision_enabled=_boolean("R_AGENT_VISION_ENABLED", False),
+        vision_model=_value("R_AGENT_VISION_MODEL", "glm-4v-flash")[:128] or "glm-4v-flash",
+        vision_daily_limit=bounded_int("R_AGENT_VISION_DAILY_LIMIT", "100", 1, 2000),
     )
 
 
@@ -570,9 +724,13 @@ async def prepare_reply(
             return PreparedReply(ReplyDecision.GLOBAL_RATE_LIMITED)
         reservation_id = budget.reservation_id
     try:
-        text = to_qq_plain_text(
-            response_override if response_override is not None else await brain.draft(event)
-        )
+        raw_text = response_override if response_override is not None else await brain.draft(event)
+        if event.interjection and (is_skip(raw_text) or is_react(raw_text)):
+            if risk_ledger is not None and reservation_id is not None:
+                await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="failed")
+            decision = ReplyDecision.REACTED if is_react(raw_text) else ReplyDecision.SKIPPED
+            return PreparedReply(decision)
+        text = to_qq_plain_text(raw_text)
     except (ModelError, QqTextError):
         if risk_ledger is not None and reservation_id is not None:
             await asyncio.to_thread(risk_ledger.finish_send, reservation_id, outcome="failed")
@@ -956,7 +1114,77 @@ async def listen() -> None:
         )
         group_timeline.initialize()
         await asyncio.to_thread(group_timeline.purge_expired)
+    qzone_service: QzoneService | None = None
+    context_providers: list = []
+    if phase.qzone_enabled:
+        qzone_store = QzoneStore(settings.data_dir / "qzone.sqlite")
+        qzone_store.initialize()
+
+        async def qzone_action(action: str, params: Mapping[str, Any]) -> Mapping[str, Any]:
+            return await call_onebot_action(
+                settings.onebot_ws_url,
+                settings.onebot_access_token,
+                action=action,
+                params=params,
+                echo=f"r-agent:qzone:{action}:{uuid.uuid4().hex[:12]}",
+                max_size=4 * 1024 * 1024,
+            )
+
+        async def qzone_notify_owner(text: str) -> None:
+            if settings.owner_qq is None:
+                return
+            await send_onebot_private_message(
+                settings.onebot_ws_url,
+                settings.onebot_access_token,
+                user_id=settings.owner_qq,
+                text=text[:2000],
+                idempotency_key=f"qzone-{uuid.uuid4().hex[:16]}",
+            )
+
+        qzone_service = QzoneService(
+            store=qzone_store,
+            call_action=qzone_action,
+            client=client,
+            persona=persona_bundle.render() if persona_bundle is not None else persona,
+            safety=safety,
+            notify_owner=qzone_notify_owner,
+            bot_account_id=_value("R_AGENT_EXPECTED_BOT_QQ") or None,
+            visibility=phase.qzone_visibility,
+        )
+        _qzone = qzone_service
+
+        def qzone_context(_event: InboundEvent, _principal_id: str):
+            lines = _qzone.context_lines(3)
+            return ("你最近在 QQ 空间发过的说说（你自己的经历）", lines) if lines else None
+
+        context_providers.append(qzone_context)
+    inner_life: InnerLife | None = None
+    if phase.inner_life_enabled and client is not None:
+        inner_store = InnerLifeStore(settings.data_dir / "inner_life.sqlite")
+        inner_store.initialize()
+
+        async def inner_extra_material() -> str:
+            if qzone_service is None:
+                return ""
+            posts = qzone_service.context_lines(2)
+            return ("今天前后发过的说说：\n" + "\n".join(posts)) if posts else ""
+
+        inner_life = InnerLife(
+            store=inner_store,
+            timeline=group_timeline,
+            client=client,
+            persona=persona_bundle.render() if persona_bundle is not None else persona,
+            owner_ids=frozenset(value for value in (settings.owner_qq,) if value is not None),
+            safety=safety,
+            extra_material=inner_extra_material,
+        )
+        context_providers.append(inner_life.self_context)
+        context_providers.append(inner_life.people_context)
+        if qzone_service is not None:
+            qzone_service.material = inner_life.material
     context_builder = ContextBuilder(
+        bubbles_enabled=phase.bubbles_enabled,
+        context_providers=tuple(context_providers),
         history=history,
         memory=memory,
         recall=recall,
@@ -1105,6 +1333,77 @@ async def listen() -> None:
         amap=AmapRouteClient(amap_key) if amap_key else None,
         official_proactive_enabled=official_config.proactive_enabled,
     )
+    agent_loop: AgentLoop | None = None
+    if phase.agent_tools_enabled and client is not None:
+        tool_registry = ToolRegistry()
+        web_search = None
+        if phase.web_search_provider == "zhipu":
+            web_search = ZhipuWebSearch(
+                api_key=_value("R_AGENT_MODEL_API_KEY"),
+                base_url=_value("R_AGENT_MODEL_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"),
+            )
+        elif phase.web_search_provider == "searxng":
+            web_search = SearxngSearch(endpoint=phase.web_search_endpoint)
+        tool_deps = BuiltinToolDeps(
+            memory=memory,
+            reminders=reminders,
+            group_timeline=group_timeline,
+            owner_ids=frozenset(value for value in (settings.owner_qq,) if value is not None),
+            web_search=web_search,
+            web_reader=SafePageReader() if phase.web_read_enabled else None,
+        )
+        register_builtin_tools(tool_registry, tool_deps)
+        if qzone_service is not None:
+            register_qzone_tools(tool_registry, qzone_service)
+        agent_audit = ToolAudit(settings.data_dir / "agent_tools.sqlite")
+        agent_audit.initialize()
+        agent_loop = AgentLoop(
+            client=client,
+            registry=tool_registry,
+            audit=agent_audit,
+            max_steps=phase.agent_max_steps,
+            user_daily_budget=phase.agent_user_daily_tool_calls,
+        )
+
+    async def higgs_overview(_text: str) -> str:
+        """One-screen summary of the Higgs 3.0 capabilities and their switches."""
+        day_ago = int(time.time() * 1000) - 86_400_000
+        lines = ["Higgs 3.0 总览"]
+        if group_timeline is not None:
+            groups_active = await asyncio.to_thread(group_timeline.active_groups, since_ms=day_ago)
+            lines.append(f"群时间线：开（24 小时内活跃群 {len(groups_active)} 个）")
+        else:
+            lines.append("群时间线：关")
+        if agent_loop is not None:
+            names = ", ".join(sorted(agent_loop.registry.tools))
+            recent = await asyncio.to_thread(agent_loop.audit.recent, 5)
+            used = "、".join(f"{tool}:{outcome}" for _at, tool, outcome in recent) or "暂无"
+            lines.append(f"工具：{names}")
+            lines.append(f"最近工具调用：{used}")
+        else:
+            lines.append("工具：关")
+        lines.append(
+            f"QQ 空间：{'模式 ' + phase.qzone_mode if qzone_service is not None else '关'}"
+            f"，刷动态 {'开' if phase.qzone_browse_enabled else '关'}"
+        )
+        if inner_life is not None:
+            mood = await asyncio.to_thread(inner_life.store.mood)
+            lines.append(
+                f"内心：心情 {mood.label if mood else '未记录'}，"
+                f"印象 {await asyncio.to_thread(inner_life.store.impression_count)} 条"
+            )
+        else:
+            lines.append("内心：关")
+        lines.append(
+            f"插话：{'开' if phase.interest_enabled else '关'}（{len(phase.interest_groups)} 个群）"
+            f"，主动开话题：{len(phase.proactive_groups)} 个群"
+        )
+        lines.append(
+            f"多气泡：{'开' if phase.bubbles_enabled else '关'}，"
+            f"看图：{'开 ' + phase.vision_model if phase.vision_enabled else '关'}"
+        )
+        return "\n".join(lines)
+
     brain = PersonaBrain(
         client,
         persona,
@@ -1122,6 +1421,12 @@ async def listen() -> None:
         persona_bundle=persona_bundle,
         persona_v2_gate=persona_v2_gate,
         official_owner_id=official_owner_openid,
+        agent=agent_loop,
+        qzone=qzone_service,
+        owner_async_commands=(
+            ("/higgs overview", higgs_overview),
+            *((("/higgs inner", inner_life.handle_command),) if inner_life is not None else ()),
+        ),
     )
     passive_learner = (
         PassiveMemoryLearner(
@@ -1178,12 +1483,40 @@ async def listen() -> None:
                     )
                 except Exception as exc:
                     _log.warning("group_timeline_quote_check_failed type=%s", type(exc).__name__)
-        return await onebot_adapter.send_reply(
+        bubbles = (split_bubbles(text) if phase.bubbles_enabled else [strip_breaks(text)]) or [
+            strip_breaks(text) or text
+        ]
+        receipt = await onebot_adapter.send_reply(
             event,
-            text,
+            bubbles[0],
             quote=quote,
             mention=phase.group_reply_mention,
         )
+        if receipt.state is not DeliveryState.SENT:
+            return receipt
+        for index, bubble in enumerate(bubbles[1:], start=1):
+            await asyncio.sleep(min(2.0, 0.6 + len(bubble) / 80))
+            try:
+                if event.conversation_kind is ConversationKind.GROUP and event.group_id:
+                    await send_onebot_group_message(
+                        settings.onebot_ws_url,
+                        settings.onebot_access_token,
+                        group_id=event.group_id,
+                        text=bubble,
+                        idempotency_key=f"bubble-{event.message_id}-{index}",
+                    )
+                else:
+                    await send_onebot_private_message(
+                        settings.onebot_ws_url,
+                        settings.onebot_access_token,
+                        user_id=event.sender_id,
+                        text=bubble,
+                        idempotency_key=f"bubble-{event.message_id}-{index}",
+                    )
+            except OutboundError as exc:
+                _log.warning("bubble_send_failed type=%s", type(exc).__name__)
+                break
+        return receipt
 
     async def observe_sent_reply(
         event: InboundEvent,
@@ -1199,7 +1532,7 @@ async def listen() -> None:
                 await asyncio.to_thread(
                     group_timeline.record_outbound,
                     event,
-                    text=text,
+                    text=strip_breaks(text),
                     provider_message_id=receipt.provider_message_id,
                 )
             except Exception as exc:
@@ -1536,9 +1869,65 @@ async def listen() -> None:
                 )
         _log.info("phase2_event decision=%s", plan.decision)
 
+    side_tasks: set[asyncio.Task[None]] = set()
+
+    async def onebot_side_action(action: str, params: Mapping[str, Any]) -> None:
+        try:
+            await call_onebot_action(
+                settings.onebot_ws_url,
+                settings.onebot_access_token,
+                action=action,
+                params=params,
+                echo=f"r-agent:side:{action}:{uuid.uuid4().hex[:10]}",
+            )
+        except Exception as exc:
+            _log.info("onebot_side_action_failed action=%s type=%s", action, type(exc).__name__)
+
     async def handle_event(event: InboundEvent, result: IngestResult) -> None:
         """Finish one OneBot logical message after the quiet-window has closed."""
         try:
+            if (
+                interest_gate is not None
+                and event.channel == "qq"
+                and event.conversation_kind is ConversationKind.GROUP
+                and policy.gate(event, result)
+                in {ReplyDecision.GROUP_TRIGGER_REQUIRED, ReplyDecision.MENTION_REQUIRED}
+                and await asyncio.to_thread(interest_gate.should_interject, event)
+            ):
+                event = replace(event, interjection=True)
+            if (
+                captioner is not None
+                and event.channel == "qq"
+                and event.image_urls
+                and (
+                    event.interjection
+                    or policy.gate(event, result) in {ReplyDecision.SENT, ReplyDecision.DRAFTED}
+                )
+            ):
+                event, captions = await captioner.annotate(event)
+                if captions and group_timeline is not None and event.group_id:
+                    with contextlib.suppress(Exception):
+                        await asyncio.to_thread(
+                            group_timeline.update_text,
+                            channel=event.channel,
+                            account_id=event.account_id,
+                            group_id=event.group_id,
+                            message_id=event.message_id,
+                            text=event.timeline_text,
+                        )
+            if (
+                phase.typing_status_enabled
+                and event.channel == "qq"
+                and event.conversation_kind is ConversationKind.PRIVATE
+                and result.stored
+            ):
+                typing_task = asyncio.create_task(
+                    onebot_side_action(
+                        "set_input_status", {"user_id": event.sender_id, "event_type": 1}
+                    )
+                )
+                side_tasks.add(typing_task)
+                typing_task.add_done_callback(side_tasks.discard)
             plan = await process_reply(
                 event=event,
                 result=result,
@@ -1552,6 +1941,11 @@ async def listen() -> None:
                 risk_ledger=risk_ledger,
                 on_sent=observe_sent_reply,
             )
+            if plan.decision is ReplyDecision.REACTED:
+                await onebot_side_action(
+                    "set_msg_emoji_like",
+                    {"message_id": event.message_id, "emoji_id": THUMBS_UP_FACE_ID, "set": True},
+                )
             await finalize_event(event, plan)
         except Exception as exc:
             _log.error("phase2_handler_failed type=%s", type(exc).__name__)
@@ -1618,6 +2012,29 @@ async def listen() -> None:
             on_sent=observe_sent_reply,
         )
 
+    captioner: VisionCaptioner | None = None
+    if phase.vision_enabled:
+        vision_key = _value("R_AGENT_VISION_API_KEY") or _value("R_AGENT_MODEL_API_KEY")
+        if not vision_key:
+            raise ConfigError("R_AGENT_VISION_ENABLED requires a vision or model API key")
+        captioner = VisionCaptioner(
+            base_url=_value("R_AGENT_VISION_BASE_URL")
+            or _value("R_AGENT_MODEL_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"),
+            model=phase.vision_model,
+            api_key=vision_key,
+            daily_limit=phase.vision_daily_limit,
+        )
+    interest_gate: InterestGate | None = None
+    if phase.interest_enabled and group_timeline is not None and phase.interest_groups:
+        interest_gate = InterestGate(
+            timeline=group_timeline,
+            groups=phase.interest_groups,
+            names=frozenset({*phase.natural_trigger_terms, "higgs", "希格斯"}),
+            frequency=phase.interest_frequency,
+            hourly_cap=phase.interest_hourly_cap,
+            daily_cap=phase.interest_daily_cap,
+            min_gap_seconds=phase.interest_min_gap_seconds,
+        )
     debouncer = GroupMessageDebouncer(
         quiet_seconds=phase.group_debounce_seconds,
         private_quiet_seconds=phase.private_debounce_seconds,
@@ -1765,6 +2182,100 @@ async def listen() -> None:
     backup_task = asyncio.create_task(backup.run_periodically())
     backup_task.add_done_callback(lambda task: task.exception() if not task.cancelled() else None)
 
+    qzone_task: asyncio.Task[None] | None = None
+    if qzone_service is not None and phase.mode == "live":
+        qzone_scheduler = QzoneScheduler(
+            qzone_service,
+            QzoneSchedule(
+                mode=phase.qzone_mode,
+                posts_per_day=phase.qzone_posts_per_day,
+                active_start_hour=phase.qzone_active_start_hour,
+                active_end_hour=phase.qzone_active_end_hour,
+                browse_enabled=phase.qzone_browse_enabled,
+                browse_interval_minutes=phase.qzone_browse_interval_minutes,
+                daily_likes=phase.qzone_daily_likes,
+                daily_comments=phase.qzone_daily_comments,
+            ),
+        )
+        qzone_task = asyncio.create_task(qzone_scheduler.run_forever())
+        qzone_task.add_done_callback(
+            lambda task: task.exception() if not task.cancelled() else None
+        )
+    inner_task: asyncio.Task[None] | None = None
+    if inner_life is not None and phase.mode == "live":
+        inner_task = asyncio.create_task(
+            InnerLifeScheduler(
+                inner_life,
+                impression_interval_minutes=phase.inner_impression_interval_minutes,
+                diary_hour=phase.inner_diary_hour,
+                diary_minute=phase.inner_diary_minute,
+            ).run_forever()
+        )
+        inner_task.add_done_callback(
+            lambda task: task.exception() if not task.cancelled() else None
+        )
+    proactive_task: asyncio.Task[None] | None = None
+    if (
+        phase.proactive_groups
+        and group_timeline is not None
+        and client is not None
+        and phase.mode == "live"
+        and expected_bot_qq
+    ):
+        bot_qq = expected_bot_qq
+
+        async def proactive_send(group_id: str, text: str) -> str | None:
+            budget = await asyncio.to_thread(
+                risk_ledger.reserve_send,
+                event_type="proactive",
+                actor_class="system",
+                account_id=bot_qq,
+                conversation_id=f"qq:group:{bot_qq}:{group_id}",
+                source_id=None,
+                idempotency_key=f"proactive:{group_id}:{uuid.uuid4().hex[:12]}",
+            )
+            if not budget.allowed or budget.reservation_id is None:
+                raise OutboundError("proactive budget exhausted", delivery_unknown=False)
+            try:
+                provider_id = await send_onebot_group_message(
+                    settings.onebot_ws_url,
+                    settings.onebot_access_token,
+                    group_id=group_id,
+                    text=text,
+                    idempotency_key=f"proactive-{uuid.uuid4().hex[:16]}",
+                )
+            except OutboundError:
+                await asyncio.to_thread(
+                    risk_ledger.finish_send, budget.reservation_id, outcome="failed"
+                )
+                raise
+            await asyncio.to_thread(risk_ledger.finish_send, budget.reservation_id, outcome="sent")
+            return provider_id
+
+        def proactive_context() -> list[str]:
+            if inner_life is None:
+                return []
+            section = inner_life.self_context(None, "")  # type: ignore[arg-type]
+            return list(section[1]) if section else []
+
+        proactive_task = asyncio.create_task(
+            ProactiveChatter(
+                timeline=group_timeline,
+                client=client,
+                persona=persona_bundle.render() if persona_bundle is not None else persona,
+                send_group=proactive_send,
+                account_id=bot_qq,
+                groups=phase.proactive_groups,
+                context=proactive_context,
+                idle_minutes=phase.proactive_idle_minutes,
+                active_start_hour=phase.proactive_start_hour,
+                active_end_hour=phase.proactive_end_hour,
+                daily_cap=phase.proactive_daily_cap,
+            ).run_forever()
+        )
+        proactive_task.add_done_callback(
+            lambda task: task.exception() if not task.cancelled() else None
+        )
     reconcile_task = asyncio.create_task(reconciler.run_periodically(interval_seconds=900))
     reconcile_task.add_done_callback(
         lambda task: task.exception() if not task.cancelled() else None

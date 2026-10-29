@@ -91,6 +91,11 @@ class InboundEvent:
     quoted: QuotedMessage | None = None
     # Message IDs of earlier fragments merged into this logical event.
     merged_message_ids: tuple[str, ...] = ()
+    # Set by the M5 interest gate: Higgs was not addressed but may join in.
+    interjection: bool = False
+    # Transient CDN URLs of inbound images (NapCat). Never journaled or queued;
+    # only used for optional vision captions.
+    image_urls: tuple[str, ...] = ()
 
     @property
     def timeline_text(self) -> str:

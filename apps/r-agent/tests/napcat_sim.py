@@ -28,6 +28,8 @@ class FakeNapCat:
         self.messages: dict[int, dict[str, Any]] = {}
         self._clients: set[Any] = set()
         self._next_message_id = 5000
+        self.qzone_posts: list[dict[str, Any]] = []
+        self.qzone_feeds: list[dict[str, Any]] = []
         self._server: Any = None
         self.port = 0
 
@@ -83,6 +85,17 @@ class FakeNapCat:
                 "sender": {"user_id": BOT_QQ, "nickname": "Higgs", "card": ""},
                 "message": segments,
             }
+        elif action == "send_qzone_msg":
+            tid = f"tid{len(self.qzone_posts) + 1}"
+            self.qzone_posts.append({"tid": tid, **params})
+            data = {"tid": tid}
+        elif action == "delete_qzone_msg":
+            self.qzone_posts = [p for p in self.qzone_posts if p["tid"] != params.get("tid")]
+            data = None
+        elif action == "get_qzone_public_feeds":
+            data = {"feeds": self.qzone_feeds, "has_more": False, "next_cursor": None}
+        elif action in {"set_qzone_public_like", "comment_qzone_public_feed"}:
+            data = {"ok": True}
         elif action == "get_msg":
             stored = self.messages.get(int(params.get("message_id", 0)))
             if stored is None:
@@ -123,6 +136,22 @@ class FakeNapCat:
             with contextlib.suppress(Exception):
                 await client.send(frame)
 
+    async def push_private_message(self, *, message_id: int, user_id: int, text: str) -> None:
+        payload = {
+            "post_type": "message",
+            "message_type": "private",
+            "time": int(time.time()),
+            "self_id": BOT_QQ,
+            "message_id": message_id,
+            "user_id": user_id,
+            "sender": {"user_id": user_id, "nickname": "主人"},
+            "message": [{"type": "text", "data": {"text": text}}],
+        }
+        frame = json.dumps(payload, ensure_ascii=False)
+        for client in list(self._clients):
+            with contextlib.suppress(Exception):
+                await client.send(frame)
+
     def sent(self, action: str = "send_group_msg") -> list[dict[str, Any]]:
         return [item for item in self.actions if item.get("action") == action]
 
@@ -130,9 +159,19 @@ class FakeNapCat:
 class RecordingModel:
     """Fake OpenAI-compatible client returning scripted replies."""
 
-    def __init__(self, replies: list[str] | None = None, *, responder: Any = None) -> None:
+    def __init__(
+        self,
+        replies: list[str] | None = None,
+        *,
+        responder: Any = None,
+        chat_responder: Any = None,
+    ) -> None:
         self.replies = list(replies or [])
         self.responder = responder
+        self.chat_responder = chat_responder
+        self.chat_calls: list[tuple[list[dict[str, Any]], Any]] = []
+        if chat_responder is not None:
+            self.chat = self._chat  # type: ignore[attr-defined]
         self.calls: list[tuple[dict[str, str], ...]] = []
 
     async def complete(self, *, system: str, user: str, max_tokens: int = 400) -> str:
@@ -147,6 +186,11 @@ class RecordingModel:
         if self.responder is not None:
             return self.responder(call)
         return self.replies.pop(0) if self.replies else "好的。"
+
+    async def _chat(self, *, messages: Any, tools: Any = None, max_tokens: int = 600) -> Any:
+        snapshot = [dict(item) for item in messages]
+        self.chat_calls.append((snapshot, tools))
+        return self.chat_responder(snapshot, tools)
 
 
 def live_env(monkeypatch: Any, *, data_dir: str, ws_url: str) -> None:
@@ -166,6 +210,7 @@ def live_env(monkeypatch: Any, *, data_dir: str, ws_url: str) -> None:
         "R_AGENT_REPLY_ALLOWED_GROUPS": str(GROUP),
         "R_AGENT_REPLY_GROUP_REQUIRE_MENTION": "true",
         "R_AGENT_GROUP_DEBOUNCE_SECONDS": "0.5",
+        "R_AGENT_PRIVATE_DEBOUNCE_SECONDS": "0.5",
         "R_AGENT_MODEL_API_KEY": "sim-not-a-real-key",
         "R_AGENT_EMBEDDING_ENABLED": "false",
         "R_AGENT_SAFETY_ENABLED": "false",
