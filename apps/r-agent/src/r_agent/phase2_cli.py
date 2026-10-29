@@ -14,8 +14,10 @@ from pathlib import Path
 
 from r_agent.access import IngressDecision, IngressPolicy
 from r_agent.agenda import AgendaStore
+from r_agent.agent_tools import AgentLoop, ToolAudit, ToolRegistry
 from r_agent.amap import AmapRouteClient
 from r_agent.backup import BackupError, BackupManager
+from r_agent.builtin_tools import BuiltinToolDeps, register_builtin_tools
 from r_agent.config import ConfigError, Settings, parse_qq_set
 from r_agent.context import ContextBuilder
 from r_agent.conversation import ConversationStore
@@ -110,6 +112,7 @@ from r_agent.transport import (
 )
 from r_agent.transport_state import TransportStateStore
 from r_agent.vector_memory import MemoryVectorStore
+from r_agent.web_providers import SafePageReader, SearxngSearch, ZhipuWebSearch
 
 _log = logging.getLogger(__name__)
 
@@ -262,6 +265,12 @@ class Phase2Settings:
     group_timeline_retention_days: int = 7
     group_reply_quote: str = "auto"
     group_reply_mention: bool = False
+    agent_tools_enabled: bool = True
+    agent_max_steps: int = 4
+    agent_user_daily_tool_calls: int = 30
+    web_search_provider: str = "off"
+    web_search_endpoint: str = ""
+    web_read_enabled: bool = False
 
 
 def _phase2_settings(settings: Settings) -> Phase2Settings:
@@ -364,6 +373,14 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
     if personal_memory_mode != "off" and not personal_memory_schema_v5_enabled:
         raise ConfigError("personal-memory modes require explicit schema v5 enablement")
     group_memory_enabled = _boolean("R_AGENT_GROUP_MEMORY_ENABLED", False)
+    web_search_provider = _value("R_AGENT_WEB_SEARCH_PROVIDER", "off").casefold()
+    if web_search_provider not in {"off", "zhipu", "searxng"}:
+        raise ConfigError("R_AGENT_WEB_SEARCH_PROVIDER must be off, zhipu, or searxng")
+    web_search_endpoint = _value("R_AGENT_WEB_SEARCH_ENDPOINT")
+    if web_search_provider == "searxng" and not web_search_endpoint.startswith(
+        ("http://", "https://")
+    ):
+        raise ConfigError("searxng search requires R_AGENT_WEB_SEARCH_ENDPOINT")
     group_reply_quote = _value("R_AGENT_GROUP_REPLY_QUOTE", "auto").casefold()
     if group_reply_quote not in {"off", "auto", "always"}:
         raise ConfigError("R_AGENT_GROUP_REPLY_QUOTE must be off, auto, or always")
@@ -440,6 +457,14 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         ),
         group_reply_quote=group_reply_quote,
         group_reply_mention=_boolean("R_AGENT_GROUP_REPLY_MENTION", False),
+        agent_tools_enabled=_boolean("R_AGENT_AGENT_TOOLS_ENABLED", True),
+        agent_max_steps=bounded_int("R_AGENT_AGENT_MAX_STEPS", "4", 1, 8),
+        agent_user_daily_tool_calls=bounded_int(
+            "R_AGENT_AGENT_USER_DAILY_TOOL_CALLS", "30", 0, 1000
+        ),
+        web_search_provider=web_search_provider,
+        web_search_endpoint=web_search_endpoint,
+        web_read_enabled=_boolean("R_AGENT_WEB_READ_ENABLED", False),
     )
 
 
@@ -1105,6 +1130,35 @@ async def listen() -> None:
         amap=AmapRouteClient(amap_key) if amap_key else None,
         official_proactive_enabled=official_config.proactive_enabled,
     )
+    agent_loop: AgentLoop | None = None
+    if phase.agent_tools_enabled and client is not None:
+        tool_registry = ToolRegistry()
+        web_search = None
+        if phase.web_search_provider == "zhipu":
+            web_search = ZhipuWebSearch(
+                api_key=_value("R_AGENT_MODEL_API_KEY"),
+                base_url=_value("R_AGENT_MODEL_BASE_URL", "https://open.bigmodel.cn/api/paas/v4"),
+            )
+        elif phase.web_search_provider == "searxng":
+            web_search = SearxngSearch(endpoint=phase.web_search_endpoint)
+        tool_deps = BuiltinToolDeps(
+            memory=memory,
+            reminders=reminders,
+            group_timeline=group_timeline,
+            owner_ids=frozenset(value for value in (settings.owner_qq,) if value is not None),
+            web_search=web_search,
+            web_reader=SafePageReader() if phase.web_read_enabled else None,
+        )
+        register_builtin_tools(tool_registry, tool_deps)
+        agent_audit = ToolAudit(settings.data_dir / "agent_tools.sqlite")
+        agent_audit.initialize()
+        agent_loop = AgentLoop(
+            client=client,
+            registry=tool_registry,
+            audit=agent_audit,
+            max_steps=phase.agent_max_steps,
+            user_daily_budget=phase.agent_user_daily_tool_calls,
+        )
     brain = PersonaBrain(
         client,
         persona,
@@ -1122,6 +1176,7 @@ async def listen() -> None:
         persona_bundle=persona_bundle,
         persona_v2_gate=persona_v2_gate,
         official_owner_id=official_owner_openid,
+        agent=agent_loop,
     )
     passive_learner = (
         PassiveMemoryLearner(

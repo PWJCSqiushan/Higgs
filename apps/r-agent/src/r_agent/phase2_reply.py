@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
+from r_agent.agent_tools import ToolContext
 from r_agent.context import ContextBuilder
 from r_agent.conversation import ConversationError
 from r_agent.daily_plan import DailyPlanService
@@ -324,6 +326,7 @@ class PersonaBrain:
         persona_bundle: PersonaBundle | None = None,
         persona_v2_gate: PersonaV2Gate | None = None,
         official_owner_id: str | None = None,
+        agent: Any = None,
     ):
         self.client = client
         self.persona = persona
@@ -338,6 +341,7 @@ class PersonaBrain:
         self.persona_bundle = persona_bundle
         self.persona_v2_gate = persona_v2_gate or PersonaV2Gate()
         self.official_owner_id = official_owner_id
+        self.agent = agent
         self.persona_guard = PersonaGuard(persona_bundle) if persona_bundle is not None else None
 
         if ordinary_task_mode not in {"off", "shadow", "live"}:
@@ -777,10 +781,22 @@ class PersonaBrain:
                 )
             except (ConversationError, MemoryError, RecallError, TypeError) as exc:
                 raise ModelError("safe context construction failed") from exc
-            reply = await self.client.complete_messages(
-                messages=context.messages,
-                max_tokens=(persona_reply_mode.max_tokens if use_persona_v2 else 400),
-            )
+            reply_tokens = persona_reply_mode.max_tokens if use_persona_v2 else 400
+            if self.agent is not None and event.channel.casefold() == "qq":
+                reply = await self.agent.run(
+                    context.messages,
+                    ToolContext(
+                        event=event,
+                        principal_id=principal.principal_id,
+                        principal_role=principal.role,
+                    ),
+                    max_tokens=max(reply_tokens, 600),
+                )
+            else:
+                reply = await self.client.complete_messages(
+                    messages=context.messages,
+                    max_tokens=reply_tokens,
+                )
             if use_persona_v2:
                 return await self._guard_persona_reply(
                     reply,

@@ -195,3 +195,16 @@ def test_group_timeline_defaults_and_validation(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("R_AGENT_GROUP_TIMELINE_LIMIT", "500")
     with pytest.raises(ConfigError, match="GROUP_TIMELINE_LIMIT"):
         _phase2_settings(settings(shadow=True))
+
+
+def test_agent_tool_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    phase = _phase2_settings(settings(shadow=True))
+    assert phase.agent_tools_enabled is True and phase.web_search_provider == "off"
+    monkeypatch.setenv("R_AGENT_WEB_SEARCH_PROVIDER", "searxng")
+    with pytest.raises(ConfigError, match="WEB_SEARCH_ENDPOINT"):
+        _phase2_settings(settings(shadow=True))
+    monkeypatch.setenv("R_AGENT_WEB_SEARCH_ENDPOINT", "https://searx.example/search")
+    assert _phase2_settings(settings(shadow=True)).web_search_provider == "searxng"
+    monkeypatch.setenv("R_AGENT_WEB_SEARCH_PROVIDER", "google")
+    with pytest.raises(ConfigError):
+        _phase2_settings(settings(shadow=True))

@@ -130,9 +130,19 @@ class FakeNapCat:
 class RecordingModel:
     """Fake OpenAI-compatible client returning scripted replies."""
 
-    def __init__(self, replies: list[str] | None = None, *, responder: Any = None) -> None:
+    def __init__(
+        self,
+        replies: list[str] | None = None,
+        *,
+        responder: Any = None,
+        chat_responder: Any = None,
+    ) -> None:
         self.replies = list(replies or [])
         self.responder = responder
+        self.chat_responder = chat_responder
+        self.chat_calls: list[tuple[list[dict[str, Any]], Any]] = []
+        if chat_responder is not None:
+            self.chat = self._chat  # type: ignore[attr-defined]
         self.calls: list[tuple[dict[str, str], ...]] = []
 
     async def complete(self, *, system: str, user: str, max_tokens: int = 400) -> str:
@@ -147,6 +157,11 @@ class RecordingModel:
         if self.responder is not None:
             return self.responder(call)
         return self.replies.pop(0) if self.replies else "好的。"
+
+    async def _chat(self, *, messages: Any, tools: Any = None, max_tokens: int = 600) -> Any:
+        snapshot = [dict(item) for item in messages]
+        self.chat_calls.append((snapshot, tools))
+        return self.chat_responder(snapshot, tools)
 
 
 def live_env(monkeypatch: Any, *, data_dir: str, ws_url: str) -> None:
