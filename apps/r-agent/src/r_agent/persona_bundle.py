@@ -319,6 +319,9 @@ class PersonaV2Gate:
     enabled: bool = False
     ordinary_private_enabled: bool = False
     group_enabled: bool = False
+    # Higgs 3.0: NapCat (channel "qq") is the main channel; Persona applies to
+    # every whitelisted private chat and group there.
+    napcat_enabled: bool = False
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> PersonaV2Gate:
@@ -332,12 +335,19 @@ class PersonaV2Gate:
             values.get("R_AGENT_PERSONA_V2_GROUP_ENABLED", ""),
             name="R_AGENT_PERSONA_V2_GROUP_ENABLED",
         )
-        if (ordinary or group) and not enabled:
+        napcat_raw = values.get("R_AGENT_PERSONA_V2_NAPCAT_ENABLED", "")
+        napcat = (
+            _parse_persona_flag(napcat_raw, name="R_AGENT_PERSONA_V2_NAPCAT_ENABLED")
+            if napcat_raw.strip()
+            else enabled
+        )
+        if (ordinary or group or (napcat and napcat_raw.strip())) and not enabled:
             raise PersonaBundleError("Persona surface gates require R_AGENT_PERSONA_V2_ENABLED")
         return cls(
             enabled=enabled,
             ordinary_private_enabled=ordinary,
             group_enabled=group,
+            napcat_enabled=napcat,
         )
 
     def allows(
@@ -351,7 +361,11 @@ class PersonaV2Gate:
     ) -> bool:
         """Return true only for a separately enabled, already-authorized surface."""
 
-        if not self.enabled or channel.casefold() != "qq_official":
+        if not self.enabled:
+            return False
+        if channel.casefold() == "qq":
+            return self.napcat_enabled and principal_role.casefold() in {"owner", "user"}
+        if channel.casefold() != "qq_official":
             return False
         surface = conversation_kind.casefold()
         role = principal_role.casefold()

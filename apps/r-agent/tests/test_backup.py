@@ -51,7 +51,8 @@ def test_all_runtime_databases_can_be_verified_and_restored(tmp_path: Path) -> N
         retention=3,
     )
     snapshot = manager.create("all-runtime-stores-test")
-    assert len(BackupManager.DATABASE_NAMES) == 13
+    assert len(BackupManager.DATABASE_NAMES) == 16
+    assert "inner_life.sqlite" in BackupManager.DATABASE_NAMES
     assert "risk_ledger.sqlite" in BackupManager.DATABASE_NAMES
     assert "agenda.sqlite" in BackupManager.DATABASE_NAMES
     assert "skills.sqlite" in BackupManager.DATABASE_NAMES

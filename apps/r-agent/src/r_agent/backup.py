@@ -37,6 +37,10 @@ class BackupManager:
         "transport.sqlite",
         "tool_audit.sqlite",
         "official_processing.sqlite",
+        # Higgs 3.0 long-lived stores (the group timeline is short-term and excluded).
+        "qzone.sqlite",
+        "inner_life.sqlite",
+        "agent_tools.sqlite",
     )
 
     def __init__(

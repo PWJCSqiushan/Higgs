@@ -135,3 +135,14 @@ async def test_caption_and_multi_bubble_end_to_end(
     assert second["params"]["message"] == "它是不是又踩你键盘了"
     overview = napcat.sent("send_private_msg")[0]["params"]["message"]
     assert "Higgs 3.0 总览" in overview and "看图：开" in overview
+
+
+async def test_caption_falls_back_to_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = []
+    monkeypatch.setattr(VisionCaptioner, "_fetch_data_url", lambda self, url: None)
+    monkeypatch.setattr(VisionCaptioner, "_ask", lambda self, ref: seen.append(ref) or "猫")
+    captioner = VisionCaptioner(base_url="https://v", model="m", api_key="k")
+    assert await captioner.caption("https://cdn.example/x") == "猫"
+    assert seen == ["https://cdn.example/x"]
+    captioner.url_fallback = False
+    assert await captioner.caption("https://cdn.example/y") is None

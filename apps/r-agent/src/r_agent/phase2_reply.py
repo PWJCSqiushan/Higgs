@@ -810,7 +810,7 @@ class PersonaBrain:
                         principal_id=principal.principal_id,
                         principal_role=principal.role,
                     ),
-                    max_tokens=max(reply_tokens, 600),
+                    max_tokens=max(reply_tokens, 400),
                 )
             else:
                 reply = await self.client.complete_messages(
