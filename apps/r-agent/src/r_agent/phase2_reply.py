@@ -328,6 +328,7 @@ class PersonaBrain:
         official_owner_id: str | None = None,
         agent: Any = None,
         qzone: Any = None,
+        owner_async_commands: tuple[tuple[str, Any], ...] = (),
     ):
         self.client = client
         self.persona = persona
@@ -344,6 +345,10 @@ class PersonaBrain:
         self.official_owner_id = official_owner_id
         self.agent = agent
         self.qzone = qzone
+        commands = list(owner_async_commands)
+        if qzone is not None:
+            commands.append(("/higgs qzone", qzone.handle_command))
+        self.owner_async_commands = tuple(commands)
         self.persona_guard = PersonaGuard(persona_bundle) if persona_bundle is not None else None
 
         if ordinary_task_mode not in {"off", "shadow", "live"}:
@@ -745,13 +750,11 @@ class PersonaBrain:
                         )
                 except ReminderError as exc:
                     return f"\u63d0\u9192\u6ca1\u6709\u521b\u5efa\uff1a{exc}"
-            if (
-                not official_channel
-                and self.qzone is not None
-                and principal.role == "owner"
-                and clean.casefold().startswith("/higgs qzone")
-            ):
-                return await self.qzone.handle_command(clean)
+            if not official_channel and principal.role == "owner":
+                lowered = clean.casefold()
+                for prefix, handler in self.owner_async_commands:
+                    if lowered == prefix or lowered.startswith(prefix + " "):
+                        return await handler(clean)
             if not official_channel and self.owner_commands is not None:
                 command_reply = await asyncio.to_thread(
                     self.owner_commands.handle,

@@ -4,6 +4,7 @@
 # The virtualenv lives outside the repo (default /tmp/higgs-venv) so synced
 # folders never receive thousands of site-packages files.
 set -euo pipefail
+# NB: callers should check the exit status; do not pipe this script into tail in && chains.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-/tmp/higgs-venv}"
