@@ -100,3 +100,18 @@ def test_private_events_ignore_timeline(tmp_path: Path) -> None:
     context = _builder(tmp_path, timeline).build(private, principal_id="p")
     assert "# 群聊近况" not in context.messages[0]["content"]
     assert context.messages[-1]["content"] == "你好"
+
+
+def test_context_providers_are_rendered_and_failures_ignored(tmp_path: Path) -> None:
+    builder = _builder(tmp_path, None)
+
+    def good(_event, _principal):
+        return ("你最近的心情", ["- 心情：平静"])
+
+    def broken(_event, _principal):
+        raise RuntimeError("boom")
+
+    builder.context_providers = (good, broken, lambda e, p: None)
+    current = _event("4", "800002", "小红", "在吗", 6)
+    system = builder.build(current, principal_id="p").messages[0]["content"]
+    assert "# 你最近的心情" in system and "- 心情：平静" in system

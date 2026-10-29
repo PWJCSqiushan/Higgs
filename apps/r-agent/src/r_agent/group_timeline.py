@@ -303,6 +303,47 @@ class GroupTimeline:
             ).fetchone()
         return int(row[0]) if row and row[0] is not None else 0
 
+    def active_groups(self, *, since_ms: int) -> list[tuple[str, str, str]]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT channel, account_id, group_id FROM group_timeline"
+                " WHERE occurred_at_ms >= ?",
+                (since_ms,),
+            ).fetchall()
+        return [(str(a), str(b), str(c)) for a, b, c in rows]
+
+    def entries_between(
+        self,
+        *,
+        channel: str,
+        account_id: str,
+        group_id: str,
+        since_ms: int,
+        until_ms: int,
+        limit: int = 200,
+    ) -> list[TimelineEntry]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM group_timeline
+                WHERE channel = ? AND account_id = ? AND group_id = ?
+                  AND occurred_at_ms >= ? AND occurred_at_ms < ?
+                ORDER BY occurred_at_ms DESC, id DESC LIMIT ?
+                """,
+                (channel, account_id, group_id, since_ms, until_ms, limit),
+            ).fetchall()
+        return [self._row(row) for row in reversed(rows)]
+
+    def self_messages_between(self, *, since_ms: int, until_ms: int, limit: int = 60) -> list[str]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT text FROM group_timeline WHERE is_self = 1"
+                " AND occurred_at_ms >= ? AND occurred_at_ms < ?"
+                " ORDER BY occurred_at_ms DESC LIMIT ?",
+                (since_ms, until_ms, limit),
+            ).fetchall()
+        return [str(row[0]) for row in reversed(rows)]
+
     def as_quoted(self, entry: TimelineEntry) -> QuotedMessage:
         return QuotedMessage(
             message_id=entry.message_id,

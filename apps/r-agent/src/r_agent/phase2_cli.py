@@ -42,6 +42,7 @@ from r_agent.group_timeline import GroupTimeline
 from r_agent.health import HealthReporter
 from r_agent.identity import IdentityStore, Principal
 from r_agent.ingest import IngestResult, IngestService
+from r_agent.inner_life import InnerLife, InnerLifeScheduler, InnerLifeStore
 from r_agent.journal import Journal
 from r_agent.memory import MemoryKind, MemoryStore
 from r_agent.memory_v2 import MemoryObservationStore, MemoryReconciler
@@ -292,6 +293,10 @@ class Phase2Settings:
     qzone_browse_interval_minutes: int = 180
     qzone_daily_likes: int = 20
     qzone_daily_comments: int = 6
+    inner_life_enabled: bool = True
+    inner_diary_hour: int = 23
+    inner_diary_minute: int = 30
+    inner_impression_interval_minutes: int = 60
 
 
 def _phase2_settings(settings: Settings) -> Phase2Settings:
@@ -416,6 +421,14 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
     qzone_visibility = _value("R_AGENT_QZONE_VISIBILITY", "1")
     if qzone_visibility not in {"1", "4", "64"}:
         raise ConfigError("R_AGENT_QZONE_VISIBILITY must be 1, 4, or 64")
+    diary_time = _value("R_AGENT_INNER_DIARY_TIME", "23:30")
+    try:
+        diary_hour_text, diary_minute_text = diary_time.split(":", 1)
+        diary_hour, diary_minute = int(diary_hour_text), int(diary_minute_text)
+    except ValueError as exc:
+        raise ConfigError("R_AGENT_INNER_DIARY_TIME must look like 23:30") from exc
+    if not (0 <= diary_hour <= 23 and 0 <= diary_minute <= 59):
+        raise ConfigError("R_AGENT_INNER_DIARY_TIME must look like 23:30")
     group_reply_quote = _value("R_AGENT_GROUP_REPLY_QUOTE", "auto").casefold()
     if group_reply_quote not in {"off", "auto", "always"}:
         raise ConfigError("R_AGENT_GROUP_REPLY_QUOTE must be off, auto, or always")
@@ -512,6 +525,12 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         ),
         qzone_daily_likes=bounded_int("R_AGENT_QZONE_DAILY_LIKES", "20", 0, 100),
         qzone_daily_comments=bounded_int("R_AGENT_QZONE_DAILY_COMMENTS", "6", 0, 30),
+        inner_life_enabled=_boolean("R_AGENT_INNER_LIFE_ENABLED", True),
+        inner_diary_hour=diary_hour,
+        inner_diary_minute=diary_minute,
+        inner_impression_interval_minutes=bounded_int(
+            "R_AGENT_INNER_IMPRESSION_INTERVAL_MINUTES", "60", 10, 1440
+        ),
     )
 
 
@@ -1072,6 +1091,30 @@ async def listen() -> None:
             return ("你最近在 QQ 空间发过的说说（你自己的经历）", lines) if lines else None
 
         context_providers.append(qzone_context)
+    inner_life: InnerLife | None = None
+    if phase.inner_life_enabled and client is not None:
+        inner_store = InnerLifeStore(settings.data_dir / "inner_life.sqlite")
+        inner_store.initialize()
+
+        async def inner_extra_material() -> str:
+            if qzone_service is None:
+                return ""
+            posts = qzone_service.context_lines(2)
+            return ("今天前后发过的说说：\n" + "\n".join(posts)) if posts else ""
+
+        inner_life = InnerLife(
+            store=inner_store,
+            timeline=group_timeline,
+            client=client,
+            persona=persona_bundle.render() if persona_bundle is not None else persona,
+            owner_ids=frozenset(value for value in (settings.owner_qq,) if value is not None),
+            safety=safety,
+            extra_material=inner_extra_material,
+        )
+        context_providers.append(inner_life.self_context)
+        context_providers.append(inner_life.people_context)
+        if qzone_service is not None:
+            qzone_service.material = inner_life.material
     context_builder = ContextBuilder(
         context_providers=tuple(context_providers),
         history=history,
@@ -1272,6 +1315,9 @@ async def listen() -> None:
         official_owner_id=official_owner_openid,
         agent=agent_loop,
         qzone=qzone_service,
+        owner_async_commands=(
+            (("/higgs inner", inner_life.handle_command),) if inner_life is not None else ()
+        ),
     )
     passive_learner = (
         PassiveMemoryLearner(
@@ -1932,6 +1978,19 @@ async def listen() -> None:
         )
         qzone_task = asyncio.create_task(qzone_scheduler.run_forever())
         qzone_task.add_done_callback(
+            lambda task: task.exception() if not task.cancelled() else None
+        )
+    inner_task: asyncio.Task[None] | None = None
+    if inner_life is not None and phase.mode == "live":
+        inner_task = asyncio.create_task(
+            InnerLifeScheduler(
+                inner_life,
+                impression_interval_minutes=phase.inner_impression_interval_minutes,
+                diary_hour=phase.inner_diary_hour,
+                diary_minute=phase.inner_diary_minute,
+            ).run_forever()
+        )
+        inner_task.add_done_callback(
             lambda task: task.exception() if not task.cancelled() else None
         )
     reconcile_task = asyncio.create_task(reconciler.run_periodically(interval_seconds=900))
