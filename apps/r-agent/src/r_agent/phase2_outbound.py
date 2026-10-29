@@ -8,7 +8,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from r_agent.events import ConversationKind, InboundEvent
+from r_agent.events import ConversationKind, InboundEvent, QuotedMessage
+from r_agent.onebot import OneBotParseError, clean_display_name, parse_message_event
 
 
 class OutboundError(RuntimeError):
@@ -64,11 +65,38 @@ async def _wait_for_action_response(socket: Any, *, echo: str) -> Mapping[str, o
     raise OutboundError("OneBot action acknowledgement timed out")
 
 
+def _group_reply_message(
+    text: str, *, quote_message_id: str | None, at_sender_id: str | None
+) -> str | list[dict[str, object]]:
+    """Build a OneBot message: plain text, or segments with reply/at prefixes."""
+    if quote_message_id is None and at_sender_id is None:
+        return text
+    segments: list[dict[str, object]] = []
+    if quote_message_id is not None:
+        if (
+            not quote_message_id.isascii()
+            or not quote_message_id.isdigit()
+            or len(quote_message_id) > 20
+        ):
+            raise OutboundError("quote target is invalid", delivery_unknown=False)
+        segments.append({"type": "reply", "data": {"id": quote_message_id}})
+    if at_sender_id is not None:
+        if not at_sender_id.isascii() or not at_sender_id.isdigit() or len(at_sender_id) > 20:
+            raise OutboundError("mention target is invalid", delivery_unknown=False)
+        segments.append({"type": "at", "data": {"qq": at_sender_id}})
+        text = " " + text
+    segments.append({"type": "text", "data": {"text": text}})
+    return segments
+
+
 async def send_onebot_reply(
     ws_url: str,
     token: str | None,
     event: InboundEvent,
     text: str,
+    *,
+    quote: bool = False,
+    mention: bool = False,
 ) -> str:
     import websockets
 
@@ -90,7 +118,11 @@ async def send_onebot_reply(
             "send_group_msg",
             {
                 "group_id": int(group_id),
-                "message": text,
+                "message": _group_reply_message(
+                    text,
+                    quote_message_id=event.message_id if quote else None,
+                    at_sender_id=event.sender_id if mention else None,
+                ),
             },
         )
     headers = {"Authorization": f"Bearer {token}"} if token else None
@@ -159,6 +191,65 @@ async def get_onebot_message_sender(
     if not normalized.isascii() or not normalized.isdigit() or len(normalized) > 20:
         raise OutboundError("OneBot get_msg sender was malformed")
     return normalized
+
+
+async def get_onebot_quoted_message(
+    ws_url: str,
+    token: str | None,
+    message_id: str,
+) -> QuotedMessage:
+    """Fetch a quoted message via ``get_msg`` and normalize it as untrusted data."""
+    if not message_id.isascii() or not message_id.isdigit() or len(message_id) > 20:
+        raise OutboundError("invalid quoted message id")
+    response = await call_onebot_action(
+        ws_url,
+        token,
+        action="get_msg",
+        params={"message_id": int(message_id)},
+        echo=f"r-agent-phase2:get-quote:{message_id}",
+    )
+    data = response.get("data")
+    if not isinstance(data, Mapping):
+        raise OutboundError("OneBot get_msg data was malformed")
+    sender = data.get("sender") if isinstance(data.get("sender"), Mapping) else {}
+    raw_user = sender.get("user_id", data.get("user_id"))
+    if isinstance(raw_user, bool):
+        raise OutboundError("OneBot get_msg sender was malformed")
+    user_id = str(raw_user)
+    if not user_id.isascii() or not user_id.isdigit() or len(user_id) > 20:
+        raise OutboundError("OneBot get_msg sender was malformed")
+    name = clean_display_name(sender.get("card")) or clean_display_name(sender.get("nickname"))
+    text = ""
+    message = data.get("message")
+    if isinstance(message, list):
+        try:
+            parsed = parse_message_event(
+                {
+                    "post_type": "message",
+                    "message_type": "group",
+                    "time": data.get("time") or 1,
+                    "self_id": data.get("self_id") or 1,
+                    "group_id": data.get("group_id") or 1,
+                    "user_id": user_id,
+                    "message_id": message_id,
+                    "message": message,
+                }
+            )
+            text = parsed.timeline_text
+        except OneBotParseError:
+            text = ""
+    # ``raw_message`` is deliberately ignored: its CQ codes may embed media URLs.
+    text = " ".join(text.split())[:1_000]
+    if not text:
+        text = "[无法显示的消息]"
+    self_id = data.get("self_id")
+    return QuotedMessage(
+        message_id=message_id,
+        sender_id=user_id,
+        sender_name=name,
+        text=text,
+        is_self=self_id is not None and str(self_id) == user_id,
+    )
 
 
 async def call_onebot_action(

@@ -94,14 +94,28 @@ class OneBotAdapter:
             provider_message_id=provider_id,
         )
 
-    async def send_reply(self, event: InboundEvent, text: str) -> DeliveryReceipt:
-        """Send a passive reply through the shared adapter boundary."""
+    async def send_reply(
+        self,
+        event: InboundEvent,
+        text: str,
+        *,
+        quote: bool = False,
+        mention: bool = False,
+    ) -> DeliveryReceipt:
+        """Send a passive reply; group replies may quote and/or @ the asker."""
 
         if event.channel.casefold() != self.channel:
             raise TransportUnavailable("OneBot event channel mismatch")
         idempotency_key = f"reply:{event.channel}:{event.account_id}:{event.message_id}"
         try:
-            provider_id = await send_onebot_reply(self.ws_url, self.token, event, text)
+            provider_id = await send_onebot_reply(
+                self.ws_url,
+                self.token,
+                event,
+                text,
+                quote=quote and event.conversation_kind is ConversationKind.GROUP,
+                mention=mention and event.conversation_kind is ConversationKind.GROUP,
+            )
         except OutboundError as exc:
             return DeliveryReceipt(
                 channel=self.channel,

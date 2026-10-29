@@ -174,3 +174,24 @@ def test_group_memory_defaults_off_and_requires_explicit_opt_in(
     monkeypatch.setenv("R_AGENT_GROUP_MEMORY_ENABLED", "maybe")
     with pytest.raises(ConfigError, match="must be a boolean"):
         _phase2_settings(settings(shadow=True))
+
+
+def test_group_timeline_defaults_and_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    phase = _phase2_settings(settings(shadow=True))
+    assert phase.group_timeline_enabled is True
+    assert phase.group_timeline_limit == 30
+    assert phase.group_reply_quote == "auto"
+    assert phase.group_reply_mention is False
+    monkeypatch.setenv("R_AGENT_GROUP_REPLY_QUOTE", "always")
+    monkeypatch.setenv("R_AGENT_GROUP_REPLY_MENTION", "true")
+    monkeypatch.setenv("R_AGENT_GROUP_TIMELINE_LIMIT", "50")
+    phase = _phase2_settings(settings(shadow=True))
+    assert (phase.group_reply_quote, phase.group_reply_mention) == ("always", True)
+    assert phase.group_timeline_limit == 50
+    monkeypatch.setenv("R_AGENT_GROUP_REPLY_QUOTE", "sometimes")
+    with pytest.raises(ConfigError, match="GROUP_REPLY_QUOTE"):
+        _phase2_settings(settings(shadow=True))
+    monkeypatch.setenv("R_AGENT_GROUP_REPLY_QUOTE", "off")
+    monkeypatch.setenv("R_AGENT_GROUP_TIMELINE_LIMIT", "500")
+    with pytest.raises(ConfigError, match="GROUP_TIMELINE_LIMIT"):
+        _phase2_settings(settings(shadow=True))

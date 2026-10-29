@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
-from r_agent.access import IngressPolicy
+from r_agent.access import IngressDecision, IngressPolicy
 from r_agent.agenda import AgendaStore
 from r_agent.amap import AmapRouteClient
 from r_agent.backup import BackupError, BackupManager
@@ -34,6 +34,7 @@ from r_agent.group_memory import (
     GroupMemorySource,
     ModelGroupMemoryExtractor,
 )
+from r_agent.group_timeline import GroupTimeline
 from r_agent.health import HealthReporter
 from r_agent.identity import IdentityStore, Principal
 from r_agent.ingest import IngestResult, IngestService
@@ -75,6 +76,7 @@ from r_agent.phase2_outbound import (
     OutboundError,
     get_onebot_account_status,
     get_onebot_message_sender,
+    get_onebot_quoted_message,
 )
 from r_agent.phase2_reply import (
     PersonaBrain,
@@ -255,6 +257,11 @@ class Phase2Settings:
     ordinary_task_drafts_per_day: int = 10
     ordinary_task_reminders_per_day: int = 20
     ordinary_task_active_reminders: int = 10
+    group_timeline_enabled: bool = True
+    group_timeline_limit: int = 30
+    group_timeline_retention_days: int = 7
+    group_reply_quote: str = "auto"
+    group_reply_mention: bool = False
 
 
 def _phase2_settings(settings: Settings) -> Phase2Settings:
@@ -357,6 +364,9 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
     if personal_memory_mode != "off" and not personal_memory_schema_v5_enabled:
         raise ConfigError("personal-memory modes require explicit schema v5 enablement")
     group_memory_enabled = _boolean("R_AGENT_GROUP_MEMORY_ENABLED", False)
+    group_reply_quote = _value("R_AGENT_GROUP_REPLY_QUOTE", "auto").casefold()
+    if group_reply_quote not in {"off", "auto", "always"}:
+        raise ConfigError("R_AGENT_GROUP_REPLY_QUOTE must be off, auto, or always")
     backup_dir_value = _value("R_AGENT_BACKUP_DIR")
     backup_dir = (
         Path(backup_dir_value).expanduser().resolve()
@@ -423,6 +433,13 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
         ordinary_task_active_reminders=bounded_int(
             "R_AGENT_OFFICIAL_QQ_ORDINARY_TASK_ACTIVE_REMINDERS", "10", 1, 100
         ),
+        group_timeline_enabled=_boolean("R_AGENT_GROUP_TIMELINE_ENABLED", True),
+        group_timeline_limit=bounded_int("R_AGENT_GROUP_TIMELINE_LIMIT", "30", 5, 100),
+        group_timeline_retention_days=bounded_int(
+            "R_AGENT_GROUP_TIMELINE_RETENTION_DAYS", "7", 1, 90
+        ),
+        group_reply_quote=group_reply_quote,
+        group_reply_mention=_boolean("R_AGENT_GROUP_REPLY_MENTION", False),
     )
 
 
@@ -931,6 +948,14 @@ async def listen() -> None:
         max_per_minute=phase.max_per_minute,
     )
     persona = _persona_text()
+    group_timeline: GroupTimeline | None = None
+    if phase.group_timeline_enabled:
+        group_timeline = GroupTimeline(
+            settings.data_dir / "group_timeline.sqlite",
+            retention_days=phase.group_timeline_retention_days,
+        )
+        group_timeline.initialize()
+        await asyncio.to_thread(group_timeline.purge_expired)
     context_builder = ContextBuilder(
         history=history,
         memory=memory,
@@ -943,6 +968,9 @@ async def listen() -> None:
         memory_limit=phase.memory_items,
         vectors=vectors,
         history_outcome="sent" if phase.mode == "live" else "drafted",
+        group_timeline=group_timeline,
+        owner_ids=frozenset(value for value in (settings.owner_qq,) if value is not None),
+        timeline_limit=phase.group_timeline_limit,
     )
     if settings.owner_qq is None:
         raise ConfigError("chat operator control requires R_AGENT_OWNER_QQ")
@@ -1134,13 +1162,48 @@ async def listen() -> None:
                 idempotency_key=(f"reply:{event.channel}:{event.account_id}:{event.message_id}"),
                 reply_message_id=event.message_id,
             )
-        return await onebot_adapter.send_reply(event, text)
+        quote = False
+        if event.conversation_kind is ConversationKind.GROUP:
+            if phase.group_reply_quote == "always":
+                quote = True
+            elif phase.group_reply_quote == "auto" and group_timeline is not None:
+                # Quote when other members spoke after the question, so the
+                # answer visibly lands on the right person.
+                try:
+                    quote = (
+                        await asyncio.to_thread(
+                            group_timeline.others_after, event, sender_id=event.sender_id
+                        )
+                        > 0
+                    )
+                except Exception as exc:
+                    _log.warning("group_timeline_quote_check_failed type=%s", type(exc).__name__)
+        return await onebot_adapter.send_reply(
+            event,
+            text,
+            quote=quote,
+            mention=phase.group_reply_mention,
+        )
 
     async def observe_sent_reply(
         event: InboundEvent,
         text: str,
         receipt: DeliveryReceipt,
     ) -> None:
+        if (
+            group_timeline is not None
+            and event.channel == "qq"
+            and event.conversation_kind is ConversationKind.GROUP
+        ):
+            try:
+                await asyncio.to_thread(
+                    group_timeline.record_outbound,
+                    event,
+                    text=text,
+                    provider_message_id=receipt.provider_message_id,
+                )
+            except Exception as exc:
+                _log.warning("group_timeline_outbound_failed type=%s", type(exc).__name__)
         if self_memory is None or phase.self_memory_mode == "off":
             return
         try:
@@ -1562,6 +1625,41 @@ async def listen() -> None:
     )
     operator_control.attach_debouncer(debouncer)
 
+    async def resolve_group_quote(event: InboundEvent) -> InboundEvent:
+        """Attach the quoted message (timeline first, then NapCat ``get_msg``)."""
+        if group_timeline is None or event.group_id is None or event.reply_message_id is None:
+            return event
+        quoted = None
+        try:
+            entry = await asyncio.to_thread(
+                group_timeline.get,
+                channel=event.channel,
+                account_id=event.account_id,
+                group_id=event.group_id,
+                message_id=event.reply_message_id,
+            )
+            if entry is not None:
+                quoted = group_timeline.as_quoted(entry)
+        except Exception as exc:
+            _log.warning("group_timeline_quote_lookup_failed type=%s", type(exc).__name__)
+        if quoted is None:
+            try:
+                quoted = await get_onebot_quoted_message(
+                    settings.onebot_ws_url,
+                    settings.onebot_access_token,
+                    event.reply_message_id,
+                )
+            except OutboundError:
+                _log.warning("phase2_reply_reference_lookup_failed")
+                return event
+        return replace(
+            event,
+            quoted=quoted,
+            replied_to_account=event.replied_to_account
+            or quoted.is_self
+            or quoted.sender_id == event.account_id,
+        )
+
     async def route_inbound_event(
         event: InboundEvent,
         *,
@@ -1569,6 +1667,14 @@ async def listen() -> None:
     ) -> None:
         owner_ids = {value for value in (settings.owner_qq, official_owner_openid) if value}
         if (
+            resolve_onebot_reply
+            and group_timeline is not None
+            and event.conversation_kind is ConversationKind.GROUP
+            and event.group_id in settings.allowed_groups
+            and event.reply_message_id is not None
+        ):
+            event = await resolve_group_quote(event)
+        elif (
             resolve_onebot_reply
             and event.group_id in phase.natural_trigger_groups
             and event.reply_message_id is not None
@@ -1585,6 +1691,16 @@ async def listen() -> None:
                 if replied_sender == event.account_id:
                     event = replace(event, replied_to_account=True)
         result = await asyncio.to_thread(service.ingest, event)
+        if (
+            group_timeline is not None
+            and event.channel == "qq"
+            and event.conversation_kind is ConversationKind.GROUP
+            and result.decision is IngressDecision.ACCEPT
+        ):
+            try:
+                await asyncio.to_thread(group_timeline.record_inbound, event)
+            except Exception as exc:
+                _log.warning("group_timeline_inbound_failed type=%s", type(exc).__name__)
         learning_allowed = False
         if result.stored:
             learning_allowed = await asyncio.to_thread(
