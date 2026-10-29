@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 import time
 from collections import Counter
@@ -394,7 +395,8 @@ class InnerLife:
         for item in people if isinstance(people, list) else []:
             if not isinstance(item, dict):
                 continue
-            alias = _single_line(item.get("tag"), 8).lstrip("#")
+            match = re.search(r"([0-9a-f]{4})\W*$", _single_line(item.get("tag"), 48))
+            alias = match.group(1) if match else ""
             sid = alias_to_sender.get(alias)
             notes = _single_line(item.get("impression"), _IMPRESSION_LIMIT)
             if sid is None or not notes or not self._safe(notes):

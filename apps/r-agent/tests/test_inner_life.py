@@ -62,7 +62,7 @@ async def test_impressions_update_only_frequent_speakers_and_filter_privacy(tmp_
     reply = json.dumps(
         {
             "people": [
-                {"tag": alias, "impression": "程序员，常熬夜修 bug，说话直接"},
+                {"tag": f"小明#{alias}", "impression": "程序员，常熬夜修 bug，说话直接"},
                 {"tag": red, "impression": "不该出现"},
             ]
         },

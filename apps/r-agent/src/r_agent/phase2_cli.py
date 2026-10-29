@@ -952,7 +952,7 @@ async def listen() -> None:
     official_private_openids = official_config.active_private_openids
     official_group_openids = official_config.active_group_openids
     persona_v2_gate, persona_bundle = _persona_v2()
-    if persona_v2_gate.enabled and official_owner_openid is None:
+    if persona_v2_gate.enabled and official_config.enabled and official_owner_openid is None:
         raise ConfigError("Persona V2 rollout requires the bound official owner OpenID")
     if persona_v2_gate.ordinary_private_enabled and not official_config.ordinary_private_enabled:
         raise ConfigError("ordinary Persona V2 requires the ordinary official C2C gate")

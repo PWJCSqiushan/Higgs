@@ -59,6 +59,7 @@ class VisionCaptioner:
     daily_limit: int = 100
     timeout_seconds: float = 30.0
     fetcher: SafeNetworkClient | None = None
+    url_fallback: bool = True
     _used: deque[float] = field(default_factory=deque)
 
     def _fetch_data_url(self, url: str) -> str | None:
@@ -131,7 +132,11 @@ class VisionCaptioner:
 
         def perform() -> str | None:
             data_url = self._fetch_data_url(url)
-            return self._ask(data_url) if data_url else None
+            if data_url:
+                return self._ask(data_url)
+            # The QQ CDN sometimes refuses non-client downloads; let the vision
+            # provider fetch the (short-lived, already https) URL itself.
+            return self._ask(url) if self.url_fallback and url.startswith("https://") else None
 
         return await asyncio.to_thread(perform)
 
