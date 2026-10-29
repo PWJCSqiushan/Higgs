@@ -80,6 +80,7 @@ from r_agent.persona_evolution import (
     ShadowRunState,
 )
 from r_agent.phase2_outbound import (
+    QZONE_RESPONSE_BYTES,
     OutboundError,
     call_onebot_action,
     get_onebot_account_status,
@@ -1127,7 +1128,8 @@ async def listen() -> None:
                 action=action,
                 params=params,
                 echo=f"r-agent:qzone:{action}:{uuid.uuid4().hex[:12]}",
-                max_size=4 * 1024 * 1024,
+                max_size=QZONE_RESPONSE_BYTES,
+                timeout_seconds=20.0,
             )
 
         async def qzone_notify_owner(text: str) -> None:

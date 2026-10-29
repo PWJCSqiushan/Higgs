@@ -45,16 +45,46 @@ def _message_id_from_response(response: Mapping[str, object]) -> str:
     return normalized
 
 
-async def _wait_for_action_response(socket: Any, *, echo: str) -> Mapping[str, object]:
-    """Ignore unrelated events until the response carrying our echo arrives."""
+DEFAULT_RESPONSE_BYTES = 64 * 1024
+# QZone feed pages are ~200 KB today; NapCat itself allows 8 MiB upstream.
+QZONE_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
+def _frame_bytes(raw: str | bytes) -> int:
+    return len(raw) if isinstance(raw, bytes) else len(raw.encode("utf-8"))
+
+
+async def _wait_for_action_response(
+    socket: Any,
+    *,
+    echo: str,
+    max_bytes: int = DEFAULT_RESPONSE_BYTES,
+    timeout_seconds: float = 10.0,
+) -> Mapping[str, object]:
+    """Ignore unrelated events until the response carrying our echo arrives.
+
+    ``max_bytes`` is measured in UTF-8 bytes, matching the WebSocket
+    ``max_size`` the caller used.  An oversized frame that carries our echo
+    fails fast with an explicit error instead of silently timing out.
+    """
+    if max_bytes < 1024:
+        raise ValueError("max_bytes is too small")
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + 10.0
+    deadline = loop.time() + timeout_seconds
+    marker = json.dumps(echo, ensure_ascii=False)
     for _ in range(64):
         remaining = deadline - loop.time()
         if remaining <= 0:
             break
         raw = await asyncio.wait_for(socket.recv(), timeout=remaining)
-        if not isinstance(raw, (str, bytes)) or len(raw) > 64 * 1024:
+        if not isinstance(raw, (str, bytes)):
+            continue
+        if _frame_bytes(raw) > max_bytes:
+            text = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+            if marker in text:
+                raise OutboundError(
+                    "OneBot action response exceeded its size budget", delivery_unknown=False
+                )
             continue
         try:
             response = json.loads(raw)
@@ -259,9 +289,13 @@ async def call_onebot_action(
     action: str,
     params: Mapping[str, object],
     echo: str,
-    max_size: int = 64 * 1024,
+    max_size: int = DEFAULT_RESPONSE_BYTES,
+    timeout_seconds: float = 10.0,
 ) -> Mapping[str, object]:
-    """Run one bounded action on a separate socket and validate acknowledgement."""
+    """Run one bounded action on a separate socket and validate acknowledgement.
+
+    ``max_size`` (bytes) bounds both the WebSocket frame and the response reader.
+    """
     import websockets
 
     headers = {"Authorization": f"Bearer {token}"} if token else None
@@ -270,12 +304,16 @@ async def call_onebot_action(
         async with websockets.connect(
             ws_url,
             additional_headers=headers,
-            max_size=max_size,
+            # Small headroom so an over-budget frame reaches the reader and gets
+            # an explicit error instead of a bare close code 1009.
+            max_size=max_size + 64 * 1024,
             max_queue=64,
             close_timeout=5,
         ) as socket:
             await socket.send(json.dumps(payload, ensure_ascii=False))
-            response = await _wait_for_action_response(socket, echo=echo)
+            response = await _wait_for_action_response(
+                socket, echo=echo, max_bytes=max_size, timeout_seconds=timeout_seconds
+            )
     except OutboundError:
         raise
     except Exception as exc:
