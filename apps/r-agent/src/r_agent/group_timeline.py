@@ -232,6 +232,34 @@ class GroupTimeline:
             )
         )
 
+    def record_self(
+        self,
+        *,
+        channel: str,
+        account_id: str,
+        group_id: str,
+        text: str,
+        provider_message_id: str | None,
+        now_ms: int | None = None,
+    ) -> bool:
+        """Record an unprompted (proactive) message Higgs sent to a group."""
+        timestamp = int(time.time() * 1000) if now_ms is None else now_ms
+        return self._insert(
+            TimelineEntry(
+                channel=channel,
+                account_id=account_id,
+                group_id=group_id,
+                message_id=provider_message_id or f"self:proactive:{timestamp}",
+                sender_id=account_id,
+                sender_name="Higgs",
+                is_self=True,
+                text=text,
+                reply_to_message_id=None,
+                mentioned_self=False,
+                occurred_at_ms=timestamp,
+            )
+        )
+
     def get(
         self, *, channel: str, account_id: str, group_id: str, message_id: str
     ) -> TimelineEntry | None:

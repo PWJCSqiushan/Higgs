@@ -16,6 +16,7 @@ from r_agent.persona_evolution import PERSONA_SCOPE_ID, SelfMemoryService
 from r_agent.persona_guard import PersonaReplyMode
 from r_agent.recall import RecallLedger
 from r_agent.vector_memory import MemoryVectorStore
+from r_agent.willingness import INTERJECTION_GUIDE
 
 
 @dataclass(frozen=True, slots=True)
@@ -364,6 +365,7 @@ class ContextBuilder:
                 *principal_memory_lines,
                 "",
                 *self._provider_sections(event, principal_id),
+                *(["", INTERJECTION_GUIDE] if event.interjection else []),
                 "",
                 f"当前场景：{scene}",
                 f"当前对话身份：{role_label}",

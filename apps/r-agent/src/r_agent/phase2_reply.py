@@ -152,6 +152,8 @@ class ReplyDecision(StrEnum):
     DRAFTED = "drafted"
     SENT = "sent"
     MODEL_FAILED = "model_failed"
+    SKIPPED = "skipped"
+    REACTED = "reacted"
     SEND_FAILED = "send_failed"
 
 
@@ -230,14 +232,20 @@ class ReplyPolicy:
             owner_reminder = _owner_reminder_message(event, self.owner_ids)
             if event.group_id in self.natural_trigger_groups:
                 natural_triggered = (
-                    event.mentioned
+                    event.interjection
+                    or event.mentioned
                     or event.replied_to_account
                     or any(term in event.text.casefold() for term in self.natural_trigger_terms)
                     or owner_reminder
                 )
                 if not natural_triggered:
                     return ReplyDecision.GROUP_TRIGGER_REQUIRED
-            elif self.require_mention and not event.mentioned and not owner_reminder:
+            elif (
+                self.require_mention
+                and not event.mentioned
+                and not owner_reminder
+                and not event.interjection
+            ):
                 return ReplyDecision.MENTION_REQUIRED
         if owner_command:
             return ReplyDecision.DRAFTED if self.mode == "draft" else ReplyDecision.SENT
