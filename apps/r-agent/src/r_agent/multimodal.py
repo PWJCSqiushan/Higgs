@@ -45,6 +45,50 @@ def split_bubbles(text: str, *, max_bubbles: int = 3, max_chars: int = 1_500) ->
     return bubbles
 
 
+@dataclass(slots=True)
+class RecentImageCache:
+    """In-memory, short-lived record of each sender's last image message.
+
+    Lets "send the picture, then @Higgs in a separate message" work.  URLs
+    never leave process memory and expire after ``max_age_seconds``.
+    """
+
+    max_age_seconds: float = 180.0
+    max_entries: int = 500
+    _items: dict[tuple[str, str, str], tuple[float, str, tuple[str, ...]]] = field(
+        default_factory=dict
+    )
+
+    @staticmethod
+    def _key(event: InboundEvent) -> tuple[str, str, str]:
+        return (event.channel, event.conversation_id, event.sender_id)
+
+    def remember(self, event: InboundEvent, *, now: float | None = None) -> None:
+        if not event.image_urls:
+            return
+        stamp = time.monotonic() if now is None else now
+        if len(self._items) >= self.max_entries:
+            oldest = min(self._items, key=lambda k: self._items[k][0])
+            self._items.pop(oldest, None)
+        self._items[self._key(event)] = (stamp, event.message_id, event.image_urls[:2])
+
+    def take(
+        self, event: InboundEvent, *, now: float | None = None
+    ) -> tuple[str, tuple[str, ...]] | None:
+        """Pop the sender's recent image (other than this message), if still fresh."""
+        item = self._items.get(self._key(event))
+        if item is None:
+            return None
+        stamp, message_id, urls = item
+        current = time.monotonic() if now is None else now
+        if message_id == event.message_id or message_id in event.merged_message_ids:
+            return None
+        self._items.pop(self._key(event), None)
+        if current - stamp > self.max_age_seconds:
+            return None
+        return message_id, urls
+
+
 def strip_breaks(text: str) -> str:
     return re.sub(r"\s*\[MSG_BREAK\]\s*", "\n", text).strip()
 
@@ -139,6 +183,53 @@ class VisionCaptioner:
             return self._ask(url) if self.url_fallback and url.startswith("https://") else None
 
         return await asyncio.to_thread(perform)
+
+    async def annotate_quoted(self, event: InboundEvent) -> tuple[InboundEvent, list[str]]:
+        """Caption images inside the message the asker quoted."""
+        from dataclasses import replace
+
+        quoted = event.quoted
+        if quoted is None or not quoted.image_urls:
+            return event, []
+        captions = [c for url in quoted.image_urls[:2] if (c := await self.caption(url))]
+        if not captions:
+            return event, []
+        text = quoted.text
+        for caption in captions:
+            if "[图片]" in text:
+                text = text.replace("[图片]", f"[图片：{caption}]", 1)
+            else:
+                text = f"{text} [图片：{caption}]".strip()
+        new_quoted = replace(quoted, text=text, image_urls=())
+        note = "，".join(captions)
+        return (
+            replace(
+                event,
+                quoted=new_quoted,
+                text=f"{event.text}\n（被引用的图片内容：{note}）",
+                display_text=f"{event.timeline_text}（被引用的图片内容：{note}）",
+            ),
+            captions,
+        )
+
+    async def annotate_recent(
+        self, event: InboundEvent, urls: tuple[str, ...]
+    ) -> tuple[InboundEvent, list[str]]:
+        """Caption an image the same person sent just before this text message."""
+        from dataclasses import replace
+
+        captions = [c for url in urls[:2] if (c := await self.caption(url))]
+        if not captions:
+            return event, []
+        note = "，".join(captions)
+        return (
+            replace(
+                event,
+                text=f"{event.text}\n（对方刚才发的图片内容：{note}）",
+                display_text=f"{event.timeline_text}（对方刚才发的图片内容：{note}）",
+            ),
+            captions,
+        )
 
     async def annotate(self, event: InboundEvent) -> tuple[InboundEvent, list[str]]:
         """Return the event with ``[图片：…]`` captions folded into its text."""

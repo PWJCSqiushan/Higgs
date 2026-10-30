@@ -66,6 +66,8 @@ class QuotedMessage:
     sender_name: str | None
     text: str
     is_self: bool = False
+    # Transient https URLs of images inside the quoted message (never persisted).
+    image_urls: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
