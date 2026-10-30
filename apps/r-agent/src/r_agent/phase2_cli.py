@@ -598,10 +598,15 @@ def _phase2_settings(settings: Settings) -> Phase2Settings:
     )
 
 
+_DEFAULT_PERSONA = "你是一个稳重、诚实、简洁的中文助手。"
+
+
 def _persona_text() -> str:
     file_value = _value("R_AGENT_PERSONA_FILE")
     if not file_value:
-        return _value("R_AGENT_PERSONA", "你是一个稳重、诚实、简洁的中文助手。")
+        # Deployments may set R_AGENT_PERSONA to an explicit empty value to
+        # disable the legacy inline persona; treat empty like unset.
+        return _value("R_AGENT_PERSONA") or _DEFAULT_PERSONA
     path = Path(file_value).expanduser().resolve()
     try:
         if not path.is_file() or path.stat().st_size > 64 * 1024:
