@@ -215,6 +215,7 @@ def register_builtin_tools(registry: ToolRegistry, deps: BuiltinToolDeps) -> Non
                     delivery_account_id=event.account_id,
                     delivery_target_id=target,
                     source_message_id=event.message_id,
+                    now_ms=int(deps.current_time().timestamp() * 1000),
                 )
             except ReminderError as exc:
                 return as_json({"error": f"提醒没有创建：{exc}"})

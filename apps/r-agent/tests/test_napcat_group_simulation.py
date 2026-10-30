@@ -108,3 +108,33 @@ async def test_group_replies_land_on_the_right_person(
     sent = _sent_messages(napcat)
     # 小红 was "interrupted" by 小明's message → quoted; the others stay plain.
     assert sent == {"答小红": "102", "答小明": None, "不客气": None}
+
+
+@pytest.mark.asyncio
+async def test_runtime_starts_with_explicitly_empty_legacy_persona(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: production Compose sets R_AGENT_PERSONA{,_FILE} to ''."""
+    (tmp_path / "sim.env").write_text("", encoding="utf-8")
+    model = RecordingModel(["在。"])
+    monkeypatch.setattr(phase2_cli, "_model_client", lambda *, required: model)
+    async with FakeNapCat() as napcat:
+        live_env(monkeypatch, data_dir=str(tmp_path), ws_url=napcat.url)
+        monkeypatch.setenv("R_AGENT_PERSONA", "")
+        monkeypatch.setenv("R_AGENT_PERSONA_FILE", "")
+        monkeypatch.setenv("R_AGENT_PERSONA_V2_ENABLED", "true")
+        monkeypatch.setenv("R_AGENT_QZONE_MODE", "off")
+        runtime = asyncio.create_task(phase2_cli.listen())
+        try:
+            await napcat.wait_for_clients()
+            await asyncio.sleep(0.3)
+            assert not runtime.done()
+            await napcat.push_group_message(
+                message_id=901, user_id=800001, card="小明", segments=[_at_bot(), _text("在吗")]
+            )
+            await _wait_until(lambda: len(napcat.sent()) >= 1)
+        finally:
+            runtime.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await runtime
+    assert "Higgs Persona Bundle" in model.calls[0][0]["content"]
