@@ -250,6 +250,7 @@ async def get_onebot_quoted_message(
         raise OutboundError("OneBot get_msg sender was malformed")
     name = clean_display_name(sender.get("card")) or clean_display_name(sender.get("nickname"))
     text = ""
+    image_urls: tuple[str, ...] = ()
     message = data.get("message")
     if isinstance(message, list):
         try:
@@ -266,6 +267,7 @@ async def get_onebot_quoted_message(
                 }
             )
             text = parsed.timeline_text
+            image_urls = parsed.image_urls
         except OneBotParseError:
             text = ""
     # ``raw_message`` is deliberately ignored: its CQ codes may embed media URLs.
@@ -279,6 +281,7 @@ async def get_onebot_quoted_message(
         sender_name=name,
         text=text,
         is_self=self_id is not None and str(self_id) == user_id,
+        image_urls=image_urls,
     )
 
 

@@ -53,7 +53,7 @@ from r_agent.model_memory_candidates import (
     ModelCandidateExtractor,
     ModelCandidateShadowStore,
 )
-from r_agent.multimodal import VisionCaptioner, split_bubbles, strip_breaks
+from r_agent.multimodal import RecentImageCache, VisionCaptioner, split_bubbles, strip_breaks
 from r_agent.official_processing import OfficialDurableProcessor, OfficialProcessingStore
 from r_agent.official_qq import (
     OfficialQQAdapter,
@@ -1902,15 +1902,40 @@ async def listen() -> None:
                 and await asyncio.to_thread(interest_gate.should_interject, event)
             ):
                 event = replace(event, interjection=True)
+            will_reply = captioner is not None and (
+                event.interjection
+                or policy.gate(event, result) in {ReplyDecision.SENT, ReplyDecision.DRAFTED}
+            )
             if (
-                captioner is not None
+                will_reply
+                and captioner is not None
                 and event.channel == "qq"
-                and event.image_urls
-                and (
-                    event.interjection
-                    or policy.gate(event, result) in {ReplyDecision.SENT, ReplyDecision.DRAFTED}
-                )
+                and event.quoted is not None
+                and event.quoted.image_urls
             ):
+                event, quoted_captions = await captioner.annotate_quoted(event)
+                if quoted_captions and group_timeline is not None and event.group_id:
+                    with contextlib.suppress(Exception):
+                        await asyncio.to_thread(
+                            group_timeline.update_text,
+                            channel=event.channel,
+                            account_id=event.account_id,
+                            group_id=event.group_id,
+                            message_id=event.quoted.message_id,
+                            text=event.quoted.text,
+                        )
+            elif (
+                will_reply
+                and captioner is not None
+                and recent_images is not None
+                and event.channel == "qq"
+                and not event.image_urls
+                and event.quoted is None
+            ):
+                recent = recent_images.take(event)
+                if recent is not None:
+                    event, _recent_captions = await captioner.annotate_recent(event, recent[1])
+            if will_reply and captioner is not None and event.channel == "qq" and event.image_urls:
                 event, captions = await captioner.annotate(event)
                 if captions and group_timeline is not None and event.group_id:
                     with contextlib.suppress(Exception):
@@ -2031,6 +2056,7 @@ async def listen() -> None:
             api_key=vision_key,
             daily_limit=phase.vision_daily_limit,
         )
+    recent_images = RecentImageCache() if captioner is not None else None
     interest_gate: InterestGate | None = None
     if phase.interest_enabled and group_timeline is not None and phase.interest_groups:
         interest_gate = InterestGate(
@@ -2064,6 +2090,9 @@ async def listen() -> None:
             )
             if entry is not None:
                 quoted = group_timeline.as_quoted(entry)
+                if captioner is not None and "[图片]" in entry.text:
+                    # The timeline keeps no URLs; fetch them only for this quote.
+                    quoted = None
         except Exception as exc:
             _log.warning("group_timeline_quote_lookup_failed type=%s", type(exc).__name__)
         if quoted is None:
@@ -2084,6 +2113,18 @@ async def listen() -> None:
             or quoted.sender_id == event.account_id,
         )
 
+    async def resolve_private_quote(event: InboundEvent) -> InboundEvent:
+        if event.reply_message_id is None:
+            return event
+        try:
+            quoted = await get_onebot_quoted_message(
+                settings.onebot_ws_url, settings.onebot_access_token, event.reply_message_id
+            )
+        except OutboundError:
+            _log.warning("phase2_private_reference_lookup_failed")
+            return event
+        return replace(event, quoted=quoted)
+
     async def route_inbound_event(
         event: InboundEvent,
         *,
@@ -2100,6 +2141,13 @@ async def listen() -> None:
             event = await resolve_group_quote(event)
         elif (
             resolve_onebot_reply
+            and captioner is not None
+            and event.conversation_kind is ConversationKind.PRIVATE
+            and event.reply_message_id is not None
+        ):
+            event = await resolve_private_quote(event)
+        elif (
+            resolve_onebot_reply
             and event.group_id in phase.natural_trigger_groups
             and event.reply_message_id is not None
         ):
@@ -2114,6 +2162,8 @@ async def listen() -> None:
             else:
                 if replied_sender == event.account_id:
                     event = replace(event, replied_to_account=True)
+        if recent_images is not None and event.channel == "qq":
+            recent_images.remember(event)
         result = await asyncio.to_thread(service.ingest, event)
         if (
             group_timeline is not None
