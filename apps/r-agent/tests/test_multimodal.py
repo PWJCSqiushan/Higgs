@@ -259,3 +259,49 @@ async def test_quoted_and_separately_sent_images_are_captioned(
     assert seen_urls == ["https://cdn.example/c", "https://cdn.example/c"]
     for call in model.calls:
         assert "cdn.example" not in call[0]["content"] + call[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_reply_to_higgs_still_triggers_with_vision_on_and_timeline_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the image cache must not swallow natural-trigger reply-author lookup."""
+    (tmp_path / "sim.env").write_text("", encoding="utf-8")
+    model = RecordingModel(["接着说。"])
+    monkeypatch.setattr(phase2_cli, "_model_client", lambda *, required: model)
+    async with FakeNapCat() as napcat:
+        live_env(monkeypatch, data_dir=str(tmp_path), ws_url=napcat.url)
+        monkeypatch.setenv("R_AGENT_VISION_ENABLED", "true")
+        monkeypatch.setenv("R_AGENT_GROUP_TIMELINE_ENABLED", "false")
+        monkeypatch.setenv("R_AGENT_REPLY_NATURAL_TRIGGER_GROUPS", "700001")
+        monkeypatch.setenv("R_AGENT_INTEREST_ENABLED", "false")
+        monkeypatch.setenv("R_AGENT_QZONE_MODE", "off")
+        # A previous Higgs message the member will reply to (no @, no trigger term).
+        napcat.messages[777] = {
+            "self_id": BOT_QQ,
+            "user_id": BOT_QQ,
+            "time": 1,
+            "group_id": 700001,
+            "sender": {"user_id": BOT_QQ, "nickname": "Higgs"},
+            "message": [{"type": "text", "data": {"text": "之前的话"}}],
+        }
+        runtime = asyncio.create_task(phase2_cli.listen())
+        try:
+            await napcat.wait_for_clients()
+            await asyncio.sleep(0.3)
+            await napcat.push_group_message(
+                message_id=778,
+                user_id=800001,
+                card="小明",
+                segments=[
+                    {"type": "reply", "data": {"id": "777"}},
+                    {"type": "text", "data": {"text": "然后呢"}},
+                ],
+            )
+            await _wait_until(lambda: len(napcat.sent()) >= 1)
+        finally:
+            runtime.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await runtime
+    assert napcat.sent("get_msg")
+    assert len(napcat.sent()) == 1

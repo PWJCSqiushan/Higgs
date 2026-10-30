@@ -2146,8 +2146,6 @@ async def listen() -> None:
             and event.reply_message_id is not None
         ):
             event = await resolve_private_quote(event)
-        if recent_images is not None and event.channel == "qq":
-            recent_images.remember(event)
         elif (
             resolve_onebot_reply
             and event.group_id in phase.natural_trigger_groups
@@ -2164,6 +2162,8 @@ async def listen() -> None:
             else:
                 if replied_sender == event.account_id:
                     event = replace(event, replied_to_account=True)
+        if recent_images is not None and event.channel == "qq":
+            recent_images.remember(event)
         result = await asyncio.to_thread(service.ingest, event)
         if (
             group_timeline is not None
